@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Bit-Politeia Sensitive Data
+# IMPORTANT: Never push identity keys or private memory to GitHub
+backend/keys/
+backend/*.json
+!backend/requirements.txt
+
+# Local Logs and Temporary Data
+*.log
+*.sqlite
+.DS_Store
+node_modules/
+dist/
+
+# Configuration (if any)
+agent_config.json
+resident_memory.json

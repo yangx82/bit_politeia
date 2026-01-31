@@ -1,0 +1,46 @@
+{
+    "version": "1.0",
+    "last_updated": "2026-01-18",
+    "organization": {
+        "max_levels": 11,
+        "group_size": {
+            "min": 3,
+            "max": 26,
+            "optimal_min": 10,
+            "optimal_max": 20
+        },
+        "merger_threshold": 5,
+        "split_threshold": 26
+    },
+    "core_nodes": {
+        "selection_ratios": [
+            {
+                "range": [
+                    3,
+                    10
+                ],
+                "count": 1
+            },
+            {
+                "range": [
+                    11,
+                    18
+                ],
+                "count": 2
+            },
+            {
+                "range": [
+                    19,
+                    25
+                ],
+                "count": 3
+            }
+        ]
+    },
+    "election": {
+        "quorum_ratio": 0.8,
+        "win_ratio": 0.5,
+        "term_months": 12,
+        "host_fallback": "seniority"
+    }
+}

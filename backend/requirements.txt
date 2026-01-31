@@ -1,0 +1,20 @@
+# P2P Network
+libp2p>=0.2.0
+multiaddr>=0.0.9
+trio>=0.22.0
+
+# Backend / API
+fastapi
+uvicorn
+httpx
+pydantic
+
+# Agent / LLM
+langchain
+langchain-openai
+langchain-core
+
+# Scheduling & Utils
+apscheduler
+python-dotenv
+pytest
