@@ -71,8 +71,11 @@ class ResidentMemory:
         dt_to = datetime.fromisoformat(date_to) if date_to else None
 
         for entry in history:
+            # 1. Keyword check
             if q_lower and q_lower not in entry.get('content', '').lower():
                 continue
+            
+            # 2. Date check
             if dt_from or dt_to:
                 try:
                     ts = datetime.fromisoformat(entry.get('timestamp'))
@@ -80,7 +83,9 @@ class ResidentMemory:
                     if dt_to and ts > dt_to: continue
                 except Exception:
                     continue
+            
             filtered.append(entry)
+            
         return filtered
 
 class ResidentReporter:
@@ -100,17 +105,19 @@ class ResidentReporter:
             gov = self.agent.governance_manager
             active = len(gov.active_elections)
             summary.append(f"Active Elections: {active}")
+            # Could list proposal titles here
             
         # Economy
         if self.agent.ledger:
             balance = await self.agent.get_balance()
-            summary.append(f"Current Balance: {balance} STATER")
+            summary.append(f"Current Balance: {balance}")
             
         return "\n".join(summary)
 
     async def collect_research_updates(self, interests: List[str]) -> str:
         """
-        Retrieves real research progress with robust de-duplication.
+        Retrieves real research progress with robust de-duplication,
+        sorting, and LLM translation.
         """
         from .knowledge_base import knowledge_base
         import re
@@ -118,8 +125,6 @@ class ResidentReporter:
         # Get history to avoid duplication
         recent_history = self.agent.resident_memory.get_recent_history(500)
         seen_titles = set()
-        
-        # Scan entire history for common "Title: ..." pattern
         for msg in recent_history:
             content = msg.get('content', '')
             titles = re.findall(r"Title:\s*(.*)", content)
@@ -186,25 +191,6 @@ class ResidentReporter:
             
         return debug_msg
 
-    async def _translate_abstract(self, abstract: str) -> str:
-        """Translate abstract to Chinese using LLM."""
-        if not self.agent.llm:
-            return "Translation service unavailable."
-        for attempt in range(3):
-            try:
-                prompt = [
-                    SystemMessage(content="You are a professional scientific translator. Translate the following English abstract into concise, academic Chinese."),
-                    HumanMessage(content=f"Abstract:\n{abstract}")
-                ]
-                response = await self.agent.llm.ainvoke(prompt)
-                return response.content.strip()
-            except Exception as e:
-                logger.warning(f"Translation attempt {attempt+1} failed: {e}")
-                if attempt < 2:
-                    await asyncio.sleep(2) # Wait 2 seconds before retry
-                    
-        return "（翻译不可用：请求超时或服务繁忙）"
-
     def _calculate_hybrid_score(self, paper: Dict, rank_index: int) -> float:
         """
         Calculate score based on Relevance (Rank) and Recency (Date).
@@ -256,6 +242,26 @@ class ResidentReporter:
             logger.error(f"LLM selection failed: {e}")
         
         return [0, 1] # Fallback to first two
+
+    async def _translate_abstract(self, abstract: str) -> str:
+        """Use the Agent's LLM to provide a concise Chinese translation."""
+        if not self.agent.llm:
+            return "（翻译不可用：LLM 未配置）"
+            
+        for attempt in range(3):
+            try:
+                prompt = [
+                    SystemMessage(content="You are a professional scientific translator. Translate the following English abstract into concise, academic Chinese."),
+                    HumanMessage(content=f"Abstract:\n{abstract}")
+                ]
+                response = await self.agent.llm.ainvoke(prompt)
+                return response.content.strip()
+            except Exception as e:
+                logger.warning(f"Translation attempt {attempt+1} failed: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2) # Wait 2 seconds before retry
+                    
+        return "（翻译不可用：请求超时或服务繁忙）"
 
     async def generate_daily_brief(self, interests: List[str] = None) -> str:
         """Compose the full daily brief."""

@@ -38,7 +38,6 @@ class AgentService:
         self.llm = None
         self.tools_map = {t.name: t for t in AGENT_TOOLS}
         self.governance_manager = None 
-        self.governance_manager = None 
         self.reputation_manager = None
         self.archive_manager = None
         self.ledger = Ledger() # Initialize Ledger
@@ -49,10 +48,10 @@ class AgentService:
         # Hydrate History from Disk
         self._hydrate_history()
         
-        # Start Scheduler
-        self.scheduler.add_job(self.trigger_scheduled_task, 'interval', minutes=5) # Reduced from 60
-        self.scheduler.add_job(self.trigger_adhoc_task, 'interval', hours=24) 
-        self.scheduler.add_job(self.process_network_inbox, 'interval', seconds=5) 
+        # Start Scheduler with robustness
+        self.scheduler.add_job(self.trigger_scheduled_task, 'interval', minutes=5, misfire_grace_time=60) 
+        self.scheduler.add_job(self.trigger_adhoc_task, 'interval', minutes=5, misfire_grace_time=60, jitter=10) 
+        self.scheduler.add_job(self.process_network_inbox, 'interval', seconds=5, misfire_grace_time=2) 
 
     async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance"):
         try:
@@ -81,10 +80,13 @@ class AgentService:
         if self.archive_manager:
             knowledge_base.ingest_archives(self.archive_manager.chain.get_chain_dict())
         
+        # Use the actual node_id from p2p_service for consistency
+        real_node_id = p2p_service.local_node.node_id if p2p_service.local_node else node_id
+        
         # Initialize Ledger Balance (Mocking initial funding)
         # Only credit if balance is 0 (prevents double-credit on re-config)
-        if self.ledger.get_balance(node_id) == 0:
-            self.ledger.credit(node_id, 1000.0)
+        if self.ledger.get_balance(real_node_id) == 0:
+            self.ledger.credit(real_node_id, 1000.0)
         
         # Initialize LLM with Tools
         try:
@@ -122,11 +124,18 @@ class AgentService:
 
     async def get_balance(self) -> float:
         if self.ledger and p2p_service.local_node:
-             return self.ledger.get_balance(p2p_service.local_node.node_id)
+             node_id = p2p_service.local_node.node_id
+             balance = self.ledger.get_balance(node_id)
+             logger.info(f"Retrieving Balance for UUID {node_id[:8]}: {balance}")
+             return balance
         
-        if not self.ledger or not self.governance_manager:
-            return 0.0
-        return self.ledger.get_balance(self.governance_manager.node_id)
+        if self.ledger and self.governance_manager:
+            node_id = self.governance_manager.node_id
+            balance = self.ledger.get_balance(node_id)
+            logger.info(f"Retrieving Balance for PubKey {node_id[:8]}: {balance} (Fallback)")
+            return balance
+            
+        return 0.0
 
 
     async def _think_and_act(self, context: str, source: str) -> str:
@@ -277,12 +286,13 @@ class AgentService:
             return
             
         node_id = p2p_service.local_node.node_id
-        reward_amount = 50.0
+        reward_amount = 0.1#50.0
         details = "Periodic Participation Reward (UBI)"
         
         # Credit the balance
         self.ledger.credit(node_id, reward_amount)
-        logger.info(f"Node received periodic income: {reward_amount} STATER")
+        new_bal = self.ledger.get_balance(node_id)
+        logger.info(f"Node {node_id[:8]} received periodic income: {reward_amount}. New Balance: {new_bal}")
         
         # Log to private memory for resident visibility
         self.resident_memory.log_interaction(
@@ -307,6 +317,9 @@ class AgentService:
         if self.ledger and p2p_service.local_node:
             node_id = p2p_service.local_node.node_id
             self.status.balance = self.ledger.get_balance(node_id)
+            logger.info(f"Status Sync: UUID {node_id[:8]} Balance {self.status.balance}")
+        else:
+            logger.warning("Status Sync Failed: P2P local_node not initialized")
         return self.status
 
     def _hydrate_history(self):

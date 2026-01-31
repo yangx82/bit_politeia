@@ -38,6 +38,17 @@ const Profile = () => {
     })
     const [updating, setUpdating] = useState(false)
 
+    const fetchStatus = async () => {
+        try {
+            const { default: api } = await import('../services/api')
+            const response = await api.get('/api/v1/status')
+            const statusData = response.data
+            setUser(prev => ({ ...prev, balance: statusData.balance }))
+        } catch (err) {
+            console.error('Failed to fetch balance:', err)
+        }
+    }
+
     useEffect(() => {
         const userData = Store.getUser()
         setUser(userData)
@@ -49,6 +60,7 @@ const Profile = () => {
             model: userData.model || 'gpt-4o',
             field: userData.field || ''
         })
+        fetchStatus()
     }, [])
 
     const handleUpdateConfig = async () => {
@@ -56,12 +68,15 @@ const Profile = () => {
         try {
             setApiUrl(agentConfig.apiUrl)
             const { default: api } = await import('../services/api')
-            await api.post('/api/v1/config', {
+            const response = await api.post('/api/v1/config', {
                 base_url: agentConfig.llmBaseUrl,
                 api_key: agentConfig.apiKey,
                 model: agentConfig.model,
                 research_field: agentConfig.field
             })
+
+            const updatedStatus = response.data
+
             // Update local storage
             localStorage.setItem('bp_api_url', agentConfig.apiUrl)
             localStorage.setItem('bp_llm_base_url', agentConfig.llmBaseUrl)
@@ -69,8 +84,9 @@ const Profile = () => {
             localStorage.setItem('bp_model', agentConfig.model)
             localStorage.setItem('bp_field', agentConfig.field)
 
-            // Refresh local user state
-            setUser(Store.getUser())
+            // Refresh local user state with new balance
+            const localUser = Store.getUser()
+            setUser({ ...localUser, balance: updatedStatus.balance })
             alert('Agent Configuration Updated!')
         } catch (err) {
             console.error(err)
@@ -113,10 +129,12 @@ const Profile = () => {
                 <div className="md:col-span-2">
                     <Card title="Balance" icon={CreditCard}>
                         <div className="flex items-baseline gap-2">
-                            <span className="text-3xl font-bold text-slate-800">1,250.00</span>
+                            <span className="text-3xl font-bold text-slate-800">
+                                {user?.balance?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+                            </span>
                             <span className="text-sm font-medium text-slate-500">STATER</span>
                         </div>
-                        <p className="text-xs text-green-600 mt-2 font-medium">+50 STATER (Reward) • Today</p>
+                        <p className="text-xs text-green-600 mt-2 font-medium">Synced with Agent Node</p>
                     </Card>
                 </div>
 

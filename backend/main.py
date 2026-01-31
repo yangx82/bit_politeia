@@ -10,6 +10,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)s:    %(name)s - %(message)s"
 )
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
