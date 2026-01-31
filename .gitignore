@@ -10,9 +10,6 @@
 
 # --- Protections and Exclusions ---
 
-# Specifically requested by user
-frontend_web/package.json
-
 # Local runtime history and test outputs
 *.txt
 !README.md
