@@ -8,7 +8,19 @@
 !/.gitignore
 !/README.md
 
-# --- Protections inside allowed directories ---
+# --- Protections and Exclusions ---
+
+# Specifically requested by user
+frontend_web/package.json
+
+# Local runtime history and test outputs
+*.txt
+!README.md
+!requirements.txt
+!**/requirements.txt
+*.log
+test_output*
+.pytest_cache/
 
 # Never allow keys or identity files anywhere
 **/keys/
@@ -20,7 +32,6 @@
 **/*.sqlite
 **/*.sqlite-journal
 resident_memory.json
-simulation_log.txt
 agent_config.json
 
 # Ignore temporary and build artifacts
@@ -35,12 +46,16 @@ agent_config.json
 **/.vs/
 **/.idea/
 **/.vscode/
+.tmp_extraction*/
 
 # Environment files
 .env
 **/.env.*
 venv/
 .venv/
+
+# Workspace files
+*.code-workspace
 
 # System files
 .DS_Store
