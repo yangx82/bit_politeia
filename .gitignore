@@ -1,23 +1,47 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-venv/
-.env
+# Ignore all files and directories by default
+/*
 
-# Bit-Politeia Sensitive Data
-# IMPORTANT: Never push identity keys or private memory to GitHub
-backend/keys/
-backend/*.json
-!backend/requirements.txt
+# Allow the specific project directories
+!/backend/
+!/frontend_android/
+!/frontend_web/
+!/.gitignore
+!/README.md
 
-# Local Logs and Temporary Data
-*.log
-*.sqlite
-.DS_Store
-node_modules/
-dist/
+# --- Protections inside allowed directories ---
 
-# Configuration (if any)
-agent_config.json
+# Never allow keys or identity files anywhere
+**/keys/
+**/*.pem
+**/*.key
+**/*.pub
+
+# Ignore local database and memory files
+**/*.sqlite
+**/*.sqlite-journal
 resident_memory.json
+simulation_log.txt
+agent_config.json
+
+# Ignore temporary and build artifacts
+**/__pycache__/
+**/*.py[cod]
+**/node_modules/
+**/dist/
+**/build/
+**/.gradle/
+**/bin/
+**/obj/
+**/.vs/
+**/.idea/
+**/.vscode/
+
+# Environment files
+.env
+**/.env.*
+venv/
+.venv/
+
+# System files
+.DS_Store
+Thumbs.db
