@@ -24,3 +24,14 @@ class AgentStatus(BaseModel):
     balance: float
     current_group: Optional[str] = None
     public_key: Optional[str] = None
+    node_id: Optional[str] = None
+
+class P2PMessage(BaseModel):
+    message_id: str
+    sender_id: str
+    recipient_id: str
+    message_type: str
+    content: dict
+    timestamp: datetime
+    signature: str
+    nonce: str

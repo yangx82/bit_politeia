@@ -21,7 +21,7 @@ class P2PService:
         self.local_node: Optional[Node] = None
         self._initialized = False
 
-    async def initialize(self, node_id: str):
+    async def initialize(self, node_id: str, node_url: str = None):
         """
         Initialize the P2P service and local node.
         """
@@ -39,15 +39,8 @@ class P2PService:
         import uuid
         node_id_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, public_key))
         
-        # Override node_id with the UUID if not explicitly provided (or if passed as something else)
-        if not node_id:
-             node_id = node_id_uuid
-        else:
-             # If caller passed an ID, we assume they know what they are doing,
-             # but we might want to enforce UUID format or just use the generated one
-             # to be safe and consistent with the requirement.
-             # The AgentService currently passes public key, so let's overwrite it 
-             # if it looks like a key (long) or just always use the UUID.
+        # Override node_id with the UUID if not explicitly provided
+        if not node_id or len(node_id) > 64: # If it's the pubkey string, use UUID
              node_id = node_id_uuid
 
         self.local_node = Node(
@@ -55,10 +48,12 @@ class P2PService:
             network_manager=self.network_manager,
             public_key=public_key
         )
+        if node_url:
+            self.local_node.endpoint = node_url
         
         await self.network_manager.register_node(self.local_node)
         self._initialized = True
-        logger.info(f"P2PService initialized for Node {node_id}")
+        logger.info(f"P2PService initialized for Node {node_id} at {node_url}")
 
     async def send_message(self, target_id: str, content: Dict[str, Any], msg_type: str = MessageType.DIRECT.value):
         """

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from ...models.schemas import ChatRequest, ConfigRequest, Message, AgentStatus
+from ...models.schemas import ChatRequest, ConfigRequest, Message, AgentStatus, P2PMessage
 from ...services.agent_service import agent_service
 from ...services.crypto_service import crypto_service
 import logging
@@ -37,6 +37,10 @@ async def get_history():
 @router.get("/history/search", response_model=list[Message])
 async def search_history(q: str = None, date_from: str = None, date_to: str = None):
     return await agent_service.search_history(q, date_from, date_to)
+
+@router.post("/p2p/message")
+async def receive_p2p_message(message: P2PMessage):
+    return await agent_service.receive_p2p_message(message)
 
 @router.get("/status", response_model=AgentStatus)
 async def get_status():

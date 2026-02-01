@@ -50,6 +50,7 @@ class Node:
         self.public_key = public_key
         self.network_manager = network_manager
         self.level: int = 1  # Default level for new nodes
+        self.endpoint: Optional[str] = None # Address of the node's API (e.g. http://192.168.1.5:8001)
         
         # Nodes belong to at least 1 group, max 2 directly connected
         self.group_ids: Set[str] = set()

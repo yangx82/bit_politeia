@@ -52,6 +52,7 @@ class AgentService:
         self.scheduler.add_job(self.trigger_scheduled_task, 'interval', hours=1, misfire_grace_time=60) 
         self.scheduler.add_job(self.trigger_adhoc_task, 'interval', hours=1, misfire_grace_time=60, jitter=10) 
         self.scheduler.add_job(self.process_network_inbox, 'interval', seconds=5, misfire_grace_time=2) 
+        self.scheduler.add_job(self.sync_network, 'interval', seconds=30) 
 
     async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None):
         try:
@@ -70,9 +71,9 @@ class AgentService:
             from ..p2p_community.bootstrap_client import bootstrap_client
             bootstrap_client.set_server_url(bootstrap_url)
         
-        # Initialize P2P Service
+        # Initialize P2P Service (using base_url as the communication endpoint)
         node_id = crypto_service.get_public_key_string()
-        await p2p_service.initialize(node_id)
+        await p2p_service.initialize(node_id, self.base_url)
         
         self.governance_manager = GovernanceManager(node_id)
         self.reputation_manager = ReputationManager(node_id)
@@ -351,6 +352,23 @@ class AgentService:
                 timestamp=datetime.fromisoformat(entry.get('timestamp'))
             ))
         return messages
+
+    async def sync_network(self):
+        """Periodically refresh network topology."""
+        if p2p_service._initialized:
+            await p2p_service.network_manager.sync_topology()
+
+    async def receive_p2p_message(self, message: P2PMessage) -> dict:
+        """Handle incoming P2P message from other nodes."""
+        if not p2p_service._initialized:
+            return {"success": False, "error": "P2P not initialized"}
+        
+        from ..p2p_community.message_protocol import SignedMessage
+        signed_msg = SignedMessage.from_dict(message.dict())
+        
+        # Dispatch to network manager for internal routing/inbox delivery
+        await p2p_service.network_manager.route_message(signed_msg)
+        return {"success": True}
 
     # Governance Methods accessed by Tools
     async def start_election(self, group_id: str, candidates: list[str]) -> str:
