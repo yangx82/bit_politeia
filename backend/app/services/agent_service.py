@@ -2,7 +2,7 @@ import asyncio
 import uuid
 import logging
 from datetime import datetime
-from ..models.schemas import Message, AgentStatus
+from ..models.schemas import Message, AgentStatus, P2PMessage
 from .crypto_service import crypto_service
 from .transaction_manager import transaction_manager
 from .p2p_service import p2p_service
