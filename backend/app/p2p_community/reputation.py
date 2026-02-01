@@ -57,3 +57,24 @@ class ReputationManager:
         
         averages = {dim: totals[dim] / counts[dim] for dim in totals}
         return averages
+
+    def get_overall_score(self, target_id: str) -> float:
+        """
+        Calculate a single weighted reputation score (0-100).
+        Currently just a simple average of all dimensions.
+        """
+        averages = self.get_reputation(target_id)
+        if not averages:
+            return 0.0
+        return sum(averages.values()) / len(averages)
+
+    def get_group_rankings(self, node_ids: List[str]) -> List[tuple[str, float]]:
+        """
+        Rank a list of nodes by their overall reputation score.
+        Returns a list of (node_id, score) sorted by score descending.
+        """
+        scores = []
+        for nid in node_ids:
+            scores.append((nid, self.get_overall_score(nid)))
+        
+        return sorted(scores, key=lambda x: x[1], reverse=True)

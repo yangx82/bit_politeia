@@ -55,6 +55,51 @@ async def register_node(registration: dict = Body(...)) -> Dict[str, bool]:
         logger.error(f"Registration failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.get("/groups/{group_id}/pending")
+async def get_pending_joins(group_id: str) -> Dict[str, Any]:
+    """Get pending join requests for a group."""
+    pending = bootstrap_service.get_pending_joins(group_id)
+    return {"pending": [r.to_dict() for r in pending]}
+
+@app.post("/groups/{group_id}/approve")
+async def approve_node(group_id: str, payload: dict = Body(...)) -> Dict[str, bool]:
+    """Approve a node's join request."""
+    node_id = payload.get("node_id")
+    approver_id = payload.get("approver_id")
+    if not node_id or not approver_id:
+        raise HTTPException(status_code=400, detail="node_id and approver_id required")
+    
+    success = bootstrap_service.approve_node_join(group_id, node_id, approver_id)
+    return {"success": success}
+
+@app.post("/groups/{group_id}/rankings")
+async def set_rankings(group_id: str, payload: dict = Body(...)) -> Dict[str, bool]:
+    """Set node rankings for a group."""
+    rankings = payload.get("rankings")
+    requester_id = payload.get("requester_id")
+    if rankings is None or not requester_id:
+        raise HTTPException(status_code=400, detail="rankings and requester_id required")
+    
+    success = bootstrap_service.set_group_rankings(group_id, rankings, requester_id)
+    return {"success": success}
+
+@app.post("/groups/{group_id}/core-nodes")
+async def set_core_nodes(group_id: str, payload: dict = Body(...)) -> Dict[str, bool]:
+    """Update core nodes for a group."""
+    core_nodes = payload.get("core_nodes")
+    requester_id = payload.get("requester_id")
+    if core_nodes is None or not requester_id:
+        raise HTTPException(status_code=400, detail="core_nodes and requester_id required")
+    
+    success = bootstrap_service.update_group_core_nodes(group_id, core_nodes, requester_id)
+    return {"success": success}
+
+@app.get("/groups/{group_id}/candidates")
+async def get_candidates(group_id: str) -> Dict[str, List[str]]:
+    """Get candidate suggestions for a core node election based on reputation."""
+    candidates = bootstrap_service.get_election_candidates(group_id)
+    return {"candidates": candidates}
+
 def run_server(host: str = "0.0.0.0", port: int = 8000):
     """Run the server programmatically."""
     uvicorn.run(app, host=host, port=port)
