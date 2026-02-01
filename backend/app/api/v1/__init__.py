@@ -34,6 +34,10 @@ async def send_instruction(request: ChatRequest):
 async def get_history():
     return await agent_service.get_history()
 
+@router.get("/history/search", response_model=list[Message])
+async def search_history(q: str = None, date_from: str = None, date_to: str = None):
+    return await agent_service.search_history(q, date_from, date_to)
+
 @router.get("/status", response_model=AgentStatus)
 async def get_status():
     status = await agent_service.get_status()
