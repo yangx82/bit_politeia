@@ -49,8 +49,8 @@ class AgentService:
         self._hydrate_history()
         
         # Start Scheduler with robustness
-        self.scheduler.add_job(self.trigger_scheduled_task, 'interval', minutes=5, misfire_grace_time=60) 
-        self.scheduler.add_job(self.trigger_adhoc_task, 'interval', minutes=5, misfire_grace_time=60, jitter=10) 
+        self.scheduler.add_job(self.trigger_scheduled_task, 'interval', hours=1, misfire_grace_time=60) 
+        self.scheduler.add_job(self.trigger_adhoc_task, 'interval', hours=1, misfire_grace_time=60, jitter=10) 
         self.scheduler.add_job(self.process_network_inbox, 'interval', seconds=5, misfire_grace_time=2) 
 
     async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None):
