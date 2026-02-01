@@ -31,6 +31,7 @@ const Profile = () => {
     const [pubKey, setPubKey] = useState('')
     const [agentConfig, setAgentConfig] = useState({
         apiUrl: '',
+        bootstrapUrl: '',
         llmBaseUrl: '',
         apiKey: '',
         model: '',
@@ -55,6 +56,7 @@ const Profile = () => {
         setPubKey(CryptoService.getPublicKey() || 'Generating...')
         setAgentConfig({
             apiUrl: userData.apiUrl,
+            bootstrapUrl: userData.bootstrapUrl || 'http://localhost:8000',
             llmBaseUrl: userData.llmBaseUrl || 'https://api.openai.com/v1',
             apiKey: userData.apiKey || '',
             model: userData.model || 'gpt-4o',
@@ -72,7 +74,8 @@ const Profile = () => {
                 base_url: agentConfig.llmBaseUrl,
                 api_key: agentConfig.apiKey,
                 model: agentConfig.model,
-                research_field: agentConfig.field
+                research_field: agentConfig.field,
+                bootstrap_url: agentConfig.bootstrapUrl
             })
 
             const updatedStatus = response.data
@@ -83,6 +86,7 @@ const Profile = () => {
             localStorage.setItem('bp_api_key', agentConfig.apiKey)
             localStorage.setItem('bp_model', agentConfig.model)
             localStorage.setItem('bp_field', agentConfig.field)
+            localStorage.setItem('bp_bootstrap_url', agentConfig.bootstrapUrl)
 
             // Refresh local user state with new balance
             const localUser = Store.getUser()
@@ -144,6 +148,11 @@ const Profile = () => {
                             label="Agent Node URL"
                             value={agentConfig.apiUrl}
                             onChange={e => setAgentConfig({ ...agentConfig, apiUrl: e.target.value })}
+                        />
+                        <Input
+                            label="Bootstrap Server URL"
+                            value={agentConfig.bootstrapUrl}
+                            onChange={e => setAgentConfig({ ...agentConfig, bootstrapUrl: e.target.value })}
                         />
                         <Input
                             label="LLM Provider Base URL"

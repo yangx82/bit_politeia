@@ -16,6 +16,7 @@ class ConfigRequest(BaseModel):
     api_key: str
     model: str = "gpt-4o"
     research_field: Optional[str] = "AI Governance"
+    bootstrap_url: Optional[str] = "http://localhost:8000"
 
 class AgentStatus(BaseModel):
     is_online: bool

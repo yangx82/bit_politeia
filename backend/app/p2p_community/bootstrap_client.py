@@ -71,6 +71,12 @@ class BootstrapClient:
         self.server_url = server_url.rstrip("/")
         self.client = httpx.AsyncClient(timeout=5.0)
 
+    def set_server_url(self, url: str):
+        """Dynamically update the bootstrap server URL."""
+        if url:
+            self.server_url = url.rstrip("/")
+            logger.info(f"BootstrapClient: Server URL updated to {self.server_url}")
+
     async def get_joinable_groups(self, preferred_level: int = 1) -> List[GroupInfo]:
         """Fetch topology and filter for joinable groups."""
         try:

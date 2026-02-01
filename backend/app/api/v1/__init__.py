@@ -14,13 +14,15 @@ async def configure_agent(request: ConfigRequest):
     log_msg = f"Received ConfigRequest: {request.dict()}"
     logger.info(log_msg)
     print(f"\n>>> DEBUG: {log_msg}\n") # Guaranteed to show in stdout
-    # Safely get research_field with fallback to avoid crash
+    # Safely get research_field and bootstrap_url with fallback to avoid crash
     rf = getattr(request, 'research_field', 'AI Governance')
+    bu = getattr(request, 'bootstrap_url', 'http://localhost:8000')
     await agent_service.configure_agent(
         request.base_url, 
         request.api_key, 
         request.model, 
-        rf
+        rf,
+        bu
     )
     return await get_status()
 

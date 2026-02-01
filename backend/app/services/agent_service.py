@@ -53,7 +53,7 @@ class AgentService:
         self.scheduler.add_job(self.trigger_adhoc_task, 'interval', minutes=5, misfire_grace_time=60, jitter=10) 
         self.scheduler.add_job(self.process_network_inbox, 'interval', seconds=5, misfire_grace_time=2) 
 
-    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance"):
+    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None):
         try:
              self.scheduler.start()
         except Exception:
@@ -64,6 +64,11 @@ class AgentService:
         self.model = model
         self.research_field = research_field
         logger.info(f"Agent Configured with Base URL: {base_url}, Model: {model}, Field: {research_field}")
+        
+        # Apply custom bootstrap URL if provided
+        if bootstrap_url:
+            from ..p2p_community.bootstrap_client import bootstrap_client
+            bootstrap_client.set_server_url(bootstrap_url)
         
         # Initialize P2P Service
         node_id = crypto_service.get_public_key_string()
