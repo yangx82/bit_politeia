@@ -69,7 +69,7 @@ class BootstrapClient:
     """
     def __init__(self, server_url: str = "http://localhost:8000"):
         self.server_url = server_url.rstrip("/")
-        self.client = httpx.AsyncClient(timeout=5.0)
+        self.client = httpx.AsyncClient(timeout=15.0)  # Increased for LAN stability
 
     def set_server_url(self, url: str):
         """Dynamically update the bootstrap server URL."""

@@ -161,7 +161,9 @@ class BootstrapService:
             self._pending_joins[target_group_id].append(registration)
             logger.info(f"Bootstrap: Node {registration.node_id} request to join Group {target_group_id} is PENDING approval.")
         
-        return False # Not joined yet
+        # Return True because node is registered in _peers (visible in topology)
+        # even though group membership is pending
+        return True
 
     def get_election_candidates(self, group_id: str) -> List[str]:
         """
