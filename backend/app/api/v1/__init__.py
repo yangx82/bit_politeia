@@ -58,6 +58,11 @@ async def send_p2p_message(payload: dict = Body(...)):
     
     return await agent_service.send_p2p_message(target_id, content)
 
+@router.get("/archive/chain")
+async def get_archive_chain():
+    """Get the local blockchain archive."""
+    return await agent_service.get_archive_chain()
+
 @router.get("/status", response_model=AgentStatus)
 async def get_status():
     status = await agent_service.get_status()

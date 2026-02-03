@@ -417,6 +417,20 @@ class AgentService:
             logger.error(f"Failed to send P2P message: {e}")
             return {"success": False, "error": str(e)}
 
+    async def get_archive_chain(self) -> list[dict]:
+        """Get local blockchain archive."""
+        if not self.archive_manager:
+            return []
+        
+        # Format chain for frontend
+        chain_data = []
+        for block in self.archive_manager.chain.chain:
+            # We convert block to dict. ArchiveChain.Block is a dataclass so we can use asdict or manual
+            from dataclasses import asdict
+            chain_data.append(asdict(block))
+            
+        return chain_data
+
     async def receive_p2p_message(self, message: P2PMessage) -> dict:
         """Handle incoming P2P message from other nodes."""
         if not p2p_service._initialized:
