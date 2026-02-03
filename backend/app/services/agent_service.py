@@ -358,6 +358,65 @@ class AgentService:
         if p2p_service._initialized:
             await p2p_service.network_manager.sync_topology()
 
+    async def get_peers(self) -> list[dict]:
+        """Get list of known peers from network manager."""
+        if not p2p_service._initialized:
+            return []
+        
+        peers = []
+        # Get all nodes from network manager
+        for node_id, node in p2p_service.network_manager.nodes.items():
+            # Skip self
+            if node_id == p2p_service.local_node.node_id:
+                continue
+                
+            peers.append({
+                "node_id": node_id,
+                "public_key": node.public_key,
+                "endpoint": node.endpoint,
+                "status": "online" if node.endpoint else "unknown", # Simple status check
+                "last_seen": datetime.now().isoformat() # Placeholder for real last_seen
+            })
+        return peers
+
+    async def send_p2p_message(self, target_id: str, content: str) -> dict:
+        """Send a P2P message to a specific peer."""
+        if not p2p_service._initialized:
+             return {"success": False, "error": "P2P not initialized"}
+             
+        # Construct message payload
+        msg_payload = {
+            "text": content,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Use P2P service to send
+        from ..p2p_community.message_protocol import MessageType
+        # Note: P2PService.send_message might need update if it doesn't handle direct routing fully yet,
+        # but NetworkManager.route_message does.
+        # Let's use p2p_service.send_message wrapper if available, or call network_manager directly.
+        # P2PService.send_message is cleaner.
+        
+        try:
+             await p2p_service.send_message(
+                 target_id=target_id,
+                 content=msg_payload,
+                 msg_type=MessageType.DIRECT.value
+             )
+             
+             # Log to history as sent message
+             self.history.append(Message(
+                id=str(uuid.uuid4()),
+                content=f"Sent P2P: {content}",
+                sender="me",
+                timestamp=datetime.now()
+             ))
+             
+             return {"success": True}
+        except Exception as e:
+            logger.error(f"Failed to send P2P message: {e}")
+            return {"success": False, "error": str(e)}
+
     async def receive_p2p_message(self, message: P2PMessage) -> dict:
         """Handle incoming P2P message from other nodes."""
         if not p2p_service._initialized:

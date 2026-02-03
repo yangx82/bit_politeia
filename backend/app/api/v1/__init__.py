@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
 from ...models.schemas import ChatRequest, ConfigRequest, Message, AgentStatus, P2PMessage
 from ...services.agent_service import agent_service
 from ...services.crypto_service import crypto_service
@@ -41,6 +41,22 @@ async def search_history(q: str = None, date_from: str = None, date_to: str = No
 @router.post("/p2p/message")
 async def receive_p2p_message(message: P2PMessage):
     return await agent_service.receive_p2p_message(message)
+
+# Frontend P2P Endpoints
+@router.get("/p2p/peers")
+async def get_peers():
+    """Get list of connected P2P nodes."""
+    return await agent_service.get_peers()
+
+@router.post("/p2p/send")
+async def send_p2p_message(payload: dict = Body(...)):
+    """Send a direct P2P message."""
+    target_id = payload.get("target_id")
+    content = payload.get("content")
+    if not target_id or not content:
+        raise HTTPException(status_code=400, detail="target_id and content required")
+    
+    return await agent_service.send_p2p_message(target_id, content)
 
 @router.get("/status", response_model=AgentStatus)
 async def get_status():
