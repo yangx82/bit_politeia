@@ -45,9 +45,12 @@ class NetworkManager:
                         level=gdata["level"],
                         parent_id=gdata["parent_id"]
                     )
-                # Sync members to Ensure we see peers
-                if "members" in gdata:
-                    self.groups[gid].members = set(gdata["members"])
+        
+        # Sync members from hierarchy (Critical for P2P discovery)
+        if "hierarchy" in topology_data:
+            for gid, members in topology_data["hierarchy"].items():
+                if gid in self.groups:
+                    self.groups[gid].members = set(members)
                     
         # Update hierarchy links
         for gid, group in self.groups.items():
