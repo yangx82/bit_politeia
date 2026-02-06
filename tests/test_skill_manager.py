@@ -29,8 +29,15 @@ def test_get_skill_tools(skill_manager):
     assert pdf_tool is not None
     assert "Extracts text from PDF files" in str(skill_manager.loaded_skills["pdf-reader"]["description"])
 
-def test_get_skill_prompts(skill_manager):
+def test_get_skill_index(skill_manager):
     skill_manager.load_skills()
-    prompts = skill_manager.get_skill_prompts()
-    assert "## ENABLED AGENT SKILLS" in prompts
-    assert "### Skill: pdf-reader" in prompts
+    index = skill_manager.get_skill_index()
+    assert "## AVAILABLE AGENT SKILLS" in index
+    assert "- pdf-reader: Extracts text from PDF files for analysis. Use when user wants to read a PDF, summarize a document, or extract content from a research paper." in index
+
+def test_get_skill_instruction(skill_manager):
+    skill_manager.load_skills()
+    instruction = skill_manager.get_skill_instruction("pdf-reader")
+    assert "# GUIDE FOR SKILL: pdf-reader" in instruction
+    assert "Extracts text from PDF files from PDF files" not in instruction # Check for duplicates
+    assert "## Core Workflow" in instruction

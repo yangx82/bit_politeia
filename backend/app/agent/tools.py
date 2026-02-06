@@ -255,5 +255,19 @@ async def search_web(query: str) -> str:
     except Exception as e:
         return f"Search failed: {str(e)}"
 
+@tool
+async def read_skill_guide(skill_name: str) -> str:
+    """
+    Read the detailed usage guide (Instructions) for a specific skill.
+    Call this BEFORE using any tool from a skill you are unfamiliar with.
+    """
+    try:
+        from app.agent.skill_manager import skill_manager
+        # Ensure latest skills are loaded or just read from cache
+        # skill_manager.load_skills() # Optional: reload if needed
+        return skill_manager.get_skill_instruction(skill_name)
+    except Exception as e:
+        return f"Failed to read skill guide: {str(e)}"
+
 # List of tools to bind to the agent
-AGENT_TOOLS = [send_p2p_message, get_my_status, read_community_rules, update_system_parameter, propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, pay_resident, check_my_balance, generate_archive, get_latest_block, search_web]
+AGENT_TOOLS = [send_p2p_message, get_my_status, read_community_rules, update_system_parameter, propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, read_skill_guide]

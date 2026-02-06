@@ -78,18 +78,32 @@ class SkillManager:
             "instruction": content
         }
 
-    def get_skill_prompts(self) -> str:
+    def get_skill_index(self) -> str:
         """
-        Combine all skill instructions into a system prompt addition.
+        Return a concise index of available skills for the system prompt.
+        Format: - Name: Description (Use when...)
         """
-        prompts = []
-        for name, info in self.loaded_skills.items():
-            prompts.append(f"### Skill: {name}\n{info['description']}\n\nINSTRUCTIONS:\n{info['instruction']}")
-        
-        if not prompts:
+        if not self.loaded_skills:
             return ""
+
+        index_lines = ["## AVAILABLE AGENT SKILLS"]
+        index_lines.append("The following skills are available. To use them, you must first read their guide using `read_skill_guide(skill_name)`.")
+        
+        for name, info in self.loaded_skills.items():
+            desc = info['description'].replace('\n', ' ')
+            index_lines.append(f"- {name}: {desc}")
             
-        return "\n\n## ENABLED AGENT SKILLS\nThe following external skills are available for use:\n\n" + "\n\n".join(prompts)
+        return "\n\n" + "\n".join(index_lines)
+
+    def get_skill_instruction(self, skill_name: str) -> str:
+        """
+        Return the full instruction (SKILL.md content) for a specific skill.
+        """
+        skill = self.loaded_skills.get(skill_name)
+        if not skill:
+            return f"Skill '{skill_name}' not found."
+            
+        return f"# GUIDE FOR SKILL: {skill_name}\n\n{skill['instruction']}"
 
     def get_skill_tools(self) -> List[StructuredTool]:
         """

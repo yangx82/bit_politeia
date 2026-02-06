@@ -114,10 +114,10 @@ class AgentService:
             # Combine standard tools with skill tools
             all_tools = AGENT_TOOLS + skill_tools
             
-            # Update system prompt with skill instructions
-            skill_prompts = skill_manager.get_skill_prompts()
+            # Update system prompt with skill index (Progressive Disclosure)
+            skill_index_prompt = skill_manager.get_skill_index()
             # Note: We need to store this modified prompt to use it in _think_and_act
-            self.current_system_prompt = AGENT_SYSTEM_PROMPT + "\n" + skill_prompts
+            self.current_system_prompt = AGENT_SYSTEM_PROMPT + "\n" + skill_index_prompt
             
             self.llm = raw_llm.bind_tools(all_tools)
             self.tools_map = {t.name: t for t in all_tools}
