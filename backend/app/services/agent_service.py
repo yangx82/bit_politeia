@@ -19,6 +19,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
 from ..agent.prompts import AGENT_SYSTEM_PROMPT
 from ..agent.tools import AGENT_TOOLS
+from ..agent.skill_manager import skill_manager
 from ..p2p_community.governance import GovernanceManager, Vote
 import json
 
@@ -106,8 +107,22 @@ class AgentService:
                 model=model, 
                 temperature=0.7
             )
-            self.llm = raw_llm.bind_tools(AGENT_TOOLS)
-            logger.info("Agent LLM Initialized Successfully")
+            # Load custom skills
+            skill_manager.load_skills()
+            skill_tools = skill_manager.get_skill_tools()
+            
+            # Combine standard tools with skill tools
+            all_tools = AGENT_TOOLS + skill_tools
+            
+            # Update system prompt with skill instructions
+            skill_prompts = skill_manager.get_skill_prompts()
+            # Note: We need to store this modified prompt to use it in _think_and_act
+            self.current_system_prompt = AGENT_SYSTEM_PROMPT + "\n" + skill_prompts
+            
+            self.llm = raw_llm.bind_tools(all_tools)
+            self.tools_map = {t.name: t for t in all_tools}
+            
+            logger.info(f"Agent LLM Initialized Successfully. Tools: {len(all_tools)} (Standard: {len(AGENT_TOOLS)}, Skills: {len(skill_tools)})")
             
         except Exception as e:
             logger.error(f"Failed to initialize Agent LLM: {e}")
@@ -158,8 +173,11 @@ class AgentService:
             my_id = p2p_service.local_node.node_id if p2p_service.local_node else "unknown"
             my_groups = list(p2p_service.local_node.group_ids) if p2p_service.local_node else []
             
+            system_prompt = getattr(self, "current_system_prompt", AGENT_SYSTEM_PROMPT)
+            
             messages = [
-                SystemMessage(content=AGENT_SYSTEM_PROMPT),
+                SystemMessage(content=system_prompt),
+                SystemMessage(content=f"Your Network Identity:\n- Node ID: {my_id}\n- My Groups: {my_groups}\n- My Monitoring Research Focus: {self.research_field}"),
                 SystemMessage(content=f"Your Network Identity:\n- Node ID: {my_id}\n- My Groups: {my_groups}\n- My Monitoring Research Focus: {self.research_field}"),
                 SystemMessage(content=f"Relevant Knowledge Context:\n{rag_context}"),
                 HumanMessage(content=f"Message from {source}: {context}")
