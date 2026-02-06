@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { API_BASE_URL } from '../config';
+import api from '../services/api';
 
 const Archive = () => {
     const [chain, setChain] = useState([]);
@@ -14,7 +13,7 @@ const Archive = () => {
 
     const fetchChain = async () => {
         try {
-            const response = await axios.get(`${API_BASE_URL}/archive/chain`);
+            const response = await api.get('/api/v1/archive/chain');
             if (response.data) {
                 // Sort by index descending (latest first)
                 setChain(response.data.reverse());

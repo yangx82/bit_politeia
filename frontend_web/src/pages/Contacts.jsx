@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { API_BASE_URL } from '../config';
+import api from '../services/api';
 
 const Contacts = () => {
     const [peers, setPeers] = useState([]);
@@ -19,7 +18,7 @@ const Contacts = () => {
 
     const fetchPeers = async () => {
         try {
-            const response = await axios.get(`${API_BASE_URL}/p2p/peers`);
+            const response = await api.get('/api/v1/p2p/peers');
             // Ensure endpoint exists on backend before enabling (returns 404 if not deployed)
             if (response.data) {
                 setPeers(response.data);
@@ -41,7 +40,7 @@ const Contacts = () => {
 
         setSending(true);
         try {
-            await axios.post(`${API_BASE_URL}/p2p/send`, {
+            await api.post('/api/v1/p2p/send', {
                 target_id: selectedPeer.node_id,
                 content: messageContent
             });
