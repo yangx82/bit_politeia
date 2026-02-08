@@ -17,6 +17,7 @@ class ConfigRequest(BaseModel):
     model: str = "gpt-4o"
     research_field: Optional[str] = "AI Governance"
     bootstrap_url: Optional[str] = "http://localhost:8000"
+    verbose_llm: bool = False
 
 class AgentStatus(BaseModel):
     is_online: bool

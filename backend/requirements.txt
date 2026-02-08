@@ -18,3 +18,10 @@ langchain-core
 apscheduler
 python-dotenv
 pytest
+
+# New Features (Message Bus & File Processing)
+pypdf
+python-telegram-bot
+lark-oapi
+cryptography
+PyYAML

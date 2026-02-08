@@ -8,20 +8,12 @@ description: Extracts text from PDF files for analysis. Use when user wants to r
 Extracts text content from PDF files.
 
 ## Quick Start
+To read a PDF file:
+1. Locate the file path (e.g., `D:\docs\paper.pdf`).
+2. Call `pdf-reader_read_pdf(arguments="D:\\docs\\paper.pdf")` for the whole file.
+3. Call `pdf-reader_read_pdf(arguments="D:\\docs\\paper.pdf --start 1 --end 5")` for a specific page range.
 
-```python
-# To use this skill, the agent will call the tool with the file path.
-import json
-print(json.dumps({"text": "Extracted text..."}))
-```
-
-## Core Workflow
-
-1.  **Locate File**: The user provides a path to a PDF file.
-2.  **Read PDF**: The `read_pdf.py` script opens the file and extracts text page by page.
-3.  **Return Content**: The text is returned as a JSON object.
-
-## Important Rules
-
-- **ALWAYS** provide an absolute path to the PDF file.
-- **NEVER** try to read encrypted PDFs without a password (not supported yet).
+## Capabilities
+- Extract full text from PDF
+- Handles multi-page documents
+- Support for reading specific page ranges (--start, --end)

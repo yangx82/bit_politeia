@@ -22,7 +22,8 @@ async def configure_agent(request: ConfigRequest):
         request.api_key, 
         request.model, 
         rf,
-        bu
+        bu,
+        request.verbose_llm
     )
     return await get_status()
 
