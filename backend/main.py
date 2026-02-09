@@ -52,6 +52,14 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("FEISHU_APP_ID/SECRET not found, Feishu channel disabled.")
         
+    # 3. Auto-configure Agent if .env exists
+    from app.services.agent_service import agent_service
+    env_config = agent_service.load_config_from_env()
+    if env_config:
+        logger.info("Found persisted configuration in .env, auto-configuring Agent...")
+        # configure_agent is async
+        asyncio.create_task(agent_service.configure_agent(**env_config))
+
     yield
     
     # Shutdown

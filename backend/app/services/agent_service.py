@@ -75,7 +75,28 @@ class AgentService:
         self.model = model
         self.research_field = research_field
         self.verbose_llm = verbose_llm
+        self.verbose_llm = verbose_llm
         logger.info(f"Agent Configured with Base URL: {base_url}, Model: {model}, Field: {research_field}, Verbose: {verbose_llm}")
+        
+        # Persist configuration to .env
+        try:
+            from dotenv import set_key, find_dotenv
+            env_file = find_dotenv()
+            if not env_file:
+                # Create .env if not found
+                import os
+                env_file = os.path.join(os.getcwd(), ".env")
+                open(env_file, 'a').close()
+            
+            set_key(env_file, "AGENT_BASE_URL", base_url)
+            set_key(env_file, "AGENT_API_KEY", api_key)
+            set_key(env_file, "AGENT_MODEL", model)
+            set_key(env_file, "AGENT_RESEARCH_FIELD", research_field)
+            if bootstrap_url:
+                set_key(env_file, "AGENT_BOOTSTRAP_URL", bootstrap_url)
+            logger.info(f"Configuration saved to {env_file}")
+        except Exception as e:
+            logger.error(f"Failed to save configuration to .env: {e}")
         
         # Apply custom bootstrap URL if provided
         if bootstrap_url:
@@ -144,6 +165,25 @@ class AgentService:
     # ... (Rest of existing methods _think_and_act, process_user_instruction etc. remain unchanged) ...
     # I will replace the end of the file to append new methods
     
+    def load_config_from_env(self):
+        """Load configuration from environment variables."""
+        import os
+        base_url = os.getenv("AGENT_BASE_URL")
+        api_key = os.getenv("AGENT_API_KEY")
+        model = os.getenv("AGENT_MODEL", "gpt-4o")
+        research_field = os.getenv("AGENT_RESEARCH_FIELD", "AI Governance")
+        bootstrap_url = os.getenv("AGENT_BOOTSTRAP_URL")
+        
+        if base_url and api_key:
+            return {
+                "base_url": base_url,
+                "api_key": api_key,
+                "model": model,
+                "research_field": research_field,
+                "bootstrap_url": bootstrap_url
+            }
+        return None
+
     # Financial Methods
     async def transfer_funds(self, payee_id: str, amount: float, details: str) -> str:
         if not self.ledger:
