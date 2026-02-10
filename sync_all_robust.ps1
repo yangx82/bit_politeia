@@ -10,7 +10,8 @@ $files = @(
 
 $dirs = @(
     "backend\skills\long-doc-analyzer",
-    "docs"
+    "docs",
+    "tests"
 )
 
 Write-Host "Starting Robust Sync..."
