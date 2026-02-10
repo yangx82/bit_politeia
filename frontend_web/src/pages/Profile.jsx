@@ -35,7 +35,8 @@ const Profile = () => {
         llmBaseUrl: '',
         apiKey: '',
         model: '',
-        field: ''
+        field: '',
+        verboseLlm: false
     })
     const [updating, setUpdating] = useState(false)
 
@@ -60,7 +61,8 @@ const Profile = () => {
             llmBaseUrl: userData.llmBaseUrl || 'https://api.openai.com/v1',
             apiKey: userData.apiKey || '',
             model: userData.model || 'gpt-4o',
-            field: userData.field || ''
+            field: userData.field || '',
+            verboseLlm: userData.verboseLlm || false
         })
         fetchStatus()
     }, [])
@@ -75,7 +77,8 @@ const Profile = () => {
                 api_key: agentConfig.apiKey,
                 model: agentConfig.model,
                 research_field: agentConfig.field,
-                bootstrap_url: agentConfig.bootstrapUrl
+                bootstrap_url: agentConfig.bootstrapUrl,
+                verbose_llm: agentConfig.verboseLlm
             })
 
             const updatedStatus = response.data
@@ -87,6 +90,7 @@ const Profile = () => {
             localStorage.setItem('bp_model', agentConfig.model)
             localStorage.setItem('bp_field', agentConfig.field)
             localStorage.setItem('bp_bootstrap_url', agentConfig.bootstrapUrl)
+            localStorage.setItem('bp_verbose_llm', agentConfig.verboseLlm)
 
             // Refresh local user state with new balance
             const localUser = Store.getUser()
@@ -178,6 +182,18 @@ const Profile = () => {
                             value={agentConfig.field}
                             onChange={e => setAgentConfig({ ...agentConfig, field: e.target.value })}
                         />
+
+                        <div className="flex items-center mt-3 mb-2 p-2 bg-slate-50 rounded-lg border border-slate-200">
+                            <input
+                                type="checkbox"
+                                id="verboseLlm"
+                                checked={agentConfig.verboseLlm}
+                                onChange={e => setAgentConfig({ ...agentConfig, verboseLlm: e.target.checked })}
+                                className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                            />
+                            <label htmlFor="verboseLlm" className="ml-2 text-sm font-medium text-slate-700">Enable Verbose LLM Output (Backend Console)</label>
+                        </div>
+
                         <button
                             onClick={handleUpdateConfig}
                             disabled={updating}

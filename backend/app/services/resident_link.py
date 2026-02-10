@@ -2,31 +2,90 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import List, Dict, Any
+from pathlib import Path
+from typing import List, Dict, Any, Optional
 import uuid
 from langchain_core.messages import SystemMessage, HumanMessage
 
-logger = logging.getLogger(__name__)
+from .memory_store import memory_store
 
-# Constants
-PRIVATE_MEMORY_FILE = "resident_memory.json"
+logger = logging.getLogger(__name__)
 
 class ResidentMemory:
     """
-    Manages private interaction logs between Agent and Resident.
-    Stored locally in a JSON file, NOT on the blockchain.
+    Manages resident interaction logs using topic-based JSONL files.
+    - chat.jsonl: Dialogue history
+    - research.jsonl: Research outputs
+    - system.jsonl: System notifications
     """
-    def __init__(self, file_path: str = PRIVATE_MEMORY_FILE):
-        self.file_path = file_path
-        self._ensure_file_exists()
+    
+    def __init__(self, workspace_root: str = None):
+        # Use the same memory root as MemoryStore
+        self.memory_dir = memory_store.memory_dir
+        self.legacy_file = self.memory_dir.parent / "resident_memory.json"
+        
+        # Topic files
+        self.topic_files = {
+            "chat": self.memory_dir / "chat.jsonl",
+            "research": self.memory_dir / "research.jsonl",
+            "system": self.memory_dir / "system.jsonl"
+        }
+        
+        self._ensure_files()
+        self._migrate_legacy_json()
 
-    def _ensure_file_exists(self):
-        if not os.path.exists(self.file_path):
-            with open(self.file_path, 'w', encoding='utf-8') as f:
-                json.dump([], f)
+    def _ensure_files(self):
+        """Ensure all topic files exist with metadata header."""
+        for topic, path in self.topic_files.items():
+            if not path.exists():
+                self._write_metadata(path, topic)
+
+    def _write_metadata(self, path: Path, topic: str):
+        """Write metadata header to a new JSONL file."""
+        metadata = {
+            "_type": "metadata",
+            "created_at": datetime.now().isoformat(),
+            "topic": topic
+        }
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(json.dumps(metadata) + "\n")
+
+    def _migrate_legacy_json(self):
+        """Migrate old resident_memory.json to chat.jsonl."""
+        if not self.legacy_file.exists():
+            return
+            
+        try:
+            logger.info("Migrating legacy resident_memory.json...")
+            with open(self.legacy_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            if isinstance(data, list) and data:
+                # Append to chat.jsonl
+                with open(self.topic_files["chat"], 'a', encoding='utf-8') as f_out:
+                    for entry in data:
+                        # Ensure minimal fields
+                        if "timestamp" not in entry:
+                            entry["timestamp"] = datetime.now().isoformat()
+                        f_out.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                        
+            # Rename legacy file
+            backup_name = self.legacy_file.parent / f"resident_memory_backup_{datetime.now().strftime('%Y%m%d%H%M%S')}.json"
+            os.rename(self.legacy_file, backup_name)
+            logger.info(f"Migration complete. Backup at {backup_name}")
+            
+        except Exception as e:
+            logger.error(f"Migration failed: {e}")
 
     def log_interaction(self, sender: str, content: str, msg_type: str = "chat"):
-        """Append a message to the private log."""
+        """
+        Log interaction to appropriate topic file.
+        msg_type maps to: 'chat', 'research', 'system'. Default 'chat'.
+        """
+        # Map input type to known topics, default to chat
+        topic = msg_type if msg_type in self.topic_files else "chat"
+        file_path = self.topic_files[topic]
+        
         entry = {
             "id": str(uuid.uuid4()),
             "timestamp": datetime.now().isoformat(),
@@ -36,33 +95,57 @@ class ResidentMemory:
         }
         
         try:
-            with open(self.file_path, 'r+', encoding='utf-8') as f:
-                history = json.load(f)
-                history.append(entry)
-                f.seek(0)
-                json.dump(history, f, indent=2, ensure_ascii=False)
-                f.truncate()
+            with open(file_path, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:
-            logger.error(f"Failed to log resident interaction: {e}")
+            logger.error(f"Failed to log to {topic}: {e}")
 
-    def get_recent_history(self, limit: int = 50) -> List[Dict]:
+    def get_recent_history(self, limit: int = 50, topic: str = "chat") -> List[Dict]:
+        """Get recent history from a specific topic."""
+        file_path = self.topic_files.get(topic, self.topic_files["chat"])
+        entries = []
+        
+        if not file_path.exists():
+            return []
+            
         try:
-            with open(self.file_path, 'r', encoding='utf-8') as f:
-                history = json.load(f)
-                return history[-limit:]
-        except Exception:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line: continue
+                    try:
+                        data = json.loads(line)
+                        if data.get("_type") == "metadata": continue
+                        entries.append(data)
+                    except json.JSONDecodeError:
+                        continue
+            
+            return entries[-limit:]
+        except Exception as e:
+            logger.error(f"Error reading history: {e}")
             return []
 
     def get_all_history(self) -> List[Dict]:
-        """Retrieve the entire interaction history."""
-        try:
-            with open(self.file_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return []
+        """Retrieve ALL history across all topics (merged and sorted)."""
+        all_entries = []
+        for path in self.topic_files.values():
+            if not path.exists(): continue
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        try:
+                            data = json.loads(line)
+                            if data.get("_type") == "metadata": continue
+                            all_entries.append(data)
+                        except: continue
+            except: continue
+            
+        # Sort by timestamp
+        all_entries.sort(key=lambda x: x.get("timestamp", ""))
+        return all_entries
 
     def search_history(self, query: str = None, date_from: str = None, date_to: str = None) -> List[Dict]:
-        """Filter history by keywords and date range."""
+        """Search across all history topics."""
         history = self.get_all_history()
         filtered = []
         
@@ -78,11 +161,10 @@ class ResidentMemory:
             # 2. Date check
             if dt_from or dt_to:
                 try:
-                    ts = datetime.fromisoformat(entry.get('timestamp'))
+                    ts = datetime.fromisoformat(entry.get("timestamp"))
                     if dt_from and ts < dt_from: continue
                     if dt_to and ts > dt_to: continue
-                except Exception:
-                    continue
+                except: continue
             
             filtered.append(entry)
             
@@ -112,7 +194,7 @@ class ResidentReporter:
             balance = await self.agent.get_balance()
             summary.append(f"Current Balance: {balance}")
             
-        return "\n".join(summary)
+        return "\\n".join(summary)
 
     async def collect_research_updates(self, interests: List[str]) -> str:
         """
@@ -122,8 +204,9 @@ class ResidentReporter:
         from .knowledge_base import knowledge_base
         import re
         
-        # Get history to avoid duplication
-        recent_history = self.agent.resident_memory.get_recent_history(500)
+        # Get history (research topic preferred, but fallback to chat)
+        # We can look at both
+        recent_history = self.agent.resident_memory.get_recent_history(500, "research")
         seen_titles = set()
         for msg in recent_history:
             content = msg.get('content', '')
@@ -179,17 +262,17 @@ class ResidentReporter:
             for res in selected:
                 abstract_cn = await self._translate_abstract(res['abstract'])
                 updates.append(
-                    f"Title: {res['title']}\n"
-                    f"Abstract: {res['abstract']}\n"
-                    f"【中文摘要】: {abstract_cn}\n"
+                    f"Title: {res['title']}\\n"
+                    f"Abstract: {res['abstract']}\\n"
+                    f"【中文摘要】: {abstract_cn}\\n"
                     f"Source: {res['source']}"
                 )
             updates.append("") 
                 
         if updates:
-            return "\n".join(updates)
+            return "\\n".join(updates)
             
-        return debug_msg
+        return "No new updates."
 
     def _calculate_hybrid_score(self, paper: Dict, rank_index: int) -> float:
         """
@@ -220,11 +303,11 @@ class ResidentReporter:
         try:
             candidate_text = ""
             for i, p in enumerate(candidates):
-                candidate_text += f"[{i}] Title: {p['title']}\n    Abstract: {p['abstract'][:200]}...\n\n"
+                candidate_text += f"[{i}] Title: {p['title']}\\n    Abstract: {p['abstract'][:200]}...\\n\\n"
 
             prompt = [
                 SystemMessage(content="You are a senior academic editor. Select the 2 papers with the highest potential impact, novelty, and relevance to the topic."),
-                HumanMessage(content=f"Topic: {topic}\n\nCandidates:\n{candidate_text}\n\nReturn ONLY a JSON list of the 2 best indices, e.g. [0, 3].")
+                HumanMessage(content=f"Topic: {topic}\\n\\nCandidates:\\n{candidate_text}\\n\\nReturn ONLY a JSON list of the 2 best indices, e.g. [0, 3].")
             ]
             response = await self.agent.llm.ainvoke(prompt)
             content = response.content.strip()
@@ -248,11 +331,12 @@ class ResidentReporter:
         if not self.agent.llm:
             return "（翻译不可用：LLM 未配置）"
             
+        import asyncio
         for attempt in range(3):
             try:
                 prompt = [
                     SystemMessage(content="You are a professional scientific translator. Translate the following English abstract into concise, academic Chinese."),
-                    HumanMessage(content=f"Abstract:\n{abstract}")
+                    HumanMessage(content=f"Abstract:\\n{abstract}")
                 ]
                 response = await self.agent.llm.ainvoke(prompt)
                 return response.content.strip()
@@ -300,11 +384,11 @@ Online and Monitoring.
             
         try:
             # Get last 20 messages, exclude reports
-            recent_msgs = self.agent.resident_memory.get_recent_history(20)
+            recent_msgs = self.agent.resident_memory.get_recent_history(20, "chat")
             conversation_text = ""
             for msg in recent_msgs:
                 if msg.get('sender') in ['user', 'agent'] and msg.get('type') == 'chat':
-                    conversation_text += f"{msg.get('sender')}: {msg.get('content')}\n"
+                    conversation_text += f"{msg.get('sender')}: {msg.get('content')}\\n"
             
             if not conversation_text.strip():
                 return []
@@ -313,7 +397,7 @@ Online and Monitoring.
                 SystemMessage(content="You are a research assistant. Analyze the conversation history and identify 1-2 SPECIFIC research topics the user is interested in. "
                                       "Ignore general chit-chat. Return ONLY a comma-separated list of topics (e.g., 'Quantum Computing, DAO Governance'). "
                                       "If no clear research topic is found, return empty string."),
-                HumanMessage(content=f"Explicit Interests: {', '.join(explicit_interests)}\n\nConversation History:\n{conversation_text}")
+                HumanMessage(content=f"Explicit Interests: {', '.join(explicit_interests)}\\n\\nConversation History:\\n{conversation_text}")
             ]
             
             response = await self.agent.llm.ainvoke(prompt)

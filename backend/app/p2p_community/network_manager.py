@@ -21,6 +21,24 @@ class NetworkManager:
 
     async def initialize(self):
         """Initialize network state from bootstrap server."""
+        # Try UPnP Port Mapping
+        from .nat_traversal import nat_manager
+        if nat_manager.discover_gateway():
+            # Try to map default port 8000
+            external_port = 8000
+            # If we have a local node endpoint configured, try to use that port
+            if self.local_node_id and self.local_node_id in self.nodes:
+                 # Logic to parse port from endpoint... simplified for now
+                 pass
+
+            if nat_manager.add_port_mapping(8000, external_port, "TCP", "BitPoliteia P2P"):
+                public_ip = nat_manager.get_external_ip()
+                if public_ip:
+                    logger.info(f"NAT Traversal Successful. Public Endpoint: http://{public_ip}:{external_port}")
+                    # We should update our local node's endpoint to this public one
+                    # But we need to be careful not to break local testing.
+                    # For now, just log it. In a real scenario, we'd update self.nodes[self.local_node_id].endpoint
+        
         await self.sync_topology()
         logger.info("NetworkManager initialized and topology synced")
 

@@ -269,5 +269,20 @@ async def read_skill_guide(skill_name: str) -> str:
     except Exception as e:
         return f"Failed to read skill guide: {str(e)}"
 
+# Import execution tool
+from ..agent.tools_exec import execute_shell_command
+from ..agent.tools_fs import list_dir, read_file, write_file, edit_file
+from ..agent.tools_web import fetch_web_page
+from ..agent.tools_cron import schedule_reminder, list_reminders, cancel_reminder, start_scheduler, get_scheduler_status
+
 # List of tools to bind to the agent
-AGENT_TOOLS = [send_p2p_message, get_my_status, read_community_rules, update_system_parameter, propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, read_skill_guide]
+AGENT_TOOLS = [
+    send_p2p_message, get_my_status, read_community_rules, update_system_parameter, 
+    propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, 
+    pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, 
+    read_skill_guide, execute_shell_command,
+    list_dir, read_file, write_file, edit_file,
+    fetch_web_page,
+    schedule_reminder, list_reminders, cancel_reminder,
+    start_scheduler, get_scheduler_status
+]

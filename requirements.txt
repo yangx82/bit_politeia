@@ -1,4 +1,13 @@
-# P2P 社区客户端依赖
+# P2P Community Dependencies
 libp2p>=0.2.0
 multiaddr>=0.0.9
 trio>=0.22.0
+
+# Agent Capabilities
+langchain>=0.1.0
+langchain-openai>=0.0.5
+readability-lxml>=0.8.1
+httpx>=0.27.0
+APScheduler>=3.10.0
+upnpy>=1.2.0
+python-dotenv>=1.0.0
