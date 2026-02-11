@@ -6,15 +6,28 @@ trio>=0.22.0
 # Backend / API
 fastapi
 uvicorn
-httpx
+httpx>=0.27.0
 pydantic
 
 # Agent / LLM
-langchain
-langchain-openai
+langchain>=0.1.0
+langchain-openai>=0.0.5
 langchain-core
 
 # Scheduling & Utils
-apscheduler
-python-dotenv
+apscheduler>=3.10.0
+python-dotenv>=1.0.0
 pytest
+
+# New Features (Message Bus & File Processing)
+pypdf
+python-telegram-bot
+lark-oapi
+cryptography
+PyYAML
+
+# NAT Traversal
+upnpy>=1.1.0
+
+# Web Tools
+readability-lxml>=0.8.1

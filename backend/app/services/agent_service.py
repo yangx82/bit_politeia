@@ -2,11 +2,14 @@ import asyncio
 import uuid
 import logging
 from datetime import datetime
-from ..models.schemas import Message, AgentStatus
+from ..models.schemas import Message, AgentStatus, P2PMessage
 from .crypto_service import crypto_service
 from .transaction_manager import transaction_manager
 from .p2p_service import p2p_service
 from .group_service import group_service
+from .group_service import group_service
+from ..bus.queue import message_bus
+from ..bus.events import InboundMessage, OutboundMessage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Placeholder for LangChain
@@ -19,6 +22,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
 from ..agent.prompts import AGENT_SYSTEM_PROMPT
 from ..agent.tools import AGENT_TOOLS
+from ..agent.skill_manager import skill_manager
+from ..agent.context import ContextBuilder
 from ..p2p_community.governance import GovernanceManager, Vote
 import json
 
@@ -26,18 +31,20 @@ from ..p2p_community.economy import Ledger, Transaction
 from ..p2p_community.reputation import ReputationManager, Evaluation
 from ..p2p_community.blockchain import ArchiveManager
 from .resident_link import ResidentMemory, ResidentReporter
+from .memory_store import memory_store
 from .knowledge_base import knowledge_base
 
 class AgentService:
     def __init__(self):
         self.history: list[Message] = []
         self.status = AgentStatus(is_online=True, reputation=10, balance=100.0)
+        self.status = AgentStatus(is_online=True, reputation=10, balance=100.0)
+        self.message_bus = message_bus
         self.scheduler = AsyncIOScheduler()
         self.base_url = None
         self.api_key = None
         self.llm = None
         self.tools_map = {t.name: t for t in AGENT_TOOLS}
-        self.governance_manager = None 
         self.governance_manager = None 
         self.reputation_manager = None
         self.archive_manager = None
@@ -45,16 +52,19 @@ class AgentService:
         self.resident_memory = ResidentMemory() 
         self.reporter = None # initialized after config
         self.research_field = "AI Governance"
+        self.context_builder = ContextBuilder()
         
         # Hydrate History from Disk
         self._hydrate_history()
+        self.verbose_llm = False # Control flag for console output
         
-        # Start Scheduler
-        self.scheduler.add_job(self.trigger_scheduled_task, 'interval', minutes=5) # Reduced from 60
-        self.scheduler.add_job(self.trigger_adhoc_task, 'interval', hours=24) 
-        self.scheduler.add_job(self.process_network_inbox, 'interval', seconds=5) 
+        # Start Scheduler with robustness
+        self.scheduler.add_job(self.trigger_scheduled_task, 'interval', hours=12, misfire_grace_time=60) 
+        self.scheduler.add_job(self.trigger_adhoc_task, 'interval', hours=12, misfire_grace_time=60, jitter=10) 
+        self.scheduler.add_job(self.process_network_inbox, 'interval', seconds=5, misfire_grace_time=2) 
+        self.scheduler.add_job(self.sync_network, 'interval', seconds=30) 
 
-    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance"):
+    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False):
         try:
              self.scheduler.start()
         except Exception:
@@ -64,11 +74,42 @@ class AgentService:
         self.api_key = api_key
         self.model = model
         self.research_field = research_field
-        logger.info(f"Agent Configured with Base URL: {base_url}, Model: {model}, Field: {research_field}")
+        self.verbose_llm = verbose_llm
+        self.verbose_llm = verbose_llm
+        logger.info(f"Agent Configured with Base URL: {base_url}, Model: {model}, Field: {research_field}, Verbose: {verbose_llm}")
         
-        # Initialize P2P Service
+        # Persist configuration to .env
+        try:
+            from dotenv import set_key, find_dotenv
+            env_file = find_dotenv()
+            if not env_file:
+                # Create .env if not found
+                import os
+                env_file = os.path.join(os.getcwd(), ".env")
+                open(env_file, 'a').close()
+            
+            set_key(env_file, "AGENT_BASE_URL", base_url)
+            set_key(env_file, "AGENT_API_KEY", api_key)
+            set_key(env_file, "AGENT_MODEL", model)
+            set_key(env_file, "AGENT_RESEARCH_FIELD", research_field)
+            if bootstrap_url:
+                set_key(env_file, "AGENT_BOOTSTRAP_URL", bootstrap_url)
+            logger.info(f"Configuration saved to {env_file}")
+        except Exception as e:
+            logger.error(f"Failed to save configuration to .env: {e}")
+        
+        # Apply custom bootstrap URL if provided
+        if bootstrap_url:
+            from ..p2p_community.bootstrap_client import bootstrap_client
+            bootstrap_client.set_server_url(bootstrap_url)
+        
+        # Initialize P2P Service (using base_url as the communication endpoint)
         node_id = crypto_service.get_public_key_string()
-        await p2p_service.initialize(node_id)
+        await p2p_service.initialize(node_id, self.base_url)
+        
+        # Start Message Bus and Listener
+        await self.message_bus.start()
+        asyncio.create_task(self.listen_to_bus())
         
         self.governance_manager = GovernanceManager(node_id)
         self.reputation_manager = ReputationManager(node_id)
@@ -81,10 +122,13 @@ class AgentService:
         if self.archive_manager:
             knowledge_base.ingest_archives(self.archive_manager.chain.get_chain_dict())
         
+        # Use the actual node_id from p2p_service for consistency
+        real_node_id = p2p_service.local_node.node_id if p2p_service.local_node else node_id
+        
         # Initialize Ledger Balance (Mocking initial funding)
         # Only credit if balance is 0 (prevents double-credit on re-config)
-        if self.ledger.get_balance(node_id) == 0:
-            self.ledger.credit(node_id, 1000.0)
+        if self.ledger.get_balance(real_node_id) == 0:
+            self.ledger.credit(real_node_id, 1000.0)
         
         # Initialize LLM with Tools
         try:
@@ -98,8 +142,22 @@ class AgentService:
                 model=model, 
                 temperature=0.7
             )
-            self.llm = raw_llm.bind_tools(AGENT_TOOLS)
-            logger.info("Agent LLM Initialized Successfully")
+            # Load custom skills
+            skill_manager.load_skills()
+            skill_tools = skill_manager.get_skill_tools()
+            
+            # Combine standard tools with skill tools
+            all_tools = AGENT_TOOLS + skill_tools
+            
+            # Update system prompt with skill index (Progressive Disclosure)
+            skill_index_prompt = skill_manager.get_skill_index()
+            # Note: We need to store this modified prompt to use it in _think_and_act
+            self.current_system_prompt = AGENT_SYSTEM_PROMPT + "\n" + skill_index_prompt
+            
+            self.llm = raw_llm.bind_tools(all_tools)
+            self.tools_map = {t.name: t for t in all_tools}
+            
+            logger.info(f"Agent LLM Initialized Successfully. Tools: {len(all_tools)} (Standard: {len(AGENT_TOOLS)}, Skills: {len(skill_tools)})")
             
         except Exception as e:
             logger.error(f"Failed to initialize Agent LLM: {e}")
@@ -107,6 +165,25 @@ class AgentService:
     # ... (Rest of existing methods _think_and_act, process_user_instruction etc. remain unchanged) ...
     # I will replace the end of the file to append new methods
     
+    def load_config_from_env(self):
+        """Load configuration from environment variables."""
+        import os
+        base_url = os.getenv("AGENT_BASE_URL")
+        api_key = os.getenv("AGENT_API_KEY")
+        model = os.getenv("AGENT_MODEL", "gpt-4o")
+        research_field = os.getenv("AGENT_RESEARCH_FIELD", "AI Governance")
+        bootstrap_url = os.getenv("AGENT_BOOTSTRAP_URL")
+        
+        if base_url and api_key:
+            return {
+                "base_url": base_url,
+                "api_key": api_key,
+                "model": model,
+                "research_field": research_field,
+                "bootstrap_url": bootstrap_url
+            }
+        return None
+
     # Financial Methods
     async def transfer_funds(self, payee_id: str, amount: float, details: str) -> str:
         if not self.ledger:
@@ -122,68 +199,165 @@ class AgentService:
 
     async def get_balance(self) -> float:
         if self.ledger and p2p_service.local_node:
-             return self.ledger.get_balance(p2p_service.local_node.node_id)
+             node_id = p2p_service.local_node.node_id
+             balance = self.ledger.get_balance(node_id)
+             logger.info(f"Retrieving Balance for UUID {node_id[:8]}: {balance}")
+             return balance
         
-        if not self.ledger or not self.governance_manager:
-            return 0.0
-        return self.ledger.get_balance(self.governance_manager.node_id)
+        if self.ledger and self.governance_manager:
+            node_id = self.governance_manager.node_id
+            balance = self.ledger.get_balance(node_id)
+            logger.info(f"Retrieving Balance for PubKey {node_id[:8]}: {balance} (Fallback)")
+            return balance
+            
+        return 0.0
 
 
     async def _think_and_act(self, context: str, source: str) -> str:
-        """Core Agent Logic: Perceive -> Think -> Act (Manual Loop)"""
+        """Core Agent Logic: Perceive -> Think -> Act (ReAct Loop)"""
         if not self.llm:
             return f"Agent not configured. Received from {source}: {context[:20]}..."
             
         try:
-            # 1. Prepare Messages
+            # 1. Prepare Messages using ContextBuilder
             # Retrieve RAG Context
             rag_context = knowledge_base.search_web_and_context(context)
             
             # Retrieve P2P Network Context
             my_id = p2p_service.local_node.node_id if p2p_service.local_node else "unknown"
             my_groups = list(p2p_service.local_node.group_ids) if p2p_service.local_node else []
+            network_identity = f"- Node ID: {my_id}\n- My Groups: {my_groups}\n- My Monitoring Research Focus: {self.research_field}"
             
-            messages = [
-                SystemMessage(content=AGENT_SYSTEM_PROMPT),
-                SystemMessage(content=f"Your Network Identity:\n- Node ID: {my_id}\n- My Groups: {my_groups}\n- My Monitoring Research Focus: {self.research_field}"),
-                SystemMessage(content=f"Relevant Knowledge Context:\n{rag_context}"),
-                HumanMessage(content=f"Message from {source}: {context}")
-            ]
+            # Build initial messages
             
-            # 2. Invoke LLM
-            response = await self.llm.ainvoke(messages)
+            # 1.1 Convert recent history (last 10 messages) to LangChain format
             
-            # 3. Handle Tool Calls (Simple single-turn loop for now)
-            if response.tool_calls:
-                messages.append(response) # Add the AIMessage with tool_calls
+            # Determine effective history (exclude current message if it's already in history)
+            # We use a while loop to remove ALL immediate repetitions of the current query from the tail of history
+            # This solves the issue where the user asks "What did I ask?" multiple times and the agent quotes the previous "What did I ask?".
+            effective_history = self.history[:]
+            while effective_history and effective_history[-1].content == context:
+                effective_history.pop()
+            
+            recent_history = effective_history[-10:] if effective_history else []
+            lc_history = []
+            for msg in recent_history:
+                if msg.sender == "agent":
+                    lc_history.append(AIMessage(content=msg.content))
+                else:
+                    lc_history.append(HumanMessage(content=f"[{msg.sender}] {msg.content}"))
+
+            messages = self.context_builder.build_messages(
+                history=lc_history, 
+                current_message=context,
+                rag_context=rag_context,
+                network_identity=network_identity,
+                source=source
+            )
+            
+            # 2. ReAct Loop
+            max_iterations = 50
+            iteration = 0
+            final_content = None
+            
+            while iteration < max_iterations:
+                iteration += 1
                 
-                for tool_call in response.tool_calls:
-                    tool_name = tool_call["name"]
-                    args = tool_call["args"]
-                    tool_call_id = tool_call["id"]
+                # Invoke LLM
+                response = await self.llm.ainvoke(messages)
+                
+                if self.verbose_llm:
+                    print(f"\n[AGENTS] Iteration {iteration} Response:\n{response.content}\n" + "-"*50)
+                
+                # Check for Tool Calls
+                if response.tool_calls:
+                    messages.append(response) # Add AIMessage with tool_calls
                     
-                    if tool_name in self.tools_map:
-                        logger.info(f"Agent Invoking Tool: {tool_name} with {args}")
-                        tool_func = self.tools_map[tool_name]
-                        # Tools are async functions wrapped by @tool, invocation might vary
-                        # LangChain tools usually callable. ainvoke for async?
-                        try:
-                            # Direct invocation of proper tool
-                            tool_output = await tool_func.ainvoke(args)
-                        except Exception as te:
-                            tool_output = f"Error: {te}"
-                            
-                        messages.append(ToolMessage(tool_call_id=tool_call_id, content=str(tool_output), name=tool_name))
-                
-                # 4. Final Response after tools
-                final_response = await self.llm.ainvoke(messages)
-                return final_response.content
+                    # Execute Tools
+                    for tool_call in response.tool_calls:
+                        tool_name = tool_call["name"]
+                        args = tool_call["args"]
+                        tool_call_id = tool_call["id"]
+                        
+                        if tool_name in self.tools_map:
+                            logger.info(f"Agent Invoking Tool: {tool_name} with {args}")
+                            tool_func = self.tools_map[tool_name]
+                            try:
+                                tool_output = await tool_func.ainvoke(args)
+                            except Exception as te:
+                                tool_output = f"Error: {te}"
+                                
+                            messages.append(ToolMessage(tool_call_id=tool_call_id, content=str(tool_output), name=tool_name))
+                        else:
+                            messages.append(ToolMessage(tool_call_id=tool_call_id, content=f"Error: Tool {tool_name} not found", name=tool_name))
+                    
+                    # Continue loop to let LLM process tool outputs
+                    continue
+                else:
+                    # No tool calls, this is the final response
+                    final_content = response.content
+                    break
             
-            return response.content
+            # Fallback if loop limitation reached
+            if final_content is None:
+                final_content = "I reached my thought limit effectively. " + (response.content if response else "")
+                
+            return final_content
             
         except Exception as e:
             logger.error(f"Agent Logic Error: {e}")
             return f"Error processing message: {e}"
+
+    async def listen_to_bus(self):
+        """Background task to consume messages from the bus."""
+        logger.info("Agent listening to Message Bus...")
+        while True:
+            try:
+                 msg: InboundMessage = await self.message_bus.consume_inbound()
+                 await self.process_bus_message(msg)
+            except Exception as e:
+                 logger.error(f"Error in bus listener: {e}")
+                 await asyncio.sleep(1)
+
+    async def process_bus_message(self, msg: InboundMessage):
+        """Process an inbound message from a channel."""
+        # 1. Log to history (Frontend Sync)
+        # Format sender as "[Channel] UserID" so frontend sees it clearly
+        formatted_sender = f"[{msg.channel}] {msg.sender_id}"
+        
+        user_msg_obj = Message(
+            id=str(uuid.uuid4()),
+            content=msg.content,
+            sender=formatted_sender,
+            timestamp=datetime.now()
+        )
+        self.history.append(user_msg_obj)
+        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat")
+
+        # 2. Think and Act
+        response_text = await self._think_and_act(
+            msg.content, 
+            source=f"{msg.channel} user {msg.sender_id}"
+        )
+
+        # 3. Reply via Bus
+        out_msg = OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=response_text,
+            reply_to=msg.metadata.get("message_id")
+        )
+        await self.message_bus.publish_outbound(out_msg)
+
+        # 4. Log Reply to history
+        agent_msg_obj = Message(
+             id=str(uuid.uuid4()),
+             content=response_text,
+             sender="agent",
+             timestamp=datetime.now()
+        )
+        self.history.append(agent_msg_obj)
+        self.resident_memory.log_interaction("agent", response_text, msg_type="chat")
 
     # 1. User Contact
     async def process_user_instruction(self, content: str) -> Message:
@@ -194,7 +368,7 @@ class AgentService:
             timestamp=datetime.now()
         )
         self.history.append(user_msg)
-        self.resident_memory.log_interaction("resident", content) # Log to private memory
+        self.resident_memory.log_interaction("resident", content, msg_type="chat") # Log to private memory
         
         # Agent response
         response_text = await self._think_and_act(content, "User (My Resident)")
@@ -209,7 +383,7 @@ class AgentService:
             timestamp=datetime.now()
         )
         self.history.append(agent_msg)
-        self.resident_memory.log_interaction("agent", response_text) # Log to private memory
+        self.resident_memory.log_interaction("agent", response_text, msg_type="chat") # Log to private memory
         return agent_msg
 
     # 2. Community Contact (P2P Listener)
@@ -277,12 +451,13 @@ class AgentService:
             return
             
         node_id = p2p_service.local_node.node_id
-        reward_amount = 50.0
+        reward_amount = 0.1#50.0
         details = "Periodic Participation Reward (UBI)"
         
         # Credit the balance
         self.ledger.credit(node_id, reward_amount)
-        logger.info(f"Node received periodic income: {reward_amount} STATER")
+        new_bal = self.ledger.get_balance(node_id)
+        logger.info(f"Node {node_id[:8]} received periodic income: {reward_amount}. New Balance: {new_bal}")
         
         # Log to private memory for resident visibility
         self.resident_memory.log_interaction(
@@ -307,6 +482,9 @@ class AgentService:
         if self.ledger and p2p_service.local_node:
             node_id = p2p_service.local_node.node_id
             self.status.balance = self.ledger.get_balance(node_id)
+            logger.info(f"Status Sync: UUID {node_id[:8]} Balance {self.status.balance}")
+        else:
+            logger.warning("Status Sync Failed: P2P local_node not initialized")
         return self.status
 
     def _hydrate_history(self):
@@ -333,6 +511,96 @@ class AgentService:
                 timestamp=datetime.fromisoformat(entry.get('timestamp'))
             ))
         return messages
+
+    async def sync_network(self):
+        """Periodically refresh network topology."""
+        if p2p_service._initialized:
+            await p2p_service.network_manager.sync_topology()
+
+    async def get_peers(self) -> list[dict]:
+        """Get list of known peers from network manager."""
+        if not p2p_service._initialized:
+            return []
+        
+        peers = []
+        # Get all nodes from network manager
+        for node_id, node in p2p_service.network_manager.nodes.items():
+            # Skip self
+            if node_id == p2p_service.local_node.node_id:
+                continue
+                
+            peers.append({
+                "node_id": node_id,
+                "public_key": node.public_key,
+                "endpoint": node.endpoint,
+                "status": "online" if node.endpoint else "unknown", # Simple status check
+                "last_seen": datetime.now().isoformat() # Placeholder for real last_seen
+            })
+        return peers
+
+    async def send_p2p_message(self, target_id: str, content: str) -> dict:
+        """Send a P2P message to a specific peer."""
+        if not p2p_service._initialized:
+             return {"success": False, "error": "P2P not initialized"}
+             
+        # Construct message payload
+        msg_payload = {
+            "text": content,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Use P2P service to send
+        from ..p2p_community.message_protocol import MessageType
+        # Note: P2PService.send_message might need update if it doesn't handle direct routing fully yet,
+        # but NetworkManager.route_message does.
+        # Let's use p2p_service.send_message wrapper if available, or call network_manager directly.
+        # P2PService.send_message is cleaner.
+        
+        try:
+             await p2p_service.send_message(
+                 target_id=target_id,
+                 content=msg_payload,
+                 msg_type=MessageType.DIRECT.value
+             )
+             
+             # Log to history as sent message
+             self.history.append(Message(
+                id=str(uuid.uuid4()),
+                content=f"Sent P2P: {content}",
+                sender="me",
+                timestamp=datetime.now()
+             ))
+             
+             return {"success": True}
+        except Exception as e:
+            logger.error(f"Failed to send P2P message: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def get_archive_chain(self) -> list[dict]:
+        """Get local blockchain archive."""
+        if not self.archive_manager:
+            return []
+        
+        # Format chain for frontend
+        chain_data = []
+        for block in self.archive_manager.chain.chain:
+            # We convert block to dict. ArchiveChain.Block is a dataclass so we can use asdict or manual
+            from dataclasses import asdict
+            chain_data.append(asdict(block))
+            
+        return chain_data
+
+    async def receive_p2p_message(self, message: P2PMessage) -> dict:
+        """Handle incoming P2P message from other nodes."""
+        if not p2p_service._initialized:
+            return {"success": False, "error": "P2P not initialized"}
+        
+        from ..p2p_community.message_protocol import SignedMessage
+        signed_msg = SignedMessage.from_dict(message.dict())
+        
+        # Dispatch to network manager for internal routing/inbox delivery
+        await p2p_service.network_manager.route_message(signed_msg)
+        return {"success": True}
 
     # Governance Methods accessed by Tools
     async def start_election(self, group_id: str, candidates: list[str]) -> str:

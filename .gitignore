@@ -7,20 +7,33 @@
 !/frontend_web/
 !/.gitignore
 !/README.md
+!/tests/
+!/.antigravity/
+!/docs/
+!sync_all_robust.ps1
 
-# --- Protections inside allowed directories ---
+# --- Protections and Exclusions ---
+
+# Local runtime history and test outputs
+*.txt
+!README.md
+!requirements.txt
+!**/requirements.txt
+*.log
+test_output*
+.pytest_cache/
 
 # Never allow keys or identity files anywhere
 **/keys/
 **/*.pem
 **/*.key
 **/*.pub
+**/*.crt
 
 # Ignore local database and memory files
 **/*.sqlite
 **/*.sqlite-journal
 resident_memory.json
-simulation_log.txt
 agent_config.json
 
 # Ignore temporary and build artifacts
@@ -35,12 +48,16 @@ agent_config.json
 **/.vs/
 **/.idea/
 **/.vscode/
+.tmp_extraction*/
 
 # Environment files
 .env
 **/.env.*
 venv/
 .venv/
+
+# Workspace files
+*.code-workspace
 
 # System files
 .DS_Store

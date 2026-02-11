@@ -7,6 +7,7 @@ from datetime import datetime
 
 # Import models from p2p_community (adjust path as needed)
 from ..p2p_community.bootstrap_client import GroupInfo, PeerAddress, NodeRegistration
+from ..p2p_community.reputation import ReputationManager
 from .community_config import community_config, RULES_FILE_PATH
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,8 @@ class BootstrapService:
         self._groups: Dict[str, GroupInfo] = {}
         self._peers: Dict[str, PeerAddress] = {}  # node_id -> PeerAddress
         self._group_members: Dict[str, Set[str]] = {}  # group_id -> set of node_ids
+        self._pending_joins: Dict[str, List[NodeRegistration]] = {} # group_id -> list of registrations
+        self._reputation = ReputationManager("bootstrap")
         self._last_update = datetime.now()
         
         # Load Config
@@ -38,9 +41,12 @@ class BootstrapService:
             level=1,
             member_count=0,
             max_capacity=self.group_capacity,
-            parent_id=None
+            parent_id=None,
+            core_node_ids=[],
+            has_space=True
         )
         self._group_members[first_group_id] = set()
+        self._pending_joins[first_group_id] = []
         logger.info(f"Bootstrap: Initialized with single Level 1 group: {first_group_id}")
 
     def get_topology_info(self) -> Dict:
@@ -85,6 +91,9 @@ class BootstrapService:
         # For new nodes, Level 1 is always the entry point.
         return joinable
 
+    def get_pending_joins(self, group_id: str) -> List[NodeRegistration]:
+        return self._pending_joins.get(group_id, [])
+
     def _create_child_group(self, parent_id: str) -> Optional[GroupInfo]:
         if parent_id not in self._groups: return None
         parent = self._groups[parent_id]
@@ -95,19 +104,22 @@ class BootstrapService:
             
         new_id = str(uuid.uuid4())
         new_group = GroupInfo(
-            group_id=new_id,
-            level=parent.level - 1,
-            member_count=0,
-            max_capacity=self.group_capacity,
-            parent_id=parent_id
+            new_id,
+            parent.level - 1,
+            0,
+            self.group_capacity,
+            parent_id,
+            has_space=True,
+            core_node_ids=[]
         )
         self._groups[new_id] = new_group
         self._group_members[new_id] = set()
+        self._pending_joins[new_id] = []
         self._last_update = datetime.now()
         return new_group
 
     def register_node(self, registration: NodeRegistration) -> bool:
-        # Update/Create Peer
+        # 1. Update/Create Peer representation (metadata only)
         self._peers[registration.node_id] = PeerAddress(
             node_id=registration.node_id,
             public_key=registration.public_key,
@@ -124,67 +136,208 @@ class BootstrapService:
              if joinable:
                   target_group_id = joinable[0].group_id
              else:
-                  # Fallback: if somehow no L1 groups exist (shouldn't happen with split logic)
-                  # or if all L1 are full but haven't split?
+                  # Fallback
                   l1_groups = [g for g in self._groups.values() if g.level == 1 and g.has_space]
                   if l1_groups:
                        target_group_id = l1_groups[0].group_id
         
-        if target_group_id:
-            group = self._groups[target_group_id]
-            self._group_members[target_group_id].add(registration.node_id)
-            group.member_count = len(self._group_members[target_group_id])
+        if not target_group_id:
+            return False
+
+        group = self._groups[target_group_id]
+        
+        # Apply Rules
+        # Rule 1 & 2: Group empty or < 3 members -> Direct join
+        if group.member_count < 3:
+            return self._perform_actual_join(target_group_id, registration)
+        
+        # Rule 3: Member count >= 3 -> Approval required
+        # Check if already pending
+        if target_group_id not in self._pending_joins:
+            self._pending_joins[target_group_id] = []
             
-            # Update space flag
-            group.has_space = group.member_count < self.group_capacity
+        is_already_pending = any(r.node_id == registration.node_id for r in self._pending_joins[target_group_id])
+        if not is_already_pending:
+            self._pending_joins[target_group_id].append(registration)
+            logger.info(f"Bootstrap: Node {registration.node_id} request to join Group {target_group_id} is PENDING approval.")
+        
+        # Return True because node is registered in _peers (visible in topology)
+        # even though group membership is pending
+        return True
+
+    def get_election_candidates(self, group_id: str) -> List[str]:
+        """
+        Identify candidates for the next core node election.
+        Rules:
+        1. Exclude existing formal core nodes.
+        2. Pick top 2 nodes by reputation overall score.
+        """
+        if group_id not in self._groups:
+            return []
             
-            # Check for Split Trigger
-            split_threshold = community_config.rules.get("organization", {}).get("split_threshold", 26)
-            if group.member_count >= split_threshold:
-                logger.info(f"Bootstrap: Group {target_group_id} reached capacity {group.member_count}. Triggering split.")
-                self._split_group(target_group_id)
-                
-            self._last_update = datetime.now()
-            logger.info(f"Bootstrap: Node {registration.node_id} joined L{group.level} group {target_group_id}")
-            return True
+        group = self._groups[group_id]
+        members = self._group_members.get(group_id, set())
+        
+        # Filter out existing core nodes
+        potentials = [mid for mid in members if mid not in group.core_node_ids]
+        
+        if not potentials:
+            return []
             
+        # Rank by reputation
+        rankings = self._reputation.get_group_rankings(potentials)
+        
+        # Take top 2
+        candidates = [nid for nid, score in rankings[:2]]
+        
+        # Log auto-nomination
+        logger.info(f"Bootstrap: Auto-nominated candidates for Group {group_id}: {candidates}")
+        return candidates
+
+    def approve_node_join(self, group_id: str, node_id: str, approver_id: str) -> bool:
+        """Approve a pending join request."""
+        if group_id not in self._groups: return False
+        group = self._groups[group_id]
+        
+        # Permission Check: Approver must be a core node if group >= 3
+        if group.member_count >= 3 and approver_id not in group.core_node_ids:
+            logger.warning(f"Approver {approver_id} is not a core node of group {group_id}")
+            return False
+            
+        # Find registration in pending
+        pending = self._pending_joins.get(group_id, [])
+        registration = next((r for r in pending if r.node_id == node_id), None)
+        
+        if registration:
+            # Perform join
+            success = self._perform_actual_join(group_id, registration)
+            if success:
+                # Remove from pending
+                self._pending_joins[group_id] = [r for r in pending if r.node_id != node_id]
+                logger.info(f"Bootstrap: Node {node_id} join to Group {group_id} APPROVED by {approver_id}")
+                return True
         return False
+
+    def set_group_rankings(self, group_id: str, rankings: List[str], requester_id: str) -> bool:
+        """Set the ranking order for nodes in a group."""
+        if group_id not in self._groups: return False
+        group = self._groups[group_id]
+        
+        # Only existing core nodes can set rankings
+        if requester_id not in group.core_node_ids:
+            logger.warning(f"Unauthorized ranking update: {requester_id} is not a core node.")
+            return False
+            
+        # Validate that all ranked nodes are actually in the group
+        members = self._group_members.get(group_id, set())
+        if not all(nid in members for nid in rankings):
+            logger.warning(f"Invalid rankings: some nodes are not members of group {group_id}")
+            return False
+            
+        group.node_rankings = rankings
+        logger.info(f"Bootstrap: Rankings updated for Group {group_id} by {requester_id}")
+        return True
+
+    def update_group_core_nodes(self, group_id: str, core_node_ids: List[str], requester_id: str) -> bool:
+        """Update core nodes (e.g. after election)."""
+        if group_id not in self._groups: return False
+        group = self._groups[group_id]
+        
+        if requester_id not in group.core_node_ids:
+            logger.warning(f"Unauthorized core node update: {requester_id} is not a core node.")
+            return False
+            
+        group.core_node_ids = core_node_ids
+        logger.info(f"Bootstrap: Core nodes updated for Group {group_id}: {core_node_ids}")
+        return True
+
+    def _perform_actual_join(self, target_group_id: str, registration: NodeRegistration) -> bool:
+        group = self._groups[target_group_id]
+        self._group_members[target_group_id].add(registration.node_id)
+        group.member_count = len(self._group_members[target_group_id])
+        
+        # REVISED RULE 1: First 2 nodes are proxy core nodes
+        if group.member_count <= 2:
+            if registration.node_id not in group.core_node_ids:
+                group.core_node_ids.append(registration.node_id)
+                logger.info(f"Bootstrap: Node {registration.node_id} designated as Proxy Core Node for Group {target_group_id}")
+        
+        # REVISED RULE 2: Election Triggers
+        if group.member_count == 3:
+            logger.info(f"ELECTION TRIGGER: Group {target_group_id} reached 3 members. Triggering election for 1st formal core node.")
+        elif group.member_count == 11:
+            logger.info(f"ELECTION TRIGGER: Group {target_group_id} reached 11 members. Triggering election for 2nd formal core node.")
+        elif group.member_count == 19:
+            logger.info(f"ELECTION TRIGGER: Group {target_group_id} reached 19 members. Triggering election for 3rd formal core node.")
+        
+        # Initial ranking is just join order if not set
+        if registration.node_id not in group.node_rankings:
+            group.node_rankings.append(registration.node_id)
+        
+        # Update space flag
+        group.has_space = group.member_count < self.group_capacity
+        
+        # Check for Split Trigger
+        split_threshold = community_config.rules.get("organization", {}).get("split_threshold", 26)
+        if group.member_count >= split_threshold:
+            logger.info(f"Bootstrap: Group {target_group_id} reached capacity {group.member_count}. Triggering split.")
+            self._split_group(target_group_id)
+            
+        self._last_update = datetime.now()
+        logger.info(f"Bootstrap: Node {registration.node_id} joined L{group.level} group {target_group_id}")
+        return True
 
     def _split_group(self, group_id: str):
         """
-        Split a group into two halves. 
-        Then, ensure each half has a representative in a Level+1 group.
+        Split a group into two halves using odd/even ranking distribution.
         """
         if group_id not in self._groups: return
         
         old_group = self._groups[group_id]
-        members = list(self._group_members[group_id])
         
-        mid = len(members) // 2
-        remaining_members = members[:mid]
-        moving_members = members[mid:]
+        # REVISED RULE 4: Split by odd/even ranking
+        if old_group.node_rankings:
+            rankings = old_group.node_rankings
+            remaining_members = [rankings[i] for i in range(len(rankings)) if i % 2 == 0]
+            moving_members = [rankings[i] for i in range(len(rankings)) if i % 2 != 0]
+        else:
+            # Fallback to old mid-point logic if rankings missing
+            members = list(self._group_members[group_id])
+            mid = len(members) // 2
+            remaining_members = members[:mid]
+            moving_members = members[mid:]
         
         # 1. Create New Sibling Group
         new_id = str(uuid.uuid4())
         new_group = GroupInfo(
-            group_id=new_id,
-            level=old_group.level,
-            member_count=len(moving_members),
-            max_capacity=self.group_capacity,
-            parent_id=old_group.parent_id,
-            has_space=True
+            new_id,
+            old_group.level,
+            len(moving_members),
+            self.group_capacity,
+            old_group.parent_id,
+            has_space=True,
+            core_node_ids=[],
+            node_rankings=moving_members # Carry over rankings to new group
         )
         
         # 2. Update Old Group
         self._group_members[group_id] = set(remaining_members)
         old_group.member_count = len(remaining_members)
         old_group.has_space = True
+        old_group.node_rankings = remaining_members # Update rankings
+        
+        # Filter core nodes for both groups
+        old_cores = [cid for cid in old_group.core_node_ids if cid in remaining_members]
+        new_cores = [cid for cid in old_group.core_node_ids if cid in moving_members]
+        old_group.core_node_ids = old_cores
+        new_group.core_node_ids = new_cores
         
         # 3. Register New Group
         self._groups[new_id] = new_group
         self._group_members[new_id] = set(moving_members)
+        self._pending_joins[new_id] = []
         
-        logger.info(f"Bootstrap: L{old_group.level} Split: {group_id} -> {group_id} & {new_id}")
+        logger.info(f"Bootstrap: L{old_group.level} Split (Alternating): {group_id} -> {group_id} & {new_id}")
 
         # 4. Handle Representatives (Bottom-Up)
         rep_old = remaining_members[0]

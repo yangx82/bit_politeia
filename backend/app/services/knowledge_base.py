@@ -1,16 +1,18 @@
 import logging
 import json
-import httpx
-import xml.etree.ElementTree as ET
-import urllib.parse
 from typing import List, Dict, Any
 from datetime import datetime
+import httpx
+import xml.etree.ElementTree as ET
+import re
+import urllib.parse
 
 logger = logging.getLogger(__name__)
 
 class WebResearcher:
     """
-    Fetches real research papers from ArXiv and BioRxiv.
+    Simulates a web search tool.
+    In production, this would use Tavily, Bing, or Google Search API.
     """
     def search(self, query: str) -> List[Dict[str, str]]:
         # Handle user's request for space/AND support
@@ -68,9 +70,10 @@ class WebResearcher:
             logger.error(f"ArXiv search failed: {e}")
             print(f"ArXiv Error: {e}")
 
-        # 2. BioRxiv Search
+        # 2. BioRxiv Search (Metadata interval - expand to last 30 days)
         try:
             today = datetime.now().strftime("%Y-%m-%d")
+            # Using a fixed start date for 2025 or relative past
             biorxiv_url = f"https://api.biorxiv.org/details/biorxiv/2025-01-01/{today}/0"
             resp = httpx.get(biorxiv_url, timeout=12.0)
             print(f"BioRxiv Status: {resp.status_code}")
@@ -80,6 +83,7 @@ class WebResearcher:
                     q_lower = query.lower()
                     count = 0
                     for item in data["collection"]:
+                        # Match any of the words if it's a multiple topic field
                         if q_lower in item["title"].lower() or q_lower in item["abstract"].lower():
                             results.append({
                                 "title": item["title"],
@@ -99,13 +103,15 @@ class KnowledgeBase:
     """
     Local Retrieval System (RAG).
     Indexes local history (Memory) and public archives (Blockchain).
+    Uses a simple keyword/overlap retrieval for simulation (replacing heavy VectorStore).
     """
     def __init__(self):
         self.documents: List[Dict] = []
         self.web_researcher = WebResearcher()
 
     def ingest_history(self, history: List[Dict]):
-        self.documents = []
+        """Load resident chat history."""
+        self.documents = [] # Reset or append? Let's rebuild for simulation simplicity
         for msg in history:
             text = msg.get("content", "")
             if text:
@@ -118,9 +124,13 @@ class KnowledgeBase:
         logger.info(f"Ingested {len(history)} history items into Knowledge Base")
 
     def ingest_archives(self, chain_data: List[Dict]):
+        """Load blockchain blocks."""
+        # chain_data is list of Block dicts
         count = 0
         for block in chain_data:
+            # Index the summary data
             data = block.get("data", {})
+            # Flatten data to string
             content = f"Block {block.get('index')} Summary: {json.dumps(data)}"
             self.documents.append({
                 "content": content,
@@ -132,39 +142,44 @@ class KnowledgeBase:
         logger.info(f"Ingested {count} blocks into Knowledge Base")
 
     def retrieve_context(self, query: str, limit: int = 3) -> str:
+        """
+        Simple retrieval based on keyword overlap.
+        In production, replaces with Vector Similarity Search.
+        """
         query_terms = set(query.lower().split())
         scored_docs = []
+        
         for doc in self.documents:
             content = doc["content"].lower()
+            # Score = number of matching terms
             score = sum(1 for term in query_terms if term in content)
             if score > 0:
                 scored_docs.append((score, doc))
+        
+        # Sort by score desc, then timestamp desc
         scored_docs.sort(key=lambda x: (x[0], x[1].get("timestamp", "")), reverse=True)
+        
         top_docs = scored_docs[:limit]
+        
         context_parts = []
         for score, doc in top_docs:
             source = doc["source"]
             text = doc["content"]
             context_parts.append(f"[{source.upper()}] {text}")
+            
         return "\n\n".join(context_parts) if context_parts else "No relevant local context found."
 
     def search_web_and_context(self, query: str) -> str:
+        """Combined Local Context + Web Search"""
         local_context = self.retrieve_context(query)
-        web_results = self.web_researcher.search(query)
+        web_context = self.web_researcher.search(query)
         
-        web_text = ""
-        if web_results:
-            for res in web_results:
-                web_text += f"Title: {res['title']}\nAbstract: {res['abstract']}\nSource: {res['source']}\n\n"
-        else:
-            web_text = "No recent research found for this topic."
-            
         return f"""
 === Local Knowledge ===
 {local_context}
 
 === Web Research ===
-{web_text}
+{web_context}
 """
 
 knowledge_base = KnowledgeBase()

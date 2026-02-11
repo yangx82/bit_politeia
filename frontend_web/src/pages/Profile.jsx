@@ -31,12 +31,25 @@ const Profile = () => {
     const [pubKey, setPubKey] = useState('')
     const [agentConfig, setAgentConfig] = useState({
         apiUrl: '',
+        bootstrapUrl: '',
         llmBaseUrl: '',
         apiKey: '',
         model: '',
-        field: ''
+        field: '',
+        verboseLlm: false
     })
     const [updating, setUpdating] = useState(false)
+
+    const fetchStatus = async () => {
+        try {
+            const { default: api } = await import('../services/api')
+            const response = await api.get('/api/v1/status')
+            const statusData = response.data
+            setUser(prev => ({ ...prev, balance: statusData.balance }))
+        } catch (err) {
+            console.error('Failed to fetch balance:', err)
+        }
+    }
 
     useEffect(() => {
         const userData = Store.getUser()
@@ -44,11 +57,14 @@ const Profile = () => {
         setPubKey(CryptoService.getPublicKey() || 'Generating...')
         setAgentConfig({
             apiUrl: userData.apiUrl,
+            bootstrapUrl: userData.bootstrapUrl || 'http://localhost:8000',
             llmBaseUrl: userData.llmBaseUrl || 'https://api.openai.com/v1',
             apiKey: userData.apiKey || '',
             model: userData.model || 'gpt-4o',
-            field: userData.field || ''
+            field: userData.field || '',
+            verboseLlm: userData.verboseLlm || false
         })
+        fetchStatus()
     }, [])
 
     const handleUpdateConfig = async () => {
@@ -56,21 +72,29 @@ const Profile = () => {
         try {
             setApiUrl(agentConfig.apiUrl)
             const { default: api } = await import('../services/api')
-            await api.post('/api/v1/config', {
+            const response = await api.post('/api/v1/config', {
                 base_url: agentConfig.llmBaseUrl,
                 api_key: agentConfig.apiKey,
                 model: agentConfig.model,
-                research_field: agentConfig.field
+                research_field: agentConfig.field,
+                bootstrap_url: agentConfig.bootstrapUrl,
+                verbose_llm: agentConfig.verboseLlm
             })
+
+            const updatedStatus = response.data
+
             // Update local storage
             localStorage.setItem('bp_api_url', agentConfig.apiUrl)
             localStorage.setItem('bp_llm_base_url', agentConfig.llmBaseUrl)
             localStorage.setItem('bp_api_key', agentConfig.apiKey)
             localStorage.setItem('bp_model', agentConfig.model)
             localStorage.setItem('bp_field', agentConfig.field)
+            localStorage.setItem('bp_bootstrap_url', agentConfig.bootstrapUrl)
+            localStorage.setItem('bp_verbose_llm', agentConfig.verboseLlm)
 
-            // Refresh local user state
-            setUser(Store.getUser())
+            // Refresh local user state with new balance
+            const localUser = Store.getUser()
+            setUser({ ...localUser, balance: updatedStatus.balance })
             alert('Agent Configuration Updated!')
         } catch (err) {
             console.error(err)
@@ -113,10 +137,12 @@ const Profile = () => {
                 <div className="md:col-span-2">
                     <Card title="Balance" icon={CreditCard}>
                         <div className="flex items-baseline gap-2">
-                            <span className="text-3xl font-bold text-slate-800">1,250.00</span>
+                            <span className="text-3xl font-bold text-slate-800">
+                                {user?.balance?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+                            </span>
                             <span className="text-sm font-medium text-slate-500">STATER</span>
                         </div>
-                        <p className="text-xs text-green-600 mt-2 font-medium">+50 STATER (Reward) • Today</p>
+                        <p className="text-xs text-green-600 mt-2 font-medium">Synced with Agent Node</p>
                     </Card>
                 </div>
 
@@ -126,6 +152,11 @@ const Profile = () => {
                             label="Agent Node URL"
                             value={agentConfig.apiUrl}
                             onChange={e => setAgentConfig({ ...agentConfig, apiUrl: e.target.value })}
+                        />
+                        <Input
+                            label="Bootstrap Server URL"
+                            value={agentConfig.bootstrapUrl}
+                            onChange={e => setAgentConfig({ ...agentConfig, bootstrapUrl: e.target.value })}
                         />
                         <Input
                             label="LLM Provider Base URL"
@@ -151,6 +182,18 @@ const Profile = () => {
                             value={agentConfig.field}
                             onChange={e => setAgentConfig({ ...agentConfig, field: e.target.value })}
                         />
+
+                        <div className="flex items-center mt-3 mb-2 p-2 bg-slate-50 rounded-lg border border-slate-200">
+                            <input
+                                type="checkbox"
+                                id="verboseLlm"
+                                checked={agentConfig.verboseLlm}
+                                onChange={e => setAgentConfig({ ...agentConfig, verboseLlm: e.target.checked })}
+                                className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                            />
+                            <label htmlFor="verboseLlm" className="ml-2 text-sm font-medium text-slate-700">Enable Verbose LLM Output (Backend Console)</label>
+                        </div>
+
                         <button
                             onClick={handleUpdateConfig}
                             disabled={updating}

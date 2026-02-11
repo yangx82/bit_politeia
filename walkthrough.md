@@ -1,0 +1,145 @@
+# Walkthrough - New Features & Fixes
+
+## 1. Message Bus & Multi-Channel Support (Telegram)
+We have implemented a Nanobot-inspired Message Bus to allow the Agent to communicate via external platforms.
+
+### Architecture
+- **Message Bus (`backend/app/bus/`)**: Decouples the Agent from specific communication channels.
+- **Telegram Channel (`backend/app/channels/telegram.py`)**: A new adapter that connects the Agent to a Telegram Bot.
+- **Frontend Sync**: Remote messages from Telegram are synchronized to the web UI history.
+
+### Setup Guide
+To enable Telegram integration:
+1.  **Get a Bot Token**: Create a new bot via [@BotFather](https://t.me/BotFather) on Telegram.
+2.  **Configure Environment**: Add the token to your `.env` file or environment variables:
+    ```bash
+    TELEGRAM_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+    ```
+3.  **Restart Backend**: The channel starts automatically if the token is present.
+
+### Verification
+Run the verification script:
+```powershell
+python verify_bus.py
+```
+
+## 2. Feishu (Lark) Integration
+Implemented WebSocket-based channel for Feishu.
+
+### Setup Guide
+1.  **Dependencies**: `pip install lark-oapi` (Installed).
+2.  **Configuration**: Set `FEISHU_APP_ID` and `FEISHU_APP_SECRET`.
+3.  **Verification**: Validated channel initialization via `verify_bus.py`.
+
+## 3. PDF Reader Access Fix
+Fixed an issue where the Agent refused to read local files.
+Fixed an issue where the Agent refused to read local files due to a system prompt hallucination.
+
+### Solution
+- Updated `AGENT_SYSTEM_PROMPT` to explicitly authorize local file access.
+- Restored `pdf-reader` skill files.
+
+### Verification
+- Ask the agent: *"Read file D:\path\to\file.pdf"*
+- It should now process the file without complaint.
+
+## 4. Memory System Refactoring
+Adopted Nanobot's memory architecture for better context management.
+
+### Key Changes
+- **Long-term Memory**: `backend/memory/MEMORY.md` stores synthesized facts.
+- **Topic-based Logs**: `backend/memory/chat.jsonl` stores all conversation history (Telegram, Feishu, Web) in a unified, topic-based format.
+- **Migration**: Existing `resident_memory.json` is automatically migrated to `chat.jsonl`.
+
+### Verification
+- Run `verify_memory.py` to confirm creation of memory files.
+
+### 4.1 Fix: Duplicate Message Handling
+- Addressed an issue where the agent would parrot the last user message ("What did I just ask?").
+- **Solution**: Implemented recursive removal of trailing duplicate messages in `AgentService._think_and_act` history slice.
+- **Result**: Agent now correctly looks past repeated meta-questions to find the actual conversational context.
+
+## 5. Agent ReAct Loop & ContextBuilder
+- **ContextBuilder**: Implemented `backend/app/agent/context.py` to centrally manage system prompts, memory injection, and skill definitions, adopting the Nanobot architecture.
+- **ReAct Loop**: Refactored `AgentService._think_and_act` to use a `while` loop (max 5 iterations). This allows the agent to:
+    - Execute a tool.
+    - Observe the output.
+    - Decide on the next action (or finish) based on that output.
+- **Verification**: Created and ran `verify_react.py`, confirming multi-turn reasoning capabilities.
+
+## 6. Python Code Execution Capability
+- **Tool**: Implemented `execute_shell_command` (ported from Nanobot's `ExecTool`).
+- **Capability**: Agent can now run shell commands, including `python script.py` or `python -c "..."`.
+- **Safety**: Includes basic guardrails against destructive commands (`rm -rf`, `format`, etc.).
+- **Verification**: Verified via `test_exec_tool.py`.
+
+### Troubleshooting PDF Capability
+If the agent fails to read a PDF, use the diagnostic script:
+```powershell
+python debug_agent_pdf.py
+```
+This confirms that:
+1. `pypdf` is installed.
+2. The `pdf-reader` skill is loaded.
+3. The PDF file is accessible.
+
+## 7. Nanobot Tools Ported
+We have ported key tools from Nanobot to enhance the agent's autonomy:
+- **FileSystem Tools** (`tools_fs.py`):
+    - `read_file`, `write_file`, `edit_file`, `list_dir`.
+    - Allows the agent to explore and modify the codebase directly.
+- **Web Tools** (`tools_web.py`):
+    - `fetch_web_page`: Fetches URL content and converts it to Markdown using `readability` for easy consumption by the LLM.
+- **Cron Tools** (`tools_cron.py`):
+    - `schedule_reminder`, `list_reminders`, `cancel_reminder`.
+    - `start_scheduler`, `get_scheduler_status`.
+    - Enables the agent to schedule future tasks and reminders.
+- **Verification**: Comprehensive verification script `verify_new_tools.py` confirms all new tools are functional.
+
+## 8. P2P NAT Traversal (Phase 2)
+Implemented BitTorrent-inspired NAT traversal using UPnP.
+
+### Changes
+1.  **Dependency**: Added `upnpy` for pure Python UPnP IGD interaction.
+2.  **Module**: Created `backend/app/p2p_community/nat_traversal.py` with `NATManager`.
+3.  **Integration**: `NetworkManager` now attempts to map public port 8000 on startup.
+
+### Verification
+- **Script**: `verify_upnp.py`
+- **Result**: `Failed: No UPnP Gateway found`.
+- **Diagnosis**: The current network environment (likely corporate NAT or mobile hotspot) does not broadcast UPnP. The code gracefully handles this by logging a warning and continuing in client-only mode.
+- **Action**: No code fix needed. To enable external access, ensure the router has UPnP enabled or manually forward port 8000.
+
+## 9. Configuration Persistence (Phase 3)
+Implemented auto-save and auto-load for Agent configuration parameters using `.env` file.
+
+### Changes
+1.  **Dependency**: Added `python-dotenv`.
+2.  **Auto-Save**: `AgentService.configure_agent` now writes `AGENT_BASE_URL`, `API_KEY` etc. to `.env`.
+3.  **Auto-Load**: `main.py` checks `.env` on startup and automatically initializes the Agent if config is found.
+
+### Verification
+- **Script**: `verify_config_persistence.py`
+- **Result**: `SUCCESS: Configuration persisted and loaded correctly.`
+- **Benefit**: You no longer need to re-configure the Agent after every restart.
+
+## 10. New Skill: planning-with-files
+Installed the Antigravity-optimized version of the Manus-inspired planning skill.
+
+### Version Details
+- **Source**: `D:\git\planning-with-files\.agent\skills\planning-with-files`
+- **Optimization**: Specifically tuned for Antigravity IDE (uses `references.md` plural, lighter `SKILL.md`).
+- **Location**: Installed at `backend/skills/planning-with-files`.
+
+### Capabilities
+- **Strategy**: Uses `task_plan.md`, `findings.md`, and `progress.md` for complex task management.
+- **Persistence**: Maintains context across long sessions by writing to disk.
+- **Reference**: See `backend/skills/planning-with-files/SKILL.md` for the full guide.
+
+## 11. Maintenance: Script Organization
+- **Action**: All test and verification scripts (`test_*.py`, `verify_*.py`, `debug_*.py`) have been moved to `tests/`.
+- **Backend Cleanup**: Moved `backend/test_*.py` and `backend/debug_*.py` to `tests/`.
+- **Refactoring**: Scripts now use robust relative paths and can be run from the project root or the `tests/` directory.
+
+### Usage
+Ask the Agent: *"Start a complex task using planning-with-files"* or simply *"Plan out this big project"*.

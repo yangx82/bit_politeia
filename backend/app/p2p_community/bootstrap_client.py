@@ -31,6 +31,8 @@ class GroupInfo:
     max_capacity: int
     parent_id: Optional[str] = None
     has_space: bool = False
+    core_node_ids: List[str] = field(default_factory=list)
+    node_rankings: List[str] = field(default_factory=list)  # Ordered list of IDs
 
     def to_dict(self) -> dict:
         return {
@@ -39,7 +41,9 @@ class GroupInfo:
             "member_count": self.member_count,
             "max_capacity": self.max_capacity,
             "parent_id": self.parent_id,
-            "has_space": self.has_space
+            "has_space": self.has_space,
+            "core_node_ids": self.core_node_ids,
+            "node_rankings": self.node_rankings
         }
 
 @dataclass
@@ -63,9 +67,17 @@ class BootstrapClient:
     """
     Client for interacting with the P2P Bootstrap Server (Cloud or Local LAN).
     """
-    def __init__(self, server_url: str = "http://localhost:8000"):
+    def __init__(self, server_url: str = "http://localhost:8000", verify: bool = True):
         self.server_url = server_url.rstrip("/")
-        self.client = httpx.AsyncClient(timeout=5.0)
+        # httpx handles verify=False to disable SSL cert checking
+        self.verify = verify
+        self.client = httpx.AsyncClient(timeout=15.0, verify=verify)  # Increased for LAN stability
+
+    def set_server_url(self, url: str):
+        """Dynamically update the bootstrap server URL."""
+        if url:
+            self.server_url = url.rstrip("/")
+            logger.info(f"BootstrapClient: Server URL updated to {self.server_url}")
 
     async def get_joinable_groups(self, preferred_level: int = 1) -> List[GroupInfo]:
         """Fetch topology and filter for joinable groups."""
@@ -86,7 +98,9 @@ class BootstrapClient:
                     member_count=g_dict["member_count"],
                     max_capacity=g_dict["max_capacity"],
                     parent_id=g_dict.get("parent_id"),
-                    has_space=g_dict.get("has_space", True)
+                    has_space=g_dict.get("has_space", True),
+                    core_node_ids=g_dict.get("core_node_ids", []),
+                    node_rankings=g_dict.get("node_rankings", [])
                 )
                 
                 if g_info.level == preferred_level and g_info.has_space:
@@ -105,6 +119,58 @@ class BootstrapClient:
         except Exception as e:
             logger.error(f"Bootstrap registration error: {e}")
             return False
+
+    async def get_pending_joins(self, group_id: str) -> List[dict]:
+        """Fetch pending join requests for a group."""
+        try:
+            resp = await self.client.get(f"{self.server_url}/groups/{group_id}/pending")
+            if resp.status_code == 200:
+                return resp.json().get("pending", [])
+            return []
+        except Exception as e:
+            logger.error(f"Error fetching pending joins: {e}")
+            return []
+
+    async def approve_join(self, group_id: str, node_id: str, approver_id: str) -> bool:
+        """Approve a pending join request."""
+        try:
+            payload = {"node_id": node_id, "approver_id": approver_id}
+            resp = await self.client.post(f"{self.server_url}/groups/{group_id}/approve", json=payload)
+            return resp.status_code == 200 and resp.json().get("success", False)
+        except Exception as e:
+            logger.error(f"Error approving join: {e}")
+            return False
+
+    async def set_group_rankings(self, group_id: str, rankings: List[str], requester_id: str) -> bool:
+        """Set the node rankings for a group (must be a core node)."""
+        try:
+            payload = {"rankings": rankings, "requester_id": requester_id}
+            resp = await self.client.post(f"{self.server_url}/groups/{group_id}/rankings", json=payload)
+            return resp.status_code == 200 and resp.json().get("success", False)
+        except Exception as e:
+            logger.error(f"Error setting group rankings: {e}")
+            return False
+
+    async def set_core_nodes(self, group_id: str, core_node_ids: List[str], requester_id: str) -> bool:
+        """Update core nodes for a group after election (must be a core node)."""
+        try:
+            payload = {"core_nodes": core_node_ids, "requester_id": requester_id}
+            resp = await self.client.post(f"{self.server_url}/groups/{group_id}/core-nodes", json=payload)
+            return resp.status_code == 200 and resp.json().get("success", False)
+        except Exception as e:
+            logger.error(f"Error setting core nodes: {e}")
+            return False
+
+    async def get_candidates(self, group_id: str) -> List[str]:
+        """Fetch candidate suggestions for a core node election based on reputation."""
+        try:
+            resp = await self.client.get(f"{self.server_url}/groups/{group_id}/candidates")
+            if resp.status_code == 200:
+                return resp.json().get("candidates", [])
+            return []
+        except Exception as e:
+            logger.error(f"Error fetching candidates: {e}")
+            return []
 
     async def get_network_topology(self) -> Dict:
         """Fetch full network topology dictionary from server."""

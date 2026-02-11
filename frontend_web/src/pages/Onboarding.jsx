@@ -18,9 +18,11 @@ const Onboarding = ({ onComplete }) => {
         email: '',
         field: '',
         agentUrl: 'http://localhost:8001',
+        bootstrapUrl: 'http://localhost:8000',
         llmBaseUrl: 'https://api.openai.com/v1',
         apiKey: '',
-        model: 'gpt-4o'
+        model: 'gpt-4o',
+        verboseLlm: false
     })
     const [loading, setLoading] = useState(false)
 
@@ -42,12 +44,14 @@ const Onboarding = ({ onComplete }) => {
                 base_url: formData.llmBaseUrl,
                 api_key: formData.apiKey,
                 model: formData.model,
-                research_field: formData.field
+                research_field: formData.field,
+                bootstrap_url: formData.bootstrapUrl,
+                verbose_llm: formData.verboseLlm
             })
 
             // 4. Save Preference Locally
             localStorage.setItem('bp_api_url', formData.agentUrl)
-            Store.saveUser(formData.email, formData.field, formData.apiKey, formData.model, formData.llmBaseUrl)
+            Store.saveUser(formData.email, formData.field, formData.apiKey, formData.model, formData.llmBaseUrl, formData.bootstrapUrl, formData.verboseLlm)
 
             onComplete()
         } catch (err) {
@@ -90,6 +94,12 @@ const Onboarding = ({ onComplete }) => {
                     />
 
                     <Input
+                        label="Bootstrap Server URL"
+                        value={formData.bootstrapUrl}
+                        onChange={e => setFormData({ ...formData, bootstrapUrl: e.target.value })}
+                    />
+
+                    <Input
                         label="LLM Provider Base URL (OpenAI compatible)"
                         placeholder="e.g. https://api.openai.com/v1"
                         value={formData.llmBaseUrl}
@@ -109,6 +119,17 @@ const Onboarding = ({ onComplete }) => {
                         value={formData.model}
                         onChange={e => setFormData({ ...formData, model: e.target.value })}
                     />
+
+                    <div className="flex items-center mb-6">
+                        <input
+                            type="checkbox"
+                            id="verboseLlm"
+                            checked={formData.verboseLlm}
+                            onChange={e => setFormData({ ...formData, verboseLlm: e.target.checked })}
+                            className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                        />
+                        <label htmlFor="verboseLlm" className="ml-2 text-sm font-medium text-slate-700">Enable Verbose LLM Output (Backend Console)</label>
+                    </div>
 
                     <button
                         type="submit"

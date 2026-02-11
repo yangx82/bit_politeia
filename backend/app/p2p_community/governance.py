@@ -243,6 +243,10 @@ class GovernanceManager:
             approvals = 0
             for v in votes:
                 if v.approval:
+                    # ALLOW WRITE-INS: Add to candidates list if not already there but voted for
+                    if v.candidate_id and v.candidate_id not in election.candidates:
+                        logger.info(f"Write-in candidate detected: {v.candidate_id}")
+                        election.candidates.append(v.candidate_id)
                     approvals += 1
             if approvals > election.target_positions:
                 logger.warning(f"Invalid ballot: Too many approvals")

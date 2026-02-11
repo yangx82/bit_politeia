@@ -4,8 +4,8 @@ import Layout from './components/Layout'
 import Onboarding from './pages/Onboarding'
 import Chat from './pages/Chat'
 import Profile from './pages/Profile'
-// import Contacts from './pages/Contacts'
-// import Archive from './pages/Archive'
+import Contacts from './pages/Contacts'
+import Archive from './pages/Archive'
 
 function App() {
     const [hasOnboarded, setHasOnboarded] = useState(false)
@@ -30,8 +30,8 @@ function App() {
                     <Route path="/" element={<Chat />} />
                     <Route path="/chat" element={<Chat />} />
                     <Route path="/profile" element={<Profile />} />
-                    <Route path="/contacts" element={<h2 className="p-4">Contacts (Coming Soon)</h2>} />
-                    <Route path="/archives" element={<h2 className="p-4">Archives (Coming Soon)</h2>} />
+                    <Route path="/contacts" element={<Contacts />} />
+                    <Route path="/archives" element={<Archive />} />
                 </Route>
             </Routes>
         </Router>

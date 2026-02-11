@@ -30,12 +30,15 @@ backend/
 The Bootstrap Server acts as the initial discovery point and rule distribution center.
 
 ```bash
-# Run from project root
-python -m backend.app.services.p2p_server
-# or
+# RECOMMENDED: Use the standalone launcher (from backend directory)
+cd backend
+python run_bootstrap.py
+
+# Alternative: Direct uvicorn command (from project root)
 uvicorn backend.app.services.p2p_server:app --host 0.0.0.0 --port 8000
 ```
 *   **Endpoints**:
+    *   `GET /`: Server status check.
     *   `GET /topology`: View network structure.
     *   `GET /rules`: Fetch community constitution.
     *   `POST /register`: Register a new node.
