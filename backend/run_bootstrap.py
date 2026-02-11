@@ -20,15 +20,32 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Starting Bit-Politeia Bootstrap Server")
     print("=" * 60)
-    print("Server will be available at:")
-    print("  - Local:   http://localhost:8000")
-    print("  - Network: http://0.0.0.0:8000")
-    print("=" * 60)
+    # Check for SSL keys
+    ssl_keyfile = os.path.join(backend_dir, "keys", "server.key")
+    ssl_certfile = os.path.join(backend_dir, "keys", "server.crt")
     
-    # Run the server
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        log_level="info"
-    )
+    use_ssl = os.path.exists(ssl_keyfile) and os.path.exists(ssl_certfile)
+    
+    if use_ssl:
+        print("[OK] SSL Certificates found. Starting in HTTPS mode.")
+        print("  - Local:   https://localhost:8000")
+        print("  - Network: https://0.0.0.0:8000")
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=8000,
+            log_level="info",
+            ssl_keyfile=ssl_keyfile,
+            ssl_certfile=ssl_certfile
+        )
+    else:
+        print("! No SSL Certificates found in backend/keys/")
+        print("  Starting in HTTP mode (INSECURE). Run 'python backend/scripts/generate_cert.py' to enable HTTPS.")
+        print("  - Local:   http://localhost:8000")
+        print("  - Network: http://0.0.0.0:8000")
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=8000,
+            log_level="info"
+        )

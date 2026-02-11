@@ -195,6 +195,12 @@
     - [x] **Refactor**: Update `sys.path` and file paths in scripts to be location-independent.
     - [x] **Action**: Move `backend/test_*.py`, `backend/debug_*.py` to `tests/`.
 
+- [x] **Security: Upgrade Bootstrap to HTTPS**
+    - [x] **Tool**: Create `generate_cert.py` to generate self-signed SSL certificates.
+    - [x] **Server**: Update `run_bootstrap.py` to use `uvicorn` SSL parameters.
+    - [x] **Client**: Update `BootstrapClient` to support HTTPS and custom CA/verify selection.
+    - [x] **Verify**: Create `tests/verify_https.py` to test secure connection.
+
 - [ ] **Architecture Evolution: OpenClaw Analysis**
     - [ ] **Research**: Analyze OpenClaw's Gateway and Node architecture.
     - [ ] **Compare**: Document differences with current Bit Politeia (Nanobot) architecture.

@@ -28,6 +28,7 @@ test_output*
 **/*.pem
 **/*.key
 **/*.pub
+**/*.crt
 
 # Ignore local database and memory files
 **/*.sqlite

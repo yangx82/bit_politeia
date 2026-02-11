@@ -67,9 +67,11 @@ class BootstrapClient:
     """
     Client for interacting with the P2P Bootstrap Server (Cloud or Local LAN).
     """
-    def __init__(self, server_url: str = "http://localhost:8000"):
+    def __init__(self, server_url: str = "http://localhost:8000", verify: bool = True):
         self.server_url = server_url.rstrip("/")
-        self.client = httpx.AsyncClient(timeout=15.0)  # Increased for LAN stability
+        # httpx handles verify=False to disable SSL cert checking
+        self.verify = verify
+        self.client = httpx.AsyncClient(timeout=15.0, verify=verify)  # Increased for LAN stability
 
     def set_server_url(self, url: str):
         """Dynamically update the bootstrap server URL."""
