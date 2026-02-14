@@ -269,6 +269,41 @@ async def read_skill_guide(skill_name: str) -> str:
     except Exception as e:
         return f"Failed to read skill guide: {str(e)}"
 
+@tool
+async def delegate_task(recipient_id: str, task: str, context: Optional[str] = None, inputs_json: Optional[str] = None) -> str:
+    """
+    Delegate a structured task to another agent. 
+    Use this for multi-agent collaboration or offloading complex sub-tasks.
+    Args:
+        recipient_id: Node ID of the target agent.
+        task: The high-level objective.
+        context: Optional background info or context.
+        inputs_json: Optional JSON string of input parameters.
+    """
+    try:
+        inputs = json.loads(inputs_json) if inputs_json else {}
+        # We'll use p2p_service to route this. 
+        # The receiver's AgentService should have a handler for 'task_handoff'.
+        
+        # Unique Handoff ID
+        import uuid
+        handoff_id = str(uuid.uuid4())
+        
+        payload = {
+            "type": "task_handoff",
+            "handoff_id": handoff_id,
+            "task": task,
+            "context": context,
+            "inputs": inputs
+        }
+        
+        await p2p_service.send_message(recipient_id, payload)
+        return f"Task delegated to {recipient_id}. Handoff ID: {handoff_id}. Awaiting result..."
+        
+    except Exception as e:
+        logger.error(f"Failed to delegate task: {e}")
+        return f"Error: {str(e)}"
+
 # Import execution tool
 from ..agent.tools_exec import execute_shell_command
 from ..agent.tools_fs import list_dir, read_file, write_file, edit_file
@@ -284,5 +319,6 @@ AGENT_TOOLS = [
     list_dir, read_file, write_file, edit_file,
     fetch_web_page,
     schedule_reminder, list_reminders, cancel_reminder,
-    start_scheduler, get_scheduler_status
+    start_scheduler, get_scheduler_status,
+    delegate_task
 ]

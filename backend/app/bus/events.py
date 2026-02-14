@@ -1,21 +1,20 @@
 """Event types for the message bus."""
 
-from dataclasses import dataclass, field
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Any, List, Dict, Optional
 
 
-@dataclass
-class InboundMessage:
+class InboundMessage(BaseModel):
     """Message received from a chat channel."""
     
     channel: str  # telegram, feishu, cli
     sender_id: str  # User identifier
     chat_id: str  # Chat/channel identifier
     content: str  # Message text
-    timestamp: datetime = field(default_factory=datetime.now)
-    media: List[str] = field(default_factory=list)  # Media URLs
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Channel-specific data
+    timestamp: datetime = Field(default_factory=datetime.now)
+    media: List[str] = Field(default_factory=list)  # Media URLs
+    metadata: Dict[str, Any] = Field(default_factory=dict)  # Channel-specific data
     
     @property
     def session_key(self) -> str:
@@ -23,13 +22,13 @@ class InboundMessage:
         return f"{self.channel}:{self.chat_id}"
 
 
-@dataclass
-class OutboundMessage:
+class OutboundMessage(BaseModel):
     """Message to send to a chat channel."""
     
     channel: str
     chat_id: str
     content: str
+    type: str = "message"  # 'message', 'thought', 'tool_call', 'tool_result'
     reply_to: Optional[str] = None
-    media: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    media: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)

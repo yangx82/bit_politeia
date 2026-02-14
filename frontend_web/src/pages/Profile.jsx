@@ -36,7 +36,8 @@ const Profile = () => {
         apiKey: '',
         model: '',
         field: '',
-        verboseLlm: false
+        verboseLlm: false,
+        bootstrapVerify: true
     })
     const [updating, setUpdating] = useState(false)
 
@@ -62,7 +63,8 @@ const Profile = () => {
             apiKey: userData.apiKey || '',
             model: userData.model || 'gpt-4o',
             field: userData.field || '',
-            verboseLlm: userData.verboseLlm || false
+            verboseLlm: userData.verboseLlm || false,
+            bootstrapVerify: userData.bootstrapVerify !== undefined ? userData.bootstrapVerify : true
         })
         fetchStatus()
     }, [])
@@ -78,7 +80,8 @@ const Profile = () => {
                 model: agentConfig.model,
                 research_field: agentConfig.field,
                 bootstrap_url: agentConfig.bootstrapUrl,
-                verbose_llm: agentConfig.verboseLlm
+                verbose_llm: agentConfig.verboseLlm,
+                bootstrap_verify: agentConfig.bootstrapVerify
             })
 
             const updatedStatus = response.data
@@ -91,6 +94,7 @@ const Profile = () => {
             localStorage.setItem('bp_field', agentConfig.field)
             localStorage.setItem('bp_bootstrap_url', agentConfig.bootstrapUrl)
             localStorage.setItem('bp_verbose_llm', agentConfig.verboseLlm)
+            localStorage.setItem('bp_bootstrap_verify', agentConfig.bootstrapVerify)
 
             // Refresh local user state with new balance
             const localUser = Store.getUser()
@@ -183,15 +187,25 @@ const Profile = () => {
                             onChange={e => setAgentConfig({ ...agentConfig, field: e.target.value })}
                         />
 
-                        <div className="flex items-center mt-3 mb-2 p-2 bg-slate-50 rounded-lg border border-slate-200">
+                        <div className="flex items-center mt-4 mb-2">
                             <input
                                 type="checkbox"
                                 id="verboseLlm"
                                 checked={agentConfig.verboseLlm}
                                 onChange={e => setAgentConfig({ ...agentConfig, verboseLlm: e.target.checked })}
-                                className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                                className="w-4 h-4 text-primary focus:ring-primary border-slate-300 rounded"
                             />
-                            <label htmlFor="verboseLlm" className="ml-2 text-sm font-medium text-slate-700">Enable Verbose LLM Output (Backend Console)</label>
+                            <label htmlFor="verboseLlm" className="ml-2 text-sm text-slate-600">Enable Verbose LLM Output</label>
+                        </div>
+                        <div className="flex items-center mb-4">
+                            <input
+                                type="checkbox"
+                                id="bootstrapVerify"
+                                checked={agentConfig.bootstrapVerify}
+                                onChange={e => setAgentConfig({ ...agentConfig, bootstrapVerify: e.target.checked })}
+                                className="w-4 h-4 text-primary focus:ring-primary border-slate-300 rounded"
+                            />
+                            <label htmlFor="bootstrapVerify" className="ml-2 text-sm text-slate-600">Verify Bootstrap SSL Certificate</label>
                         </div>
 
                         <button

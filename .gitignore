@@ -8,9 +8,9 @@
 !/.gitignore
 !/README.md
 !/tests/
-!/.antigravity/
-!/docs/
-!sync_all_robust.ps1
+# Exclude agent-specific and sync tools
+.antigravity/
+sync_all_robust.ps1
 
 # --- Protections and Exclusions ---
 

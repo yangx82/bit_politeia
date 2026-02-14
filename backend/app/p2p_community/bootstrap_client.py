@@ -73,11 +73,19 @@ class BootstrapClient:
         self.verify = verify
         self.client = httpx.AsyncClient(timeout=15.0, verify=verify)  # Increased for LAN stability
 
-    def set_server_url(self, url: str):
+    async def set_server_url(self, url: str):
         """Dynamically update the bootstrap server URL."""
         if url:
             self.server_url = url.rstrip("/")
             logger.info(f"BootstrapClient: Server URL updated to {self.server_url}")
+
+    async def set_verify(self, verify: bool):
+        """Update SSL verification setting and recreate client."""
+        self.verify = verify
+        # Close old client if possible, though httpx handles it
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(timeout=15.0, verify=verify)
+        logger.info(f"BootstrapClient: SSL verification set to {verify}")
 
     async def get_joinable_groups(self, preferred_level: int = 1) -> List[GroupInfo]:
         """Fetch topology and filter for joinable groups."""

@@ -22,7 +22,8 @@ const Onboarding = ({ onComplete }) => {
         llmBaseUrl: 'https://api.openai.com/v1',
         apiKey: '',
         model: 'gpt-4o',
-        verboseLlm: false
+        verboseLlm: false,
+        bootstrapVerify: true
     })
     const [loading, setLoading] = useState(false)
 
@@ -46,12 +47,13 @@ const Onboarding = ({ onComplete }) => {
                 model: formData.model,
                 research_field: formData.field,
                 bootstrap_url: formData.bootstrapUrl,
-                verbose_llm: formData.verboseLlm
+                verbose_llm: formData.verboseLlm,
+                bootstrap_verify: formData.bootstrapVerify
             })
 
             // 4. Save Preference Locally
             localStorage.setItem('bp_api_url', formData.agentUrl)
-            Store.saveUser(formData.email, formData.field, formData.apiKey, formData.model, formData.llmBaseUrl, formData.bootstrapUrl, formData.verboseLlm)
+            Store.saveUser(formData.email, formData.field, formData.apiKey, formData.model, formData.llmBaseUrl, formData.bootstrapUrl, formData.verboseLlm, formData.bootstrapVerify)
 
             onComplete()
         } catch (err) {
@@ -120,15 +122,26 @@ const Onboarding = ({ onComplete }) => {
                         onChange={e => setFormData({ ...formData, model: e.target.value })}
                     />
 
-                    <div className="flex items-center mb-6">
+                    <div className="flex items-center mb-4">
                         <input
                             type="checkbox"
                             id="verboseLlm"
                             checked={formData.verboseLlm}
                             onChange={e => setFormData({ ...formData, verboseLlm: e.target.checked })}
-                            className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                            className="w-4 h-4 text-primary focus:ring-primary border-slate-300 rounded"
                         />
-                        <label htmlFor="verboseLlm" className="ml-2 text-sm font-medium text-slate-700">Enable Verbose LLM Output (Backend Console)</label>
+                        <label htmlFor="verboseLlm" className="ml-2 text-sm text-slate-600">Enable Verbose LLM Output</label>
+                    </div>
+
+                    <div className="flex items-center mb-6">
+                        <input
+                            type="checkbox"
+                            id="bootstrapVerify"
+                            checked={formData.bootstrapVerify}
+                            onChange={e => setFormData({ ...formData, bootstrapVerify: e.target.checked })}
+                            className="w-4 h-4 text-primary focus:ring-primary border-slate-300 rounded"
+                        />
+                        <label htmlFor="bootstrapVerify" className="ml-2 text-sm text-slate-600">Verify Bootstrap SSL Certificate</label>
                     </div>
 
                     <button

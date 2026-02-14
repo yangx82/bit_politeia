@@ -34,10 +34,11 @@ from .resident_link import ResidentMemory, ResidentReporter
 from .memory_store import memory_store
 from .knowledge_base import knowledge_base
 
+from .consolidation import ConsolidationService
+
 class AgentService:
     def __init__(self):
         self.history: list[Message] = []
-        self.status = AgentStatus(is_online=True, reputation=10, balance=100.0)
         self.status = AgentStatus(is_online=True, reputation=10, balance=100.0)
         self.message_bus = message_bus
         self.scheduler = AsyncIOScheduler()
@@ -53,6 +54,7 @@ class AgentService:
         self.reporter = None # initialized after config
         self.research_field = "AI Governance"
         self.context_builder = ContextBuilder()
+        self.consolidation_service = ConsolidationService(self)
         
         # Hydrate History from Disk
         self._hydrate_history()
@@ -63,8 +65,11 @@ class AgentService:
         self.scheduler.add_job(self.trigger_adhoc_task, 'interval', hours=12, misfire_grace_time=60, jitter=10) 
         self.scheduler.add_job(self.process_network_inbox, 'interval', seconds=5, misfire_grace_time=2) 
         self.scheduler.add_job(self.sync_network, 'interval', seconds=30) 
+        
+        # Nightly Consolidation (2:00 AM)
+        self.scheduler.add_job(self.consolidation_service.run_daily_consolidation, 'cron', hour=2, minute=0)
 
-    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False):
+    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True):
         try:
              self.scheduler.start()
         except Exception:
@@ -74,7 +79,6 @@ class AgentService:
         self.api_key = api_key
         self.model = model
         self.research_field = research_field
-        self.verbose_llm = verbose_llm
         self.verbose_llm = verbose_llm
         logger.info(f"Agent Configured with Base URL: {base_url}, Model: {model}, Field: {research_field}, Verbose: {verbose_llm}")
         
@@ -94,14 +98,18 @@ class AgentService:
             set_key(env_file, "AGENT_RESEARCH_FIELD", research_field)
             if bootstrap_url:
                 set_key(env_file, "AGENT_BOOTSTRAP_URL", bootstrap_url)
+            set_key(env_file, "AGENT_BOOTSTRAP_VERIFY", "true" if bootstrap_verify else "false")
             logger.info(f"Configuration saved to {env_file}")
         except Exception as e:
             logger.error(f"Failed to save configuration to .env: {e}")
         
-        # Apply custom bootstrap URL if provided
+        # Apply custom bootstrap settings if provided
+        from ..p2p_community.bootstrap_client import bootstrap_client
         if bootstrap_url:
-            from ..p2p_community.bootstrap_client import bootstrap_client
-            bootstrap_client.set_server_url(bootstrap_url)
+            await bootstrap_client.set_server_url(bootstrap_url)
+        
+        # Always apply verify setting (re-initializes client)
+        await bootstrap_client.set_verify(bootstrap_verify)
         
         # Initialize P2P Service (using base_url as the communication endpoint)
         node_id = crypto_service.get_public_key_string()
@@ -142,8 +150,8 @@ class AgentService:
                 model=model, 
                 temperature=0.7
             )
-            # Load custom skills
-            skill_manager.load_skills()
+            # Load custom skills (Run in thread to avoid blocking loop)
+            await asyncio.to_thread(skill_manager.load_skills)
             skill_tools = skill_manager.get_skill_tools()
             
             # Combine standard tools with skill tools
@@ -173,6 +181,7 @@ class AgentService:
         model = os.getenv("AGENT_MODEL", "gpt-4o")
         research_field = os.getenv("AGENT_RESEARCH_FIELD", "AI Governance")
         bootstrap_url = os.getenv("AGENT_BOOTSTRAP_URL")
+        bootstrap_verify = os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true"
         
         if base_url and api_key:
             return {
@@ -180,7 +189,8 @@ class AgentService:
                 "api_key": api_key,
                 "model": model,
                 "research_field": research_field,
-                "bootstrap_url": bootstrap_url
+                "bootstrap_url": bootstrap_url,
+                "bootstrap_verify": bootstrap_verify
             }
         return None
 
@@ -212,6 +222,46 @@ class AgentService:
             
         return 0.0
 
+
+    async def run_pipeline(self, msg: InboundMessage) -> str:
+        """Execute the 6-stage pipeline for an inbound message."""
+        from ..agent.pipeline import PipelineContext, SenseStage, PlanStage, ExecuteStage, ConsolidateStage, NotifyStage, ArchiveStage
+        from ..services.session_service import session_manager
+        
+        # 0. Get or Create Session
+        session = session_manager.get_session(msg.sender_id, msg.channel)
+        
+        context = PipelineContext(session=session, input_message=msg)
+        
+        stages = [
+            SenseStage(),
+            PlanStage(),
+            ExecuteStage(),
+            ConsolidateStage(),
+            NotifyStage(),
+            ArchiveStage()
+        ]
+        
+        logger.info(f"Starting pipeline execution for user {msg.sender_id} (Session: {session.session_id})")
+        
+        # 1. Preliminary Stage: Sense
+        await stages[0].run(context, self)
+        
+        # 2. Main Loop: Plan & Execute (ReAct)
+        max_iterations = 20
+        iteration = 0
+        while not context.stop_execution and iteration < max_iterations:
+            iteration += 1
+            await stages[1].run(context, self) # Plan
+            if not context.stop_execution:
+                await stages[2].run(context, self) # Execute
+        
+        # 3. Wrapping Up: Consolidate, Notify, Archive
+        await stages[3].run(context, self) # Consolidate
+        await stages[4].run(context, self) # Notify
+        await stages[5].run(context, self) # Archive
+        
+        return context.final_answer or "No response generated."
 
     async def _think_and_act(self, context: str, source: str) -> str:
         """Core Agent Logic: Perceive -> Think -> Act (ReAct Loop)"""
@@ -268,6 +318,31 @@ class AgentService:
                 
                 if self.verbose_llm:
                     print(f"\n[AGENTS] Iteration {iteration} Response:\n{response.content}\n" + "-"*50)
+
+                # Emit Thought to Bus (if content exists and it's not final answer yet or it's mixed)
+                # Simple heuristic: if it has tool calls, the content is likely a "thought" explaining why.
+                # If it has no tool calls, it might be the final answer, OR a chain-of-thought leading to it.
+                # We'll emit everything as a thought first, except the final return.
+                
+                # We need the channel/chat_id context here. 
+                # _think_and_act signature is (context, source). 'source' is a string description.
+                # We need to pass the actual message metadata to _think_and_act to reply to the correct channel.
+                # For now, we'll blast thoughts to 'gateway' channel specifically, or try to infer.
+                # Actually, best to update _think_and_act signature or use a contextvar.
+                # Let's extract channel/chat_id from 'source' string if possible or use a default 'debug' channel.
+                # source format: "{msg.channel} user {msg.sender_id}" or "User (My Resident)"
+                
+                # BETTER: Just emit to 'gateway' channel for thoughts. The Gateway UI listens to 'gateway'.
+                # The user on Telegram doesn't want to see thoughts.
+                
+                if response.content:
+                    thought_msg = OutboundMessage(
+                        channel="gateway",
+                        chat_id="global", # or derived from source
+                        content=str(response.content),
+                        type="thought"
+                    )
+                    await self.message_bus.publish_outbound(thought_msg)
                 
                 # Check for Tool Calls
                 if response.tool_calls:
@@ -279,6 +354,15 @@ class AgentService:
                         args = tool_call["args"]
                         tool_call_id = tool_call["id"]
                         
+                        # Emit Tool Call Event
+                        await self.message_bus.publish_outbound(OutboundMessage(
+                            channel="gateway",
+                            chat_id="global",
+                            content=f"Invoking {tool_name} with {args}",
+                            type="tool_call",
+                            metadata={"tool": tool_name, "args": args}
+                        ))
+                        
                         if tool_name in self.tools_map:
                             logger.info(f"Agent Invoking Tool: {tool_name} with {args}")
                             tool_func = self.tools_map[tool_name]
@@ -288,6 +372,16 @@ class AgentService:
                                 tool_output = f"Error: {te}"
                                 
                             messages.append(ToolMessage(tool_call_id=tool_call_id, content=str(tool_output), name=tool_name))
+                            
+                            # Emit Tool Result Event
+                            await self.message_bus.publish_outbound(OutboundMessage(
+                                channel="gateway",
+                                chat_id="global",
+                                content=f"Result: {str(tool_output)[:200]}...",
+                                type="tool_result",
+                                metadata={"tool": tool_name, "result": str(tool_output)}
+                            ))
+
                         else:
                             messages.append(ToolMessage(tool_call_id=tool_call_id, content=f"Error: Tool {tool_name} not found", name=tool_name))
                     
@@ -334,11 +428,8 @@ class AgentService:
         self.history.append(user_msg_obj)
         self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat")
 
-        # 2. Think and Act
-        response_text = await self._think_and_act(
-            msg.content, 
-            source=f"{msg.channel} user {msg.sender_id}"
-        )
+        # 2. Pipeline Execution
+        response_text = await self.run_pipeline(msg)
 
         # 3. Reply via Bus
         out_msg = OutboundMessage(
@@ -370,8 +461,14 @@ class AgentService:
         self.history.append(user_msg)
         self.resident_memory.log_interaction("resident", content, msg_type="chat") # Log to private memory
         
-        # Agent response
-        response_text = await self._think_and_act(content, "User (My Resident)")
+        # Agent response via Pipeline
+        msg_obj = InboundMessage(
+            channel="resident",
+            sender_id="resident",
+            content=content,
+            chat_id="resident"
+        )
+        response_text = await self.run_pipeline(msg_obj)
         
         # Sign Response
         signature = crypto_service.sign_message(response_text)
@@ -410,7 +507,15 @@ class AgentService:
             if isinstance(content, dict) and 'text' in content:
                 text_content = content['text']
             
-            thought_output = await self._think_and_act(text_content, f"Peer {sender_id[:8]}")
+            # Use Pipeline
+            msg_obj = InboundMessage(
+                channel="p2p",
+                sender_id=sender_id,
+                content=text_content,
+                chat_id=sender_id,
+                metadata={"message_type": msg_type}
+            )
+            thought_output = await self.run_pipeline(msg_obj)
             
             # Archive interaction
             self.history.append(Message(
@@ -433,7 +538,13 @@ class AgentService:
              self.resident_memory.log_interaction("agent_report", summary, "report")
         
         elif self.llm:
-             summary = await self._think_and_act("Generate a brief daily summary for the resident.", "System Scheduler")
+             msg_obj = InboundMessage(
+                channel="system",
+                sender_id="scheduler",
+                content="Generate a brief daily summary for the resident.",
+                chat_id="system"
+             )
+             summary = await self.run_pipeline(msg_obj)
         else:
              summary = "Agent offline."
              
@@ -736,5 +847,76 @@ class AgentService:
         if not self.archive_manager:
             return {}
         return self.archive_manager.generate_report()
+
+    async def handle_p2p_handoff(self, sender_id: str, payload: dict):
+        """Process incoming task handoff from another agent."""
+        handoff_id = payload.get("handoff_id")
+        task = payload.get("task")
+        context = payload.get("context", "")
+        inputs = payload.get("inputs", {})
+
+        logger.info(f"Received Task Handoff {handoff_id} from {sender_id}: {task}")
+        
+        # 1. Internal Log
+        await self.message_bus.publish_outbound(OutboundMessage(
+            id=str(uuid.uuid4()),
+            content=f"Delegated Task Received: {task}",
+            sender=sender_id,
+            timestamp=datetime.now(),
+            type="thought"
+        ))
+
+        # 2. Resolve Task using standard Agent Flow
+        prompt = f"""
+        [DELEGATED TASK from {sender_id}]
+        Objective: {task}
+        Context: {context}
+        Inputs: {json.dumps(inputs)}
+        
+        Execute this task and provide a concise result.
+        """
+        
+        try:
+            result_content = await self.process_directed_task(prompt)
+            
+            # 3. Send Result Back
+            result_payload = {
+                "type": "task_result",
+                "handoff_id": handoff_id,
+                "output": result_content
+            }
+            await p2p_service.send_message(sender_id, result_payload)
+            logger.info(f"Sent Task Result for {handoff_id} back to {sender_id}")
+
+        except Exception as e:
+            logger.error(f"Error executing handoff {handoff_id}: {e}")
+            await p2p_service.send_message(sender_id, {
+                "type": "task_result",
+                "handoff_id": handoff_id,
+                "error": str(e)
+            })
+
+    async def process_directed_task(self, prompt: str) -> str:
+        """Run the agent on a specific task prompt."""
+        # For now, simulate execution. In reality, this would trigger a clean chain run.
+        return f"Executed: {prompt[:100]}... [SIMULATED SUCCESS]"
+
+    async def handle_p2p_result(self, sender_id: str, payload: dict):
+        """Process result from a previously delegated task."""
+        handoff_id = payload.get("handoff_id")
+        output = payload.get("output")
+        error = payload.get("error")
+        
+        logger.info(f"Received Task Result for {handoff_id} from {sender_id}")
+        
+        msg = f"Task Result ({handoff_id}): {output}" if not error else f"Task Error ({handoff_id}): {error}"
+        await self.message_bus.publish_outbound(OutboundMessage(
+            id=str(uuid.uuid4()),
+            content=msg,
+            sender=sender_id,
+            timestamp=datetime.now(),
+            type="thought"
+        ))
+
 
 agent_service = AgentService()

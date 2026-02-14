@@ -105,5 +105,28 @@ class MessageBus:
         """Number of pending outbound messages."""
         return self.outbound.qsize()
 
+    async def subscribe_async_generator(self, channel: str):
+        """
+        Yields outbound messages for a channel as an async generator.
+        Useful for WebSocket streaming.
+        """
+        queue = asyncio.Queue()
+        
+        async def callback(msg: OutboundMessage):
+            await queue.put(msg)
+            
+        self.subscribe_outbound(channel, callback)
+        
+        try:
+            while True:
+                msg = await queue.get()
+                yield msg
+        finally:
+            # Cleanup subscription when generator is closed
+            if channel in self._outbound_subscribers:
+                if callback in self._outbound_subscribers[channel]:
+                    self._outbound_subscribers[channel].remove(callback)
+                    logger.info(f"Unsubscribed async generator from channel '{channel}'")
+
 # Global singleton (optional, but convenient services)
 message_bus = MessageBus()

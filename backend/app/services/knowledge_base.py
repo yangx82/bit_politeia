@@ -99,19 +99,160 @@ class WebResearcher:
 
         return results
 
+
+try:
+    import chromadb
+    from chromadb.config import Settings
+    from sentence_transformers import SentenceTransformer
+    CHROMA_AVAILABLE = True
+except ImportError:
+    CHROMA_AVAILABLE = False
+    CHROMA_AVAILABLE = False
+    logger.warning("ChromaDB or SentenceTransformers not found. Falling back to simple keyword search.")
+
+try:
+    from rank_bm25 import BM25Okapi
+    BM25_AVAILABLE = True
+except ImportError:
+    BM25_AVAILABLE = False
+    logger.warning("rank_bm25 not found. Hybrid search will range-limit to vector only.")
+
 class KnowledgeBase:
     """
     Local Retrieval System (RAG).
     Indexes local history (Memory) and public archives (Blockchain).
-    Uses a simple keyword/overlap retrieval for simulation (replacing heavy VectorStore).
+    Uses ChromaDB for Vector Semantic Search.
     """
     def __init__(self):
-        self.documents: List[Dict] = []
+        self.documents: List[Dict] = [] # Fallback / Cache
         self.web_researcher = WebResearcher()
+        self.chroma_client = None
+        self.collection = None
+        self.embedding_model = None
+        
+        if CHROMA_AVAILABLE:
+            try:
+                # Initialize Persistent Client
+                data_path = "backend/data/chroma"
+                self.chroma_client = chromadb.PersistentClient(path=data_path)
+                
+                # Initialize Embedding Model (all-MiniLM-L6-v2 is fast and good)
+                # It will download on first run (approx 80MB)
+                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                
+                # Get or Create Collection
+                self.collection = self.chroma_client.get_or_create_collection(name="episodic_memory")
+                logger.info(f"ChromaDB initialized at {data_path}")
+            except Exception as e:
+                logger.error(f"Failed to initialize ChromaDB: {e}")
+                # Do not assign to global CHROMA_AVAILABLE here to avoid UnboundLocalError
+                self.collection = None
+                self.chroma_client = None
+
+        # Hybrid Search Init
+        self.bm25 = None
+        self.bm25_corpus = [] # List of {text, metadata}
+
 
     def ingest_history(self, history: List[Dict]):
-        """Load resident chat history."""
-        self.documents = [] # Reset or append? Let's rebuild for simulation simplicity
+        """Load resident chat history/memory into Vector Store."""
+        if not CHROMA_AVAILABLE or not self.collection:
+            self._ingest_history_fallback(history)
+            return
+
+        documents = []
+        metadatas = []
+        ids = []
+        embeddings = []
+        
+        count = 0
+        for msg in history:
+            text = msg.get("content", "")
+            if text:
+                # Use message ID or hash as ID
+                msg_id = msg.get("id") or str(hash(text + str(msg.get("timestamp"))))
+                
+                # Metadata
+                meta = {
+                    "source": "resident_history",
+                    "timestamp": str(msg.get("timestamp", "")),
+                    "type": str(msg.get("type", "chat")),
+                    "sender": str(msg.get("sender", "unknown"))
+                }
+                
+                documents.append(text)
+                metadatas.append(meta)
+                ids.append(msg_id)
+                count += 1
+        
+        if count > 0:
+            # Generate Embeddings Batch
+            logger.info(f"Computing embeddings for {count} items...")
+            embeddings = self.embedding_model.encode(documents).tolist()
+            
+            # Upsert to Chroma
+            self.collection.upsert(
+                documents=documents,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                ids=ids
+            )
+            logger.info(f"Ingested {count} items into Semantic Memory")
+        else:
+            logger.info("No items to ingest.")
+
+        # update BM25 index (in-memory)
+        if BM25_AVAILABLE:
+            self._update_bm25_index(history)
+
+    def ingest_insights(self, insights: List[str]):
+        """Ingest consolidated insights into Vector Store."""
+        if not CHROMA_AVAILABLE or not self.collection:
+            logger.warning("ChromaDB unavailable, skipping insight ingestion.")
+            return
+
+        documents = []
+        metadatas = []
+        ids = []
+        embeddings = []
+        
+        for text in insights:
+            if text:
+                # Use hash as ID
+                import hashlib
+                doc_id = hashlib.md5(text.encode()).hexdigest()
+                
+                meta = {
+                    "source": "core_memory",
+                    "timestamp": datetime.now().isoformat(),
+                    "type": "insight"
+                }
+                
+                documents.append(text)
+                metadatas.append(meta)
+                ids.append(doc_id)
+        
+        if documents:
+            logger.info(f"Computing embeddings for {len(documents)} insights...")
+            embeddings = self.embedding_model.encode(documents).tolist()
+            
+            self.collection.upsert(
+                documents=documents,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                ids=ids
+            )
+            logger.info(f"Ingested {len(documents)} insights into Core Memory")
+            
+            # Also update BM25
+            if BM25_AVAILABLE:
+                # reconstruct dicts to match _update_bm25_index expectation
+                mock_history = [{"content": t, "timestamp": m["timestamp"], "sender": "system"} for t, m in zip(documents, metadatas)]
+                self._update_bm25_index(mock_history)
+
+    def _ingest_history_fallback(self, history: List[Dict]):
+        """Legacy keyword ingestion."""
+        self.documents = [] 
         for msg in history:
             text = msg.get("content", "")
             if text:
@@ -121,44 +262,166 @@ class KnowledgeBase:
                     "timestamp": msg.get("timestamp"),
                     "metadata": {"type": msg.get("type", "chat")}
                 })
-        logger.info(f"Ingested {len(history)} history items into Knowledge Base")
+        logger.info(f"Ingested {len(history)} history items into Knowledge Base (Fallback)")
 
     def ingest_archives(self, chain_data: List[Dict]):
         """Load blockchain blocks."""
-        # chain_data is list of Block dicts
-        count = 0
-        for block in chain_data:
-            # Index the summary data
-            data = block.get("data", {})
-            # Flatten data to string
-            content = f"Block {block.get('index')} Summary: {json.dumps(data)}"
-            self.documents.append({
-                "content": content,
-                "source": "community_archive",
-                "timestamp": block.get("timestamp"),
-                "metadata": {"block_hash": block.get("hash")}
-            })
-            count += 1
-        logger.info(f"Ingested {count} blocks into Knowledge Base")
+        # TODO: Implement vector ingestion for archives too
+        # For now, just logging
+        logger.info(f"Archive ingestion not yet implemented for Vector Store")
 
     def retrieve_context(self, query: str, limit: int = 3) -> str:
         """
-        Simple retrieval based on keyword overlap.
-        In production, replaces with Vector Similarity Search.
+        Semantic retrieval using Vector Search.
         """
+        if not CHROMA_AVAILABLE or not self.collection:
+            return self._retrieve_context_fallback(query, limit)
+            
+        try:
+            # Encode Query
+            query_embedding = self.embedding_model.encode([query]).tolist()
+            
+            # Query Chroma
+            results = self.collection.query(
+                query_embeddings=query_embedding,
+                n_results=limit
+            )
+            
+            # Format Results
+            context_parts = []
+            
+            # results['documents'] is a list of lists (one list per query)
+            if results['documents']:
+                docs = results['documents'][0]
+                metas = results['metadatas'][0]
+                distances = results['distances'][0] if results['distances'] else []
+                
+                for i, doc_text in enumerate(docs):
+                    meta = metas[i]
+                    source = meta.get("source", "unknown")
+                    # sender = meta.get("sender", "unknown")
+                    timestamp = meta.get("timestamp", "")
+                    
+                    context_parts.append(f"[{source.upper()} {timestamp}] {doc_text}")
+            
+            return "\n\n".join(context_parts) if context_parts else "No relevant memory found."
+            
+        except Exception as e:
+            logger.error(f"Vector search failed: {e}")
+            return self._retrieve_context_fallback(query, limit)
+
+    def _update_bm25_index(self, history: List[Dict]):
+        """Maintain ephemeral BM25 index."""
+        new_docs = []
+        for msg in history:
+            text = msg.get("content", "")
+            if text:
+                 new_docs.append({
+                    "content": text,
+                    "metadata": {
+                        "source": "resident_history",
+                        "timestamp": str(msg.get("timestamp", "")),
+                        "sender": str(msg.get("sender", "unknown"))
+                    }
+                })
+        
+        # Append to master corpus
+        self.bm25_corpus.extend(new_docs)
+        
+        # Rebuild Index (Expense: Low for <10k msg, optimize later if needed)
+        tokenized_corpus = [doc["content"].split(" ") for doc in self.bm25_corpus]
+        self.bm25 = BM25Okapi(tokenized_corpus)
+        logger.info(f"Updated BM25 Index with {len(new_docs)} new items. Total: {len(self.bm25_corpus)}")
+
+    def retrieve_hybrid(self, query: str, limit: int = 3) -> str:
+        """
+        Hyperim retrieval using Reciprocal Rank Fusion (RRF).
+        Combines semantic results (Chroma) and keyword results (BM25).
+        """
+        if not CHROMA_AVAILABLE:
+            return self._retrieve_context_fallback(query, limit)
+        
+        try:
+            # 1. Vector Search
+            vector_docs = []
+            query_embedding = self.embedding_model.encode([query]).tolist()
+            chroma_res = self.collection.query(query_embeddings=query_embedding, n_results=limit * 2) 
+            
+            if chroma_res['documents']:
+                c_docs = chroma_res['documents'][0]
+                c_metas = chroma_res['metadatas'][0]
+                for i, text in enumerate(c_docs):
+                    vector_docs.append({
+                        "content": text,
+                        "metadata": c_metas[i],
+                        "score": 0.0 # Placeholder
+                    })
+
+            # 2. Keyword Search (BM25)
+            bm25_docs = []
+            if BM25_AVAILABLE and self.bm25:
+                tokenized_query = query.split(" ")
+                # Get top N * 2
+                bm25_top = self.bm25.get_top_n(tokenized_query, self.bm25_corpus, n=limit * 2)
+                for doc in bm25_top:
+                    bm25_docs.append({
+                        "content": doc["content"],
+                        "metadata": doc["metadata"]
+                    })
+            else:
+                 # Fallback if no BM25
+                 return self.retrieve_context(query, limit)
+
+            # 3. Reciprocal Rank Fusion
+            # RRF Score = 1 / (k + rank)
+            k = 60
+            fusion_scores = {} # text -> score
+            doc_map = {} # text -> doc_obj
+
+            # Score Vector Results
+            for rank, doc in enumerate(vector_docs):
+                text = doc["content"]
+                doc_map[text] = doc
+                fusion_scores[text] = fusion_scores.get(text, 0) + (1 / (k + rank + 1))
+
+            # Score BM25 Results
+            for rank, doc in enumerate(bm25_docs):
+                text = doc["content"]
+                if text not in doc_map:
+                     doc_map[text] = doc
+                fusion_scores[text] = fusion_scores.get(text, 0) + (1 / (k + rank + 1))
+
+            # Sort by fused score
+            sorted_docs = sorted(fusion_scores.items(), key=lambda item: item[1], reverse=True)
+            top_docs = sorted_docs[:limit]
+
+            # Format
+            context_parts = []
+            for text, score in top_docs:
+                doc = doc_map[text]
+                meta = doc["metadata"]
+                source = meta.get("source", "unknown")
+                timestamp = meta.get("timestamp", "")
+                context_parts.append(f"[{source.upper()} {timestamp}] {text}")
+
+            return "\n\n".join(context_parts) if context_parts else "No relevant memory found."
+
+        except Exception as e:
+            logger.error(f"Hybrid search failed: {e}")
+            return self.retrieve_context(query, limit)
+
+    def _retrieve_context_fallback(self, query: str, limit: int = 3) -> str:
+        """Simple retrieval based on keyword overlap."""
         query_terms = set(query.lower().split())
         scored_docs = []
         
         for doc in self.documents:
             content = doc["content"].lower()
-            # Score = number of matching terms
             score = sum(1 for term in query_terms if term in content)
             if score > 0:
                 scored_docs.append((score, doc))
         
-        # Sort by score desc, then timestamp desc
         scored_docs.sort(key=lambda x: (x[0], x[1].get("timestamp", "")), reverse=True)
-        
         top_docs = scored_docs[:limit]
         
         context_parts = []
@@ -175,7 +438,7 @@ class KnowledgeBase:
         web_context = self.web_researcher.search(query)
         
         return f"""
-=== Local Knowledge ===
+=== Local Knowledge (Semantic Memory) ===
 {local_context}
 
 === Web Research ===

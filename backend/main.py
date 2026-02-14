@@ -89,6 +89,8 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api/v1")
+from app.api.gateway import router as gateway_router
+app.include_router(gateway_router)
 
 @app.get("/")
 async def root():
