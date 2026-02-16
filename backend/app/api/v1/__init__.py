@@ -44,6 +44,14 @@ async def search_history(q: str = None, date_from: str = None, date_to: str = No
 async def receive_p2p_message(message: P2PMessage):
     return await agent_service.receive_p2p_message(message)
 
+@router.get("/debug/inbox")
+async def debug_inbox():
+    """Debug: Get current contents of P2P inbox."""
+    from ...services.p2p_service import p2p_service
+    if p2p_service.local_node:
+        return {"inbox": p2p_service.local_node.inbox, "node_id": p2p_service.local_node.node_id}
+    return {"error": "Node not initialized"}
+
 # Frontend P2P Endpoints
 @router.get("/p2p/peers")
 async def get_peers():

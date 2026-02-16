@@ -519,31 +519,42 @@ class AgentService:
             content = msg.get('content')
             msg_type = msg.get('message_type')
             
-            # Process based on type
-            logger.info(f"Processing P2P message type {msg_type} from {sender_id[:8]}...")
-            
-            # Use 'content' text if available
-            text_content = str(content)
-            if isinstance(content, dict) and 'text' in content:
-                text_content = content['text']
-            
-            # Use Pipeline
-            msg_obj = InboundMessage(
-                channel="p2p",
-                sender_id=sender_id,
-                content=text_content,
-                chat_id=sender_id,
-                metadata={"message_type": msg_type}
-            )
-            thought_output = await self.run_pipeline(msg_obj)
-            
-            # Archive interaction
-            self.history.append(Message(
-                id=str(uuid.uuid4()), 
-                content=f"P2P({msg_type}): {thought_output[:50]}...", 
-                sender=sender_id, 
-                timestamp=datetime.now()
-            ))
+            try:
+                # Process based on type
+                logger.info(f"Processing P2P message type {msg_type} from {sender_id[:8]}...")
+                
+                # Use 'content' text if available
+                text_content = str(content)
+                if isinstance(content, dict) and 'text' in content:
+                    text_content = content['text']
+                
+                # Use Pipeline
+                msg_obj = InboundMessage(
+                    channel="p2p",
+                    sender_id=sender_id,
+                    content=text_content,
+                    chat_id=sender_id,
+                    metadata={"message_type": msg_type}
+                )
+                thought_output = await self.run_pipeline(msg_obj)
+                
+                # Archive interaction
+                self.history.append(Message(
+                    id=str(uuid.uuid4()), 
+                    content=f"P2P({msg_type}): {thought_output[:50]}...", 
+                    sender=sender_id, 
+                    timestamp=datetime.now()
+                ))
+            except Exception as e:
+                logger.error(f"Error processing P2P message from {sender_id}: {e}")
+                # Optional: Push back to inbox or Dead Letter Queue?
+                # For now, just log to history so user sees something failed
+                self.history.append(Message(
+                    id=str(uuid.uuid4()),
+                    content=f"Error processing P2P message: {e}",
+                    sender="system",
+                    timestamp=datetime.now()
+                ))
 
     # 3. Scheduled Task
     async def trigger_scheduled_task(self):

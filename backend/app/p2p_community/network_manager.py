@@ -154,13 +154,20 @@ class NetworkManager:
             # We need to parse it back to SignedMessage object if possible or pass as is
             # The receive_message expects SignedMessage object
             # Let's reconstruct it
+            from datetime import datetime
+            
+            # Parse timestamp if it's a string
+            ts = message_dict.get("timestamp")
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts)
+
             msg = SignedMessage(
                 message_id=message_dict.get("message_id"),
                 sender_id=message_dict.get("sender_id"),
                 recipient_id=message_dict.get("recipient_id"),
                 message_type=MessageType(message_dict.get("message_type")),
                 content=message_dict.get("content"),
-                timestamp=message_dict.get("timestamp"),
+                timestamp=ts,
                 signature=message_dict.get("signature"),
                 nonce=message_dict.get("nonce")
             )
