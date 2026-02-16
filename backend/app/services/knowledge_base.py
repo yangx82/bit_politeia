@@ -185,13 +185,21 @@ class KnowledgeBase:
         original_offline = os.environ.get("HF_HUB_OFFLINE") # Backup
 
         try:
+            # Try to load offline first if we decided to skip online check
             if not should_check_online:
-                # Force offline
-                os.environ["HF_HUB_OFFLINE"] = "1"
-                logger.info(f"Loading {model_name} in Offline Mode...")
-                # Explicitly tell SentenceTransformer to use local files only and specific cache
-                model = SentenceTransformer(model_name, cache_folder=cache_dir, local_files_only=True)
-            else:
+                try:
+                    # Force offline
+                    os.environ["HF_HUB_OFFLINE"] = "1"
+                    logger.info(f"Loading {model_name} in Offline Mode...")
+                    model = SentenceTransformer(model_name, cache_folder=cache_dir, local_files_only=True)
+                except Exception as offline_error:
+                    logger.warning(f"Offline load failed ({offline_error}). Forcing online check...")
+                    should_check_online = True
+                    if "HF_HUB_OFFLINE" in os.environ:
+                        del os.environ["HF_HUB_OFFLINE"]
+
+            # If we need to check online (either initially true or fallback from above)
+            if should_check_online:
                 # Allow online
                 if "HF_HUB_OFFLINE" in os.environ:
                     del os.environ["HF_HUB_OFFLINE"]
@@ -204,18 +212,8 @@ class KnowledgeBase:
                     f.write(str(time.time()))
 
         except Exception as e:
-            logger.warning(f"Failed to load model in requested mode: {e}")
-            if should_check_online:
-                 # Fallback to offline
-                 logger.info("Falling back to local cache...")
-                 os.environ["HF_HUB_OFFLINE"] = "1"
-                 try:
-                     model = SentenceTransformer(model_name, cache_folder=cache_dir, local_files_only=True)
-                 except Exception as final_e:
-                     logger.error(f"Fatal: Could not load model even offline: {final_e}")
-                     raise final_e
-            else:
-                raise e
+            logger.warning(f"Failed to load model: {e}")
+            raise e
         finally:
             # Restore env var
             if original_offline is not None:
