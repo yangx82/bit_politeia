@@ -46,7 +46,11 @@ const Profile = () => {
             const { default: api } = await import('../services/api')
             const response = await api.get('/api/v1/status')
             const statusData = response.data
-            setUser(prev => ({ ...prev, balance: statusData.balance }))
+            setUser(prev => ({
+                ...prev,
+                balance: statusData.balance,
+                relayConnected: statusData.relay_connected
+            }))
         } catch (err) {
             console.error('Failed to fetch balance:', err)
         }
@@ -125,6 +129,15 @@ const Profile = () => {
                             <div>
                                 <label className="text-xs text-slate-500 uppercase font-bold">Research Field</label>
                                 <p className="font-medium text-slate-800">{user.field}</p>
+                            </div>
+                            <div>
+                                <label className="text-xs text-slate-500 uppercase font-bold">Network Status</label>
+                                <div className="flex items-center gap-2 mt-1">
+                                    <div className={`w-2 h-2 rounded-full ${user.relayConnected ? 'bg-green-500' : 'bg-slate-300'}`} />
+                                    <span className="font-medium text-slate-800 text-sm">
+                                        {user.relayConnected ? 'Internet P2P (Relay Connected)' : 'LAN P2P (Direct Only)'}
+                                    </span>
+                                </div>
                             </div>
                         </div>
                     </Card>

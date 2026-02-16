@@ -100,6 +100,50 @@ async def get_candidates(group_id: str) -> Dict[str, List[str]]:
     candidates = bootstrap_service.get_election_candidates(group_id)
     return {"candidates": candidates}
 
+from fastapi import WebSocket, WebSocketDisconnect
+from .relay_manager import relay_manager
+import json
+
+@app.websocket("/ws/relay/{node_id}")
+async def websocket_relay(websocket: WebSocket, node_id: str):
+    """
+    WebSocket endpoint for P2P relay.
+    Nodes connect here to receive messages when they are behind NAT.
+    """
+    await relay_manager.connect(node_id, websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # Parse message to determine target
+            try:
+                message = json.loads(data)
+                # Check for standard SignedMessage format or specific relay envelope
+                # Expecting SignedMessage which has 'recipient_id'
+                target_id = message.get("recipient_id")
+                
+                if target_id:
+                     if target_id == "bootstrap":
+                         # Handle control messages to bootstrap if needed
+                         pass
+                     else:
+                         # Relay to target
+                         success = await relay_manager.route_message(node_id, target_id, message)
+                         if not success:
+                             # Optionally send error back to sender?
+                             # For now, silent failure or log
+                             pass
+                else:
+                    logger.warning(f"Relay: Received malformed message from {node_id} (No recipient_id)")
+                    
+            except json.JSONDecodeError:
+                logger.warning(f"Relay: Received invalid JSON from {node_id}")
+                
+    except WebSocketDisconnect:
+        relay_manager.disconnect(node_id)
+    except Exception as e:
+        logger.error(f"Relay Error for {node_id}: {e}")
+        relay_manager.disconnect(node_id)
+
 def run_server(host: str = "0.0.0.0", port: int = 8000):
     """Run the server programmatically."""
     uvicorn.run(app, host=host, port=port)

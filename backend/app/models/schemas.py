@@ -27,6 +27,7 @@ class AgentStatus(BaseModel):
     current_group: Optional[str] = None
     public_key: Optional[str] = None
     node_id: Optional[str] = None
+    relay_connected: bool = False
 
 class P2PMessage(BaseModel):
     message_id: str

@@ -121,6 +121,17 @@ class NetworkManager:
         await self.bootstrap.register_node(reg)
         logger.info(f"Registered local node {node.node_id} at {host}:{port}")
 
+        # --- Start Relay Client ---
+        from .relay_client import RelayClient
+        self.relay_client = RelayClient(
+            server_url=self.bootstrap.server_url,
+            node_id=node.node_id,
+            message_handler=self.handle_relayed_message
+        )
+        await self.relay_client.start()
+        logger.info("RelayClient started and connecting...")
+        # ---------------------------
+
         # Auto-join first level group if none assigned
         if not node.group_ids:
             joinable = await self.bootstrap.get_joinable_groups(preferred_level=1)
@@ -128,6 +139,31 @@ class NetworkManager:
                 await node.join_group(joinable[0].group_id)
             else:
                 logger.warning(f"No joinable groups found for node {node.node_id}")
+
+    async def handle_relayed_message(self, message_dict: Dict):
+        """Callback for messages received via WebSocket relay."""
+        try:
+            # message_dict is the raw SignedMessage dict
+            # We need to parse it back to SignedMessage object if possible or pass as is
+            # The receive_message expects SignedMessage object
+            # Let's reconstruct it
+            msg = SignedMessage(
+                message_id=message_dict.get("message_id"),
+                sender_id=message_dict.get("sender_id"),
+                recipient_id=message_dict.get("recipient_id"),
+                message_type=MessageType(message_dict.get("message_type")),
+                content=message_dict.get("content"),
+                timestamp=message_dict.get("timestamp"),
+                signature=message_dict.get("signature"),
+                nonce=message_dict.get("nonce")
+            )
+            
+            logger.info(f"Received RELAYED message from {msg.sender_id}")
+            if self.local_node_id in self.nodes:
+                await self.nodes[self.local_node_id].receive_message(msg)
+                
+        except Exception as e:
+            logger.error(f"Failed to handle relayed message: {e}")
 
     async def register_node_to_group(self, node_id: str, group_id: str) -> bool:
         """Join a group and notify bootstrap if it's the local node."""
@@ -192,31 +228,56 @@ class NetworkManager:
         
         await self.route_message(signed_msg)
 
-    async def _send_http_message(self, endpoint: str, message: SignedMessage):
-        """Send a signed message to a remote node's API."""
+    async def _send_http_message(self, endpoint: str, message: SignedMessage) -> bool:
+        """Send a signed message to a remote node's API. Returns success boolean."""
         try:
             url = f"{endpoint.rstrip('/')}/api/v1/p2p/message"
             # Use the existing http_client for efficiency
             resp = await self.http_client.post(url, json=message.to_dict())
-            if resp.status_code != 200:
-                logger.error(f"Transport error to {endpoint}: HTTP {resp.status_code}")
+            if resp.status_code == 200:
+                return True
+            else:
+                logger.warning(f"Transport error to {endpoint}: HTTP {resp.status_code}")
+                return False
         except Exception as e:
-            logger.error(f"Failed to reach peer {endpoint}: {e}")
+            logger.warning(f"Failed to reach peer {endpoint}: {e}")
+            return False
+
+    async def _send_via_relay(self, target_id: str, message: SignedMessage):
+        """Fallback: Send message via Bootstrap Relay."""
+        if hasattr(self, 'relay_client') and self.relay_client.websocket:
+            logger.info(f"Fallback: Sending message to {target_id} via RELAY")
+            await self.relay_client.send(message.to_dict())
+            return True
+        return False
 
     async def route_message(self, message: SignedMessage):
-        """Route message to local node or remote peer via HTTP."""
+        """Route message to local node or remote peer via HTTP, fallback to Relay."""
         logger.info(f"[Network] Routing {message.message_type.value} message to {message.recipient_id}")
 
-        if message.message_type == MessageType.DIRECT:
-            if message.recipient_id == self.local_node_id:
+        # Helper to route to single node with fallback
+        async def send_to_node(node_id: str, msg: SignedMessage):
+            if node_id == self.local_node_id:
                 if self.local_node_id in self.nodes:
-                    await self.nodes[self.local_node_id].receive_message(message)
-            elif message.recipient_id in self.nodes:
-                target = self.nodes[message.recipient_id]
+                    await self.nodes[self.local_node_id].receive_message(msg)
+                return
+
+            if node_id in self.nodes:
+                target = self.nodes[node_id]
+                success = False
                 if target.endpoint:
-                    await self._send_http_message(target.endpoint, message)
+                    success = await self._send_http_message(target.endpoint, msg)
+                
+                if not success:
+                    # Fallback to Relay
+                    await self._send_via_relay(node_id, msg)
             else:
-                logger.warning(f"Target node {message.recipient_id} unknown")
+                 # Try Relay even if unknown (maybe new node)
+                 await self._send_via_relay(node_id, msg)
+
+
+        if message.message_type == MessageType.DIRECT:
+            await send_to_node(message.recipient_id, message)
 
         elif message.message_type == MessageType.GROUP:
             if message.recipient_id in self.groups:
@@ -227,10 +288,8 @@ class NetworkManager:
                         if message.sender_id != self.local_node_id:
                             # Deliver group messages sent by others to our inbox
                             tasks.append(self.nodes[mid].receive_message(message))
-                    elif mid in self.nodes:
-                        target = self.nodes[mid]
-                        if target.endpoint:
-                            tasks.append(self._send_http_message(target.endpoint, message))
+                    else:
+                        tasks.append(send_to_node(mid, message))
                 if tasks:
                     await asyncio.gather(*tasks)
             else:
@@ -242,5 +301,6 @@ class NetworkManager:
             "total_nodes": len(self.nodes),
             "total_groups": len(self.groups),
             "groups": {g_id: g.to_dict() for g_id, g in self.groups.items()},
-            "nodes": {n_id: {"public_key": n.public_key[:16] + "..."} for n_id, n in self.nodes.items()}
+            "nodes": {n_id: {"public_key": n.public_key[:16] + "..."} for n_id, n in self.nodes.items()},
+            "relay_connected": getattr(self, 'relay_client', None) and self.relay_client.websocket is not None
         }

@@ -111,9 +111,29 @@ class AgentService:
         # Always apply verify setting (re-initializes client)
         await bootstrap_client.set_verify(bootstrap_verify)
         
-        # Initialize P2P Service (using base_url as the communication endpoint)
+        # Determine P2P Endpoint (Listening Address)
+        # 1. Try to get LAN IP
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('10.255.255.255', 1))
+            lan_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            lan_ip = "127.0.0.1"
+            
+        # Default P2P endpoint is http://<LAN_IP>:8001
+        # In a real deployment, this should be configurable via env var AGENT_P2P_ENDPOINT
+        import os
+        p2p_endpoint = os.getenv("AGENT_P2P_ENDPOINT")
+        if not p2p_endpoint:
+            p2p_endpoint = f"http://{lan_ip}:8001"
+            
+        logger.info(f"Setting P2P Endpoint to: {p2p_endpoint}")
+
+        # Initialize P2P Service
         node_id = crypto_service.get_public_key_string()
-        await p2p_service.initialize(node_id, self.base_url)
+        await p2p_service.initialize(node_id, p2p_endpoint)
         
         # Start Message Bus and Listener
         await self.message_bus.start()
@@ -593,7 +613,12 @@ class AgentService:
         if self.ledger and p2p_service.local_node:
             node_id = p2p_service.local_node.node_id
             self.status.balance = self.ledger.get_balance(node_id)
-            logger.info(f"Status Sync: UUID {node_id[:8]} Balance {self.status.balance}")
+            
+            # Sync relay status
+            net_status = p2p_service.get_network_status()
+            self.status.relay_connected = net_status.get("relay_connected", False)
+            
+            logger.info(f"Status Sync: UUID {node_id[:8]} Balance {self.status.balance} Relay: {self.status.relay_connected}")
         else:
             logger.warning("Status Sync Failed: P2P local_node not initialized")
         return self.status
