@@ -122,14 +122,16 @@ class NetworkManager:
         logger.info(f"Registered local node {node.node_id} at {host}:{port}")
 
         # --- Start Relay Client ---
+        # --- Start Relay Client ---
         from .relay_client import RelayClient
         self.relay_client = RelayClient(
             server_url=self.bootstrap.server_url,
             node_id=node.node_id,
-            message_handler=self.handle_relayed_message
+            message_handler=self.handle_relayed_message,
+            verify_ssl=self.bootstrap.verify
         )
         await self.relay_client.start()
-        logger.info("RelayClient started and connecting...")
+        logger.info(f"RelayClient started (SSL Verify: {self.bootstrap.verify})")
         # ---------------------------
 
         # Auto-join first level group if none assigned

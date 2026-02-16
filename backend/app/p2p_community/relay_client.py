@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import json
+import ssl
 from typing import Optional, Callable, Dict
 import websockets
 
@@ -11,7 +12,7 @@ class RelayClient:
     Client for persistent WebSocket connection to the Relay Server (Bootstrap).
     Handles sending messages via relay and receiving messages from relay.
     """
-    def __init__(self, server_url: str, node_id: str, message_handler: Callable):
+    def __init__(self, server_url: str, node_id: str, message_handler: Callable, verify_ssl: bool = True):
         # Convert http/https to ws/wss
         if server_url.startswith("https://"):
             self.ws_url = server_url.replace("https://", "wss://")
@@ -23,6 +24,7 @@ class RelayClient:
         self.ws_url = f"{self.ws_url.rstrip('/')}/ws/relay/{node_id}"
         self.node_id = node_id
         self.message_handler = message_handler # Callback(message_dict)
+        self.verify_ssl = verify_ssl
         self.websocket = None
         self.running = False
         self._send_queue = asyncio.Queue()
@@ -47,8 +49,22 @@ class RelayClient:
         backoff = 1
         while self.running:
             try:
+                ssl_context = None
+                if self.ws_url.startswith("wss://") and not self.verify_ssl:
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
+                    logger.warning("RelayClient: SSL verification disabled.")
+
                 logger.info(f"RelayClient: Connecting to {self.ws_url}...")
-                async with websockets.connect(self.ws_url) as ws:
+                
+                # websockets.connect handles ssl context via 'ssl' param
+                # 403 Fix: Add Origin header to satisfy strict CORS or Firewall rules
+                async with websockets.connect(
+                    self.ws_url, 
+                    ssl=ssl_context,
+                    extra_headers={"Origin": "http://localhost"} 
+                ) as ws:
                     self.websocket = ws
                     logger.info("RelayClient: Connected!")
                     backoff = 1 # Reset backoff

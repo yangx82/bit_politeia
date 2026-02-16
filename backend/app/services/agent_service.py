@@ -132,7 +132,7 @@ class AgentService:
         logger.info(f"Setting P2P Endpoint to: {p2p_endpoint}")
 
         # Initialize P2P Service
-        node_id = crypto_service.get_public_key_string()
+        node_id = crypto_service.get_node_id()
         await p2p_service.initialize(node_id, p2p_endpoint)
         
         # Start Message Bus and Listener
