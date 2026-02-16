@@ -1,5 +1,7 @@
 import logging
 import json
+import os
+import time
 from typing import List, Dict, Any
 from datetime import datetime
 import httpx
@@ -8,6 +10,7 @@ import re
 import urllib.parse
 
 logger = logging.getLogger(__name__)
+
 
 class WebResearcher:
     """
@@ -107,7 +110,6 @@ try:
     CHROMA_AVAILABLE = True
 except ImportError:
     CHROMA_AVAILABLE = False
-    CHROMA_AVAILABLE = False
     logger.warning("ChromaDB or SentenceTransformers not found. Falling back to simple keyword search.")
 
 try:
@@ -136,9 +138,8 @@ class KnowledgeBase:
                 data_path = "backend/data/chroma"
                 self.chroma_client = chromadb.PersistentClient(path=data_path)
                 
-                # Initialize Embedding Model (all-MiniLM-L6-v2 is fast and good)
-                # It will download on first run (approx 80MB)
-                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                # Initialize Embedding Model with Offline Fallback & Frequency Check
+                self.embedding_model = self._load_embedding_model('all-MiniLM-L6-v2')
                 
                 # Get or Create Collection
                 self.collection = self.chroma_client.get_or_create_collection(name="episodic_memory")
@@ -148,6 +149,81 @@ class KnowledgeBase:
                 # Do not assign to global CHROMA_AVAILABLE here to avoid UnboundLocalError
                 self.collection = None
                 self.chroma_client = None
+
+        # Hybrid Search Init
+        self.bm25 = None
+        self.bm25_corpus = [] # List of {text, metadata}
+
+    def _load_embedding_model(self, model_name: str):
+        """
+        Load SentenceTransformer with smart offline/fallback logic.
+        1. Check update frequency (default 30 days).
+        2. Fallback to offline if connection fails.
+        """
+        cache_dir = "backend/data"
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
+            
+        check_file = os.path.join(cache_dir, ".model_last_check")
+        should_check_online = True
+        
+        # 1. Frequency Check (30 days = 2592000 seconds)
+        if os.path.exists(check_file):
+            try:
+                with open(check_file, 'r') as f:
+                    last_check = float(f.read().strip())
+                if time.time() - last_check < 2592000:
+                    should_check_online = False
+                    logger.info(f"Skipping model update check (Last checked: {time.ctime(last_check)})")
+            except Exception:
+                pass # File corrupted, check online
+
+        # 2. Try Load
+        model = None
+        original_offline = os.environ.get("HF_HUB_OFFLINE") # Backup
+
+        try:
+            if not should_check_online:
+                # Force offline
+                os.environ["HF_HUB_OFFLINE"] = "1"
+                logger.info(f"Loading {model_name} in Offline Mode...")
+                model = SentenceTransformer(model_name)
+            else:
+                # Allow online
+                if "HF_HUB_OFFLINE" in os.environ:
+                    del os.environ["HF_HUB_OFFLINE"]
+                
+                logger.info(f"Checking for updates for {model_name}...")
+                model = SentenceTransformer(model_name)
+                
+                # Save timestamp on success
+                with open(check_file, 'w') as f:
+                    f.write(str(time.time()))
+
+        except Exception as e:
+            logger.warning(f"Failed to load model in requested mode: {e}")
+            if should_check_online:
+                 # Fallback to offline
+                 logger.info("Falling back to local cache...")
+                 os.environ["HF_HUB_OFFLINE"] = "1"
+                 try:
+                     model = SentenceTransformer(model_name)
+                 except Exception as final_e:
+                     logger.error(f"Fatal: Could not load model even offline: {final_e}")
+                     raise final_e
+            else:
+                raise e
+        finally:
+            # Restore env var
+            if original_offline is not None:
+                os.environ["HF_HUB_OFFLINE"] = original_offline
+            elif "HF_HUB_OFFLINE" in os.environ:
+                del os.environ["HF_HUB_OFFLINE"]
+
+        return model
+
+                
+
 
         # Hybrid Search Init
         self.bm25 = None

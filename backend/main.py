@@ -7,6 +7,10 @@ import logging
 import os
 import asyncio
 from contextlib import asynccontextmanager
+
+# Critical for China: Set HuggingFace Mirror before any imports that might use it
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
 from dotenv import load_dotenv
 
 # Load env vars

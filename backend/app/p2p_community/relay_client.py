@@ -60,10 +60,11 @@ class RelayClient:
                 
                 # websockets.connect handles ssl context via 'ssl' param
                 # 403 Fix: Add Origin header to satisfy strict CORS or Firewall rules
+                # Websockets 14.0+: extra_headers removed, use origin param directly or additional_headers
                 async with websockets.connect(
                     self.ws_url, 
                     ssl=ssl_context,
-                    extra_headers={"Origin": "http://localhost"} 
+                    origin="http://localhost"
                 ) as ws:
                     self.websocket = ws
                     logger.info("RelayClient: Connected!")
