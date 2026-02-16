@@ -189,14 +189,15 @@ class KnowledgeBase:
                 # Force offline
                 os.environ["HF_HUB_OFFLINE"] = "1"
                 logger.info(f"Loading {model_name} in Offline Mode...")
-                model = SentenceTransformer(model_name)
+                # Explicitly tell SentenceTransformer to use local files only and specific cache
+                model = SentenceTransformer(model_name, cache_folder=cache_dir, local_files_only=True)
             else:
                 # Allow online
                 if "HF_HUB_OFFLINE" in os.environ:
                     del os.environ["HF_HUB_OFFLINE"]
                 
                 logger.info(f"Checking for updates for {model_name}...")
-                model = SentenceTransformer(model_name)
+                model = SentenceTransformer(model_name, cache_folder=cache_dir)
                 
                 # Save timestamp on success
                 with open(check_file, 'w') as f:
@@ -209,7 +210,7 @@ class KnowledgeBase:
                  logger.info("Falling back to local cache...")
                  os.environ["HF_HUB_OFFLINE"] = "1"
                  try:
-                     model = SentenceTransformer(model_name)
+                     model = SentenceTransformer(model_name, cache_folder=cache_dir, local_files_only=True)
                  except Exception as final_e:
                      logger.error(f"Fatal: Could not load model even offline: {final_e}")
                      raise final_e
