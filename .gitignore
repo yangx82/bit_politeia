@@ -61,4 +61,7 @@ venv/
 
 # System files
 .DS_Store
-Thumbs.db
+# Backend local data stores
+/backend/data/
+/backend/memory/
+
