@@ -129,9 +129,14 @@ async def websocket_relay(websocket: WebSocket, node_id: str):
                          # Relay to target
                          success = await relay_manager.route_message(node_id, target_id, message)
                          if not success:
-                             # Optionally send error back to sender?
-                             # For now, silent failure or log
-                             pass
+                             # Send error back to sender
+                             error_msg = {
+                                 "type": "SYSTEM_ERROR",
+                                 "error_code": "DELIVERY_FAILED",
+                                 "recipient_id": target_id,
+                                 "content": "Target node is not connected to relay."
+                             }
+                             await websocket.send_text(json.dumps(error_msg))
                 else:
                     logger.warning(f"Relay: Received malformed message from {node_id} (No recipient_id)")
                     

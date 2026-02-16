@@ -67,7 +67,7 @@ class RelayClient:
                     origin="http://localhost"
                 ) as ws:
                     self.websocket = ws
-                    logger.info("RelayClient: Connected!")
+                    logger.info(f"RelayClient: Connected! (Node ID: {self.node_id})")
                     backoff = 1 # Reset backoff
                     
                     # Listen loop

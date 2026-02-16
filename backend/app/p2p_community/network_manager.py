@@ -146,6 +146,11 @@ class NetworkManager:
         """Callback for messages received via WebSocket relay."""
         try:
             # message_dict is the raw SignedMessage dict
+            # Check for System Error
+            if message_dict.get("type") == "SYSTEM_ERROR":
+                logger.error(f"⚠️ Relay Delivery Failed: {message_dict.get('content')} (Target: {message_dict.get('recipient_id')}, Code: {message_dict.get('error_code')})")
+                return
+
             # We need to parse it back to SignedMessage object if possible or pass as is
             # The receive_message expects SignedMessage object
             # Let's reconstruct it
