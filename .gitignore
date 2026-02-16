@@ -61,7 +61,8 @@ venv/
 
 # System files
 .DS_Store
-# Backend local data stores
 /backend/data/
 /backend/memory/
+# Ignore memory backups
+/backend/resident_memory_backup_*.json
 

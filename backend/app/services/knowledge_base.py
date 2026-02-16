@@ -138,8 +138,10 @@ class KnowledgeBase:
                 data_path = "backend/data/chroma"
                 self.chroma_client = chromadb.PersistentClient(path=data_path)
                 
+                
                 # Initialize Embedding Model with Offline Fallback & Frequency Check
-                self.embedding_model = self._load_embedding_model('all-MiniLM-L6-v2')
+                # Use full model name to avoid alias resolution network call
+                self.embedding_model = self._load_embedding_model('sentence-transformers/all-MiniLM-L6-v2')
                 
                 # Get or Create Collection
                 self.collection = self.chroma_client.get_or_create_collection(name="episodic_memory")
