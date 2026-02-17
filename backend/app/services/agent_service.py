@@ -105,8 +105,8 @@ class AgentService:
         
         # Save to JSON
         self._save_config({
-            "name": name,
-            "personality": personality,
+            "name": self.name,
+            "personality": self.personality,
             "base_url": base_url,
             "api_key": api_key,
             "model": model,
@@ -116,7 +116,7 @@ class AgentService:
             "bootstrap_verify": bootstrap_verify
         })
         
-        logger.info(f"Agent Configured: Name={name}, Model={model}")
+        logger.info(f"Agent Configured: Name={self.name}, Model={model}")
         
         # Persist configuration to .env
         try:
@@ -171,12 +171,12 @@ class AgentService:
         logger.info(f"Setting P2P Endpoint to: {p2p_endpoint}")
 
         if p2p_service.local_node:
-            await p2p_service.update_node_info(name=name)
+            await p2p_service.update_node_info(name=self.name)
             node_id = p2p_service.local_node.node_id
         else:
              # Initialize if not already (first run)
              node_id = crypto_service.get_node_id()
-             await p2p_service.initialize(node_id, p2p_endpoint, name=name)
+             await p2p_service.initialize(node_id, p2p_endpoint, name=self.name)
         
         # Start Message Bus and Listener
         await self.message_bus.start()
