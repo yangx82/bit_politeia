@@ -1,5 +1,5 @@
 export const Store = {
-    saveUser: (email, field, apiKey, model = 'gpt-4o', llmBaseUrl = '', bootstrapUrl = 'http://localhost:8000', verboseLlm = false, bootstrapVerify = true) => {
+    saveUser: (email, field, apiKey, model = 'gpt-4o', llmBaseUrl = '', bootstrapUrl = 'http://localhost:8000', verboseLlm = false, bootstrapVerify = true, name = 'Agent', personality = 'Professional') => {
         localStorage.setItem('bp_email', email)
         localStorage.setItem('bp_field', field)
         if (apiKey) localStorage.setItem('bp_api_key', apiKey)
@@ -8,6 +8,8 @@ export const Store = {
         localStorage.setItem('bp_bootstrap_url', bootstrapUrl)
         localStorage.setItem('bp_verbose_llm', verboseLlm)
         localStorage.setItem('bp_bootstrap_verify', bootstrapVerify)
+        localStorage.setItem('bp_name', name)
+        localStorage.setItem('bp_personality', personality)
         localStorage.setItem('bp_onboarded', 'true')
     },
 
@@ -20,7 +22,9 @@ export const Store = {
         llmBaseUrl: localStorage.getItem('bp_llm_base_url') || '',
         bootstrapUrl: localStorage.getItem('bp_bootstrap_url') || 'http://localhost:8000',
         verboseLlm: localStorage.getItem('bp_verbose_llm') === 'true',
-        bootstrapVerify: localStorage.getItem('bp_bootstrap_verify') !== 'false'
+        bootstrapVerify: localStorage.getItem('bp_bootstrap_verify') !== 'false',
+        name: localStorage.getItem('bp_name') || 'Agent',
+        personality: localStorage.getItem('bp_personality') || 'Professional'
     }),
 
     clear: () => {

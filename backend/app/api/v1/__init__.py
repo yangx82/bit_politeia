@@ -58,6 +58,11 @@ async def get_peers():
     """Get list of connected P2P nodes."""
     return await agent_service.get_peers()
 
+@router.get("/p2p/groups")
+async def get_groups():
+    """Get list of P2P groups."""
+    return await agent_service.get_groups()
+
 @router.post("/p2p/send")
 async def send_p2p_message(payload: dict = Body(...)):
     """Send a direct P2P message."""

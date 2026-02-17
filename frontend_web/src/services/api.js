@@ -15,4 +15,10 @@ export const setApiUrl = (url) => {
     api.defaults.baseURL = url
 }
 
+
+export const getGroups = async () => {
+    const response = await api.get('/api/v1/p2p/groups')
+    return response.data
+}
+
 export default api

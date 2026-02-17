@@ -68,7 +68,9 @@ const Profile = () => {
             model: userData.model || 'gpt-4o',
             field: userData.field || '',
             verboseLlm: userData.verboseLlm || false,
-            bootstrapVerify: userData.bootstrapVerify !== undefined ? userData.bootstrapVerify : true
+            bootstrapVerify: userData.bootstrapVerify !== undefined ? userData.bootstrapVerify : true,
+            name: userData.name || 'Agent',
+            personality: userData.personality || 'Professional'
         })
         fetchStatus()
     }, [])
@@ -85,7 +87,9 @@ const Profile = () => {
                 research_field: agentConfig.field,
                 bootstrap_url: agentConfig.bootstrapUrl,
                 verbose_llm: agentConfig.verboseLlm,
-                bootstrap_verify: agentConfig.bootstrapVerify
+                bootstrap_verify: agentConfig.bootstrapVerify,
+                name: agentConfig.name,
+                personality: agentConfig.personality
             })
 
             const updatedStatus = response.data
@@ -99,6 +103,8 @@ const Profile = () => {
             localStorage.setItem('bp_bootstrap_url', agentConfig.bootstrapUrl)
             localStorage.setItem('bp_verbose_llm', agentConfig.verboseLlm)
             localStorage.setItem('bp_bootstrap_verify', agentConfig.bootstrapVerify)
+            localStorage.setItem('bp_name', agentConfig.name)
+            localStorage.setItem('bp_personality', agentConfig.personality)
 
             // Refresh local user state with new balance
             const localUser = Store.getUser()
@@ -122,6 +128,10 @@ const Profile = () => {
                 <div className="md:col-span-2">
                     <Card title="Identity" icon={User}>
                         <div className="space-y-3">
+                            <div>
+                                <label className="text-xs text-slate-500 uppercase font-bold">Agent Name</label>
+                                <p className="font-medium text-slate-800">{agentConfig.name || 'Agent'}</p>
+                            </div>
                             <div>
                                 <label className="text-xs text-slate-500 uppercase font-bold">Email</label>
                                 <p className="font-medium text-slate-800">{user.email}</p>
@@ -193,6 +203,21 @@ const Profile = () => {
                             value={agentConfig.model}
                             onChange={e => setAgentConfig({ ...agentConfig, model: e.target.value })}
                         />
+                        <Input
+                            label="Agent Name"
+                            value={agentConfig.name}
+                            onChange={e => setAgentConfig({ ...agentConfig, name: e.target.value })}
+                        />
+                        <div className="flex flex-col gap-1 mb-3">
+                            <label className="text-xs text-slate-500 uppercase font-bold">Personality Guidelines</label>
+                            <textarea
+                                className="p-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm"
+                                rows="3"
+                                value={agentConfig.personality}
+                                onChange={e => setAgentConfig({ ...agentConfig, personality: e.target.value })}
+                            />
+                        </div>
+
                         <Input
                             label="Monitoring Research Field"
                             placeholder="e.g. AI Governance, Quantum Computing"

@@ -46,7 +46,8 @@ async def register_node(registration: dict = Body(...)) -> Dict[str, bool]:
              public_key=registration.get("public_key"),
              ip_address=registration.get("ip_address"),
              port=registration.get("port"),
-             group_id=registration.get("group_id")
+             group_id=registration.get("group_id"),
+             name=registration.get("name")
         )
         
         success = bootstrap_service.register_node(reg_obj)

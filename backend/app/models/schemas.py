@@ -19,9 +19,13 @@ class ConfigRequest(BaseModel):
     bootstrap_url: Optional[str] = "http://localhost:8000"
     verbose_llm: bool = False
     bootstrap_verify: bool = True
+    name: Optional[str] = "Agent"
+    personality: Optional[str] = "Professional and helpful"
 
 class AgentStatus(BaseModel):
     is_online: bool
+    name: Optional[str] = None
+    personality: Optional[str] = None
     reputation: int
     balance: float
     current_group: Optional[str] = None

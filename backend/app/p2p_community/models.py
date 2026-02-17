@@ -45,9 +45,10 @@ class Group:
 
 
 class Node:
-    def __init__(self, node_id: str, network_manager, public_key: str):
+    def __init__(self, node_id: str, network_manager, public_key: str, name: str = "Agent"):
         self.node_id = node_id  # This is the Node ID (Public Key usually)
         self.public_key = public_key
+        self.name = name
         self.network_manager = network_manager
         self.level: int = 1  # Default level for new nodes
         self.endpoint: Optional[str] = None # Address of the node's API (e.g. http://192.168.1.5:8001)

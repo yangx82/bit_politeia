@@ -116,12 +116,12 @@ class NetworkManager:
             node_id=node.node_id,
             public_key=node.public_key,
             ip_address=host,
-            port=port
+            port=port,
+            name=node.name
         )
         await self.bootstrap.register_node(reg)
         logger.info(f"Registered local node {node.node_id} at {host}:{port}")
 
-        # --- Start Relay Client ---
         # --- Start Relay Client ---
         from .relay_client import RelayClient
         self.relay_client = RelayClient(
@@ -142,40 +142,15 @@ class NetworkManager:
             else:
                 logger.warning(f"No joinable groups found for node {node.node_id}")
 
-    async def handle_relayed_message(self, message_dict: Dict):
-        """Callback for messages received via WebSocket relay."""
+    async def handle_relayed_message(self, message_data: Dict):
+        """Handle messages received via RelayClient."""
         try:
-            # message_dict is the raw SignedMessage dict
-            # Check for System Error
-            if message_dict.get("type") == "SYSTEM_ERROR":
-                logger.error(f"⚠️ Relay Delivery Failed: {message_dict.get('content')} (Target: {message_dict.get('recipient_id')}, Code: {message_dict.get('error_code')})")
-                return
-
-            # We need to parse it back to SignedMessage object if possible or pass as is
-            # The receive_message expects SignedMessage object
-            # Let's reconstruct it
-            from datetime import datetime
+            # Parse dict back to SignedMessage
+            message = SignedMessage.from_dict(message_data)
+            logger.info(f"[Network] Received RELAYED message {message.message_id} from {message.sender_id}")
             
-            # Parse timestamp if it's a string
-            ts = message_dict.get("timestamp")
-            if isinstance(ts, str):
-                ts = datetime.fromisoformat(ts)
-
-            msg = SignedMessage(
-                message_id=message_dict.get("message_id"),
-                sender_id=message_dict.get("sender_id"),
-                recipient_id=message_dict.get("recipient_id"),
-                message_type=MessageType(message_dict.get("message_type")),
-                content=message_dict.get("content"),
-                timestamp=ts,
-                signature=message_dict.get("signature"),
-                nonce=message_dict.get("nonce")
-            )
-            
-            logger.info(f"Received RELAYED message from {msg.sender_id}")
-            if self.local_node_id in self.nodes:
-                await self.nodes[self.local_node_id].receive_message(msg)
-                
+            # Route locally
+            await self.route_message(message)
         except Exception as e:
             logger.error(f"Failed to handle relayed message: {e}")
 
@@ -207,7 +182,8 @@ class NetworkManager:
                 public_key=node.public_key,
                 ip_address=host,
                 port=port,
-                group_id=group_id
+                group_id=group_id,
+                name=node.name
             )
             await self.bootstrap.register_node(reg)
 

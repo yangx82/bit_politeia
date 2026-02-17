@@ -56,6 +56,10 @@ class AgentService:
         self.context_builder = ContextBuilder()
         self.consolidation_service = ConsolidationService(self)
         
+        # Identity
+        self.name = "Agent"
+        self.personality = "Professional and helpful"
+        
         # Hydrate History from Disk
         self._hydrate_history()
         self.verbose_llm = False # Control flag for console output
@@ -69,7 +73,7 @@ class AgentService:
         # Nightly Consolidation (2:00 AM)
         self.scheduler.add_job(self.consolidation_service.run_daily_consolidation, 'cron', hour=2, minute=0)
 
-    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True):
+    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = "Agent", personality: str = "Professional"):
         try:
              self.scheduler.start()
         except Exception:
@@ -80,7 +84,14 @@ class AgentService:
         self.model = model
         self.research_field = research_field
         self.verbose_llm = verbose_llm
-        logger.info(f"Agent Configured with Base URL: {base_url}, Model: {model}, Field: {research_field}, Verbose: {verbose_llm}")
+        self.name = name
+        self.personality = personality
+        
+        # Update Status
+        self.status.name = name
+        self.status.personality = personality
+        
+        logger.info(f"Agent Configured: Name={name}, Model={model}")
         
         # Persist configuration to .env
         try:
@@ -99,6 +110,8 @@ class AgentService:
             if bootstrap_url:
                 set_key(env_file, "AGENT_BOOTSTRAP_URL", bootstrap_url)
             set_key(env_file, "AGENT_BOOTSTRAP_VERIFY", "true" if bootstrap_verify else "false")
+            set_key(env_file, "AGENT_NAME", name)
+            set_key(env_file, "AGENT_PERSONALITY", personality)
             logger.info(f"Configuration saved to {env_file}")
         except Exception as e:
             logger.error(f"Failed to save configuration to .env: {e}")
@@ -133,7 +146,8 @@ class AgentService:
 
         # Initialize P2P Service
         node_id = crypto_service.get_node_id()
-        await p2p_service.initialize(node_id, p2p_endpoint)
+        # Pass name to P2P Init
+        await p2p_service.initialize(node_id, p2p_endpoint, name=self.name)
         
         # Start Message Bus and Listener
         await self.message_bus.start()
@@ -154,14 +168,12 @@ class AgentService:
         real_node_id = p2p_service.local_node.node_id if p2p_service.local_node else node_id
         
         # Initialize Ledger Balance (Mocking initial funding)
-        # Only credit if balance is 0 (prevents double-credit on re-config)
         if self.ledger.get_balance(real_node_id) == 0:
             self.ledger.credit(real_node_id, 1000.0)
         
         # Initialize LLM with Tools
         try:
             # Common fix: Ensure base_url for OpenAI-compatible proxies ends with /v1
-            # But let's log it clearly so the user knows what's being used.
             logger.info(f"Initializing ChatOpenAI with base_url: {base_url}")
             
             raw_llm = ChatOpenAI(
@@ -177,21 +189,23 @@ class AgentService:
             # Combine standard tools with skill tools
             all_tools = AGENT_TOOLS + skill_tools
             
-            # Update system prompt with skill index (Progressive Disclosure)
+            # Update system prompt with skill index (Progressive Disclosure) AND IDENTITY
             skill_index_prompt = skill_manager.get_skill_index()
-            # Note: We need to store this modified prompt to use it in _think_and_act
-            self.current_system_prompt = AGENT_SYSTEM_PROMPT + "\n" + skill_index_prompt
+            
+            # INJECT IDENTITY INTO PROMPT
+            identity_section = f"\n\nYOUR IDENTITY CONFIGURATION:\nName: {self.name}\nPersonality Guidelines: {self.personality}\n"
+            
+            self.current_system_prompt = AGENT_SYSTEM_PROMPT + identity_section + "\n" + skill_index_prompt
             
             self.llm = raw_llm.bind_tools(all_tools)
             self.tools_map = {t.name: t for t in all_tools}
             
-            logger.info(f"Agent LLM Initialized Successfully. Tools: {len(all_tools)} (Standard: {len(AGENT_TOOLS)}, Skills: {len(skill_tools)})")
+            logger.info(f"Agent LLM Initialized Successfully. Tools: {len(all_tools)}")
             
         except Exception as e:
             logger.error(f"Failed to initialize Agent LLM: {e}")
 
-    # ... (Rest of existing methods _think_and_act, process_user_instruction etc. remain unchanged) ...
-    # I will replace the end of the file to append new methods
+    # ... (process_message, etc.) ...
     
     def load_config_from_env(self):
         """Load configuration from environment variables."""
@@ -202,6 +216,8 @@ class AgentService:
         research_field = os.getenv("AGENT_RESEARCH_FIELD", "AI Governance")
         bootstrap_url = os.getenv("AGENT_BOOTSTRAP_URL")
         bootstrap_verify = os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true"
+        name = os.getenv("AGENT_NAME", "Agent")
+        personality = os.getenv("AGENT_PERSONALITY", "Professional")
         
         if base_url and api_key:
             return {
@@ -210,7 +226,9 @@ class AgentService:
                 "model": model,
                 "research_field": research_field,
                 "bootstrap_url": bootstrap_url,
-                "bootstrap_verify": bootstrap_verify
+                "bootstrap_verify": bootstrap_verify,
+                "name": name,
+                "personality": personality
             }
         return None
 
@@ -685,10 +703,62 @@ class AgentService:
             })
         return peers
 
+    async def get_groups(self) -> list[dict]:
+        """Get list of known groups from P2P service."""
+        return p2p_service.get_groups()
+
+    async def _check_compliance(self, content: str, target_id: str) -> tuple[bool, str]:
+        """Audit message content against community rules."""
+        if not self.llm:
+            return True, "" 
+
+        sys_prompt = (
+            "You are the Compliance Officer agent. "
+            "Audit the following message for community rule violations (impolite, hate speech, spam, illegal). "
+            "Reply EXACTLY with 'APPROVED' if compliant, or 'REJECTED: <reason>' if not."
+        )
+        msg_text = f"Target: {target_id}\nContent: {content}"
+        
+        try:
+            # We use a distinct invocation to avoid polluting the main context
+            response = await self.llm.ainvoke([
+                SystemMessage(content=sys_prompt),
+                HumanMessage(content=msg_text)
+            ])
+            res_text = response.content.strip()
+            
+            if "REJECTED" in res_text:
+                parts = res_text.split("REJECTED", 1)
+                reason = parts[1].strip().lstrip(":").strip()
+                return False, reason
+            
+            return True, ""
+        except Exception as e:
+            logger.error(f"Compliance check failed: {e}")
+            return True, "" # Fallback to allow if check fails
+
     async def send_p2p_message(self, target_id: str, content: str) -> dict:
         """Send a P2P message to a specific peer."""
         if not p2p_service._initialized:
              return {"success": False, "error": "P2P not initialized"}
+             
+        # 1. Moderation Check
+        is_compliant, reason = await self._check_compliance(content, target_id)
+        if not is_compliant:
+            msg = f"⚠️ Message Refused: {reason}"
+            
+            # Log refusal to history so user sees it in chat
+            self.history.append(Message(
+                id=str(uuid.uuid4()),
+                content=msg,
+                sender="agent",
+                timestamp=datetime.now()
+            ))
+            self.resident_memory.log_interaction("agent", msg, "moderation")
+            
+            # Return success=True so frontend doesn't throw generic error, 
+            # but user sees the refusal message.
+            return {"success": True, "status": "refused"}
              
         # Construct message payload
         msg_payload = {
@@ -704,16 +774,21 @@ class AgentService:
         # P2PService.send_message is cleaner.
         
         try:
+             # Determine message type
+             msg_type = MessageType.DIRECT.value
+             if p2p_service.network_manager and target_id in p2p_service.network_manager.groups:
+                 msg_type = MessageType.GROUP.value
+                 
              await p2p_service.send_message(
                  target_id=target_id,
                  content=msg_payload,
-                 msg_type=MessageType.DIRECT.value
+                 msg_type=msg_type
              )
              
              # Log to history as sent message
              self.history.append(Message(
                 id=str(uuid.uuid4()),
-                content=f"Sent P2P: {content}",
+                content=f"Sent P2P ({msg_type}): {content}",
                 sender="me",
                 timestamp=datetime.now()
              ))

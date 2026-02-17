@@ -17,6 +17,8 @@ const Onboarding = ({ onComplete }) => {
     const [formData, setFormData] = useState({
         email: '',
         field: '',
+        name: 'Agent',
+        personality: 'Professional and helpful',
         agentUrl: 'http://localhost:8001',
         bootstrapUrl: 'http://localhost:8000',
         llmBaseUrl: 'https://api.openai.com/v1',
@@ -48,12 +50,25 @@ const Onboarding = ({ onComplete }) => {
                 research_field: formData.field,
                 bootstrap_url: formData.bootstrapUrl,
                 verbose_llm: formData.verboseLlm,
-                bootstrap_verify: formData.bootstrapVerify
+                bootstrap_verify: formData.bootstrapVerify,
+                name: formData.name,
+                personality: formData.personality
             })
 
             // 4. Save Preference Locally
             localStorage.setItem('bp_api_url', formData.agentUrl)
-            Store.saveUser(formData.email, formData.field, formData.apiKey, formData.model, formData.llmBaseUrl, formData.bootstrapUrl, formData.verboseLlm, formData.bootstrapVerify)
+            Store.saveUser(
+                formData.email,
+                formData.field,
+                formData.apiKey,
+                formData.model,
+                formData.llmBaseUrl,
+                formData.bootstrapUrl,
+                formData.verboseLlm,
+                formData.bootstrapVerify,
+                formData.name,
+                formData.personality
+            )
 
             onComplete()
         } catch (err) {
@@ -87,7 +102,29 @@ const Onboarding = ({ onComplete }) => {
 
                     <div className="h-px bg-slate-100 my-6" />
 
-                    <h3 className="font-medium mb-4 text-slate-700">Agent Configuration</h3>
+                    <h3 className="font-medium mb-4 text-slate-700">Identity & Personality</h3>
+
+                    <Input
+                        label="Agent Name"
+                        placeholder="e.g. Alice, Bob"
+                        value={formData.name}
+                        onChange={e => setFormData({ ...formData, name: e.target.value })}
+                    />
+
+                    <div className="flex flex-col gap-1 mb-4">
+                        <label className="text-sm font-medium text-secondary">Personality Guidelines</label>
+                        <textarea
+                            className="p-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm"
+                            rows="3"
+                            placeholder="e.g. Socratic, Formal, Enthusiastic. Describes HOW the agent speaks."
+                            value={formData.personality}
+                            onChange={e => setFormData({ ...formData, personality: e.target.value })}
+                        />
+                    </div>
+
+                    <div className="h-px bg-slate-100 my-6" />
+
+                    <h3 className="font-medium mb-4 text-slate-700">System Configuration</h3>
 
                     <Input
                         label="Agent Node URL (Backend address)"
