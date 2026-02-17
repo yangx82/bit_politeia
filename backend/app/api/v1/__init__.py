@@ -24,7 +24,9 @@ async def configure_agent(request: ConfigRequest):
         rf,
         bu,
         request.verbose_llm,
-        request.bootstrap_verify
+        request.bootstrap_verify,
+        request.name,
+        request.personality
     )
     return await get_status()
 

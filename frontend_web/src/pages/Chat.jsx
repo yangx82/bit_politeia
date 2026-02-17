@@ -58,10 +58,11 @@ const Chat = () => {
     // --- DATA FETCHING ---
     const fetchData = async () => {
         try {
-            const [msgRes, peerRes, groupRes] = await Promise.all([
+            const [msgRes, peerRes, groupRes, statusRes] = await Promise.all([
                 api.get('/api/v1/history'),
                 api.get('/api/v1/p2p/peers'),
-                api.get('/api/v1/p2p/groups')
+                api.get('/api/v1/p2p/groups'),
+                api.get('/api/v1/status')
             ])
 
             // Deduplicate messages by ID to prevent key warnings/flicker
@@ -69,6 +70,11 @@ const Chat = () => {
             // Sort by timestamp
             uniqueMsgs.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
             setMessages(uniqueMsgs)
+
+            // Update Agent Name from Backend
+            if (statusRes.data.name) {
+                setAgentName(statusRes.data.name)
+            }
 
             // Map peers: ID -> Name
             const pMap = {}

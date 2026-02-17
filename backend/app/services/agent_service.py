@@ -57,8 +57,18 @@ class AgentService:
         self.consolidation_service = ConsolidationService(self)
         
         # Identity
-        self.name = "Agent"
-        self.personality = "Professional and helpful"
+        self.config_path = "agent_config.json"
+        
+        # 1. Load from JSON (Identity)
+        json_config = self._load_config()
+        
+        # 2. Load from ENV (Credentials & Overrides)
+        from dotenv import load_dotenv
+        import os
+        load_dotenv()
+        
+        self.name = os.getenv("AGENT_NAME") or json_config.get("name", "Agent")
+        self.personality = os.getenv("AGENT_PERSONALITY") or json_config.get("personality", "Professional and helpful")
         
         # Hydrate History from Disk
         self._hydrate_history()
@@ -87,9 +97,23 @@ class AgentService:
         self.name = name
         self.personality = personality
         
+        
         # Update Status
         self.status.name = name
         self.status.personality = personality
+        
+        # Save to JSON
+        self._save_config({
+            "name": name,
+            "personality": personality,
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": model,
+            "research_field": research_field,
+            "bootstrap_url": bootstrap_url,
+            "verbose_llm": verbose_llm,
+            "bootstrap_verify": bootstrap_verify
+        })
         
         logger.info(f"Agent Configured: Name={name}, Model={model}")
         
@@ -100,8 +124,11 @@ class AgentService:
             if not env_file:
                 # Create .env if not found
                 import os
-                env_file = os.path.join(os.getcwd(), ".env")
-                open(env_file, 'a').close()
+                # Force standard path: backend/.env or just .env in CWD
+                # Ideally, we should look for where managing script is running
+                env_file = ".env"
+                if not os.path.exists(env_file):
+                     open(env_file, 'a').close()
             
             set_key(env_file, "AGENT_BASE_URL", base_url)
             set_key(env_file, "AGENT_API_KEY", api_key)
@@ -146,6 +173,7 @@ class AgentService:
 
         if p2p_service.local_node:
             await p2p_service.update_node_info(name=name)
+            node_id = p2p_service.local_node.node_id
         else:
              # Initialize if not already (first run)
              node_id = crypto_service.get_node_id()
@@ -246,6 +274,42 @@ class AgentService:
             return f"Transfer successful. TX ID: {tx.transaction_id}"
         else:
             return "Transfer failed. Insufficient funds or invalid amount."
+
+    def _load_config(self) -> dict:
+        """Load agent configuration from JSON file."""
+        import json
+        import os
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load agent config: {e}")
+        return {}
+
+    def _save_config(self, config: dict):
+        """
+        Save agent configuration to JSON file.
+        excludes sensitive keys that should be in .env
+        """
+        import json
+        
+        # Keys to exclude from JSON (they go to .env)
+        EXCLUDED_KEYS = {"api_key", "base_url", "bootstrap_url", "model", "research_field"}
+        
+        try:
+            # Merge with existing
+            current = self._load_config()
+            
+            # Update only non-excluded keys
+            for k, v in config.items():
+                if k not in EXCLUDED_KEYS:
+                    current[k] = v
+            
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(current, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Failed to save agent config: {e}")
 
     async def get_balance(self) -> float:
         if self.ledger and p2p_service.local_node:
@@ -1014,6 +1078,19 @@ class AgentService:
         """Run the agent on a specific task prompt."""
         # For now, simulate execution. In reality, this would trigger a clean chain run.
         return f"Executed: {prompt[:100]}... [SIMULATED SUCCESS]"
+
+    async def get_status(self) -> AgentStatus:
+        """Get current agent status."""
+        # Ensure status object is up to date with instance attributes
+        self.status.name = self.name
+        self.status.personality = self.personality
+        
+        # P2P Info
+        if p2p_service.local_node:
+            self.status.node_id = p2p_service.local_node.node_id
+            # TODO: Get actual balance, reputation
+            
+        return self.status
 
     async def handle_p2p_result(self, sender_id: str, payload: dict):
         """Process result from a previously delegated task."""
