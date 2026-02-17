@@ -106,18 +106,11 @@ const Chat = () => {
     const sessions = useMemo(() => {
         const sessMap = {}
 
-        // Ensure "Resident" session always exists even if empty, so it's top of list potentially?
-        // Actually, better to let it be created by messages or default.
-
         messages.forEach(msg => {
-            let sessionId = 'system'
+            // Use chat_id if available (new backend), fallback to sender (old logic)
+            let sessionId = msg.chat_id || (isInternalSender(msg.sender) ? 'resident' : msg.sender)
 
-            if (isInternalSender(msg.sender)) {
-                sessionId = 'resident'
-            } else {
-                sessionId = msg.sender
-                if (sessionId.startsWith('[p2p] ')) sessionId = sessionId.replace('[p2p] ', '')
-            }
+            if (sessionId.startsWith('[p2p] ')) sessionId = sessionId.replace('[p2p] ', '')
 
             if (!sessMap[sessionId]) {
                 // Determine Name for Session
@@ -152,9 +145,6 @@ const Chat = () => {
             }
         })
 
-        // If 'resident' session missing (no history), trigger it if needed? 
-        // Or just let it be empty until user talks.
-
         return Object.values(sessMap).sort((a, b) =>
             new Date(b.lastMessage.timestamp) - new Date(a.lastMessage.timestamp)
         )
@@ -167,7 +157,6 @@ const Chat = () => {
         if (urlSessionId) {
             setActiveSessionId(urlSessionId)
         } else if (!activeSessionId && sessions.length > 0) {
-            // Default to first session if no URL param and no selection
             setActiveSessionId(sessions[0].id)
         }
     }, [urlSessionId, sessions, activeSessionId])
@@ -179,26 +168,15 @@ const Chat = () => {
         if (!activeSessionId) return []
 
         return messages.filter(msg => {
+            // New logic: Match chat_id
+            if (msg.chat_id) {
+                return msg.chat_id === activeSessionId
+            }
+
+            // Old logic fallback
             if (activeSessionId === 'resident') {
                 return isInternalSender(msg.sender)
             }
-            // For P2P: strictly match sender or if I sent to them (hypothetically 'me', 'recipient')
-            // Current backend P2P send logs sender='me', content="Sent P2P...". No recipient field in history schema strictly? 
-            // Wait, history schema is generic Message. agent_service.send_p2p_message appends:
-            // content=`Sent P2P: ${content}`, sender="me"
-            // It loses who it was sent TO in the simple message object unless we parse.
-            // But `process_network_inbox` logs inbound with sender=sender_id.
-
-            // Fix for displaying OUTBOUND P2P messages in the correct session:
-            // The current simple history doesn't store 'recipient' column in DB/JSON easily accessible here 
-            // without parsing "Sent P2P: ..." content or changing backend.
-            // For now, we only show INBOUND P2P messages in the session. 
-            // Outbound "Sent P2P" messages with sender='me' are global. 
-            // We can try to include 'me' messages if we are in a P2P session, 
-            // but we don't know WHICH 'me' message belongs to WHICH session.
-            // This is a known limitation of the current simplified history. 
-            // We will just show inbound for P2P.
-
             return msg.sender === activeSessionId
         })
     }
@@ -397,7 +375,14 @@ const Chat = () => {
                             <div className="h-4"></div>
 
                             {getDisplayMessages().map((msg, idx) => {
-                                const isUser = msg.sender === 'user' || msg.sender === 'me'
+                                // Logic to determine if message is "from me" for the current session
+                                let isFromMe = false
+                                if (activeSessionId === 'resident') {
+                                    isFromMe = msg.sender === 'user'
+                                } else {
+                                    isFromMe = msg.sender === 'agent' || msg.sender === 'me'
+                                }
+
                                 const isSystem = msg.sender === 'system'
 
                                 if (isSystem) {
@@ -411,13 +396,13 @@ const Chat = () => {
                                 }
 
                                 return (
-                                    <div key={msg.id || idx} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                                        <div className={`max-w-[70%] rounded-2xl p-4 shadow-sm ${isUser
+                                    <div key={msg.id || idx} className={`flex ${isFromMe ? 'justify-end' : 'justify-start'}`}>
+                                        <div className={`max-w-[70%] rounded-2xl p-4 shadow-sm ${isFromMe
                                             ? 'bg-primary text-white rounded-tr-none'
                                             : 'bg-white border border-slate-200 rounded-tl-none'
                                             }`}>
                                             <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.content}</p>
-                                            <div className={`text-[10px] mt-1 text-right ${isUser ? 'text-blue-100' : 'text-slate-400'}`}>
+                                            <div className={`text-[10px] mt-1 text-right ${isFromMe ? 'text-blue-100' : 'text-slate-400'}`}>
                                                 {formatTime(msg.timestamp)}
                                             </div>
                                         </div>

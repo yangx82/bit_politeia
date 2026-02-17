@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 import uuid
 import logging
 from datetime import datetime
@@ -67,8 +68,8 @@ class AgentService:
         import os
         load_dotenv()
         
-        self.name = os.getenv("AGENT_NAME") or json_config.get("name", "Agent")
-        self.personality = os.getenv("AGENT_PERSONALITY") or json_config.get("personality", "Professional and helpful")
+        self.name = json_config.get("name") or os.getenv("AGENT_NAME") or "Agent"
+        self.personality = json_config.get("personality") or os.getenv("AGENT_PERSONALITY") or "Professional and helpful"
         
         # Hydrate History from Disk
         self._hydrate_history()
@@ -83,7 +84,7 @@ class AgentService:
         # Nightly Consolidation (2:00 AM)
         self.scheduler.add_job(self.consolidation_service.run_daily_consolidation, 'cron', hour=2, minute=0)
 
-    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = "Agent", personality: str = "Professional"):
+    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None):
         try:
              self.scheduler.start()
         except Exception:
@@ -94,13 +95,13 @@ class AgentService:
         self.model = model
         self.research_field = research_field
         self.verbose_llm = verbose_llm
-        self.name = name
-        self.personality = personality
         
-        
-        # Update Status
-        self.status.name = name
-        self.status.personality = personality
+        if name:
+            self.name = name
+            self.status.name = name
+        if personality:
+            self.personality = personality
+            self.status.personality = personality
         
         # Save to JSON
         self._save_config({
@@ -137,9 +138,7 @@ class AgentService:
             if bootstrap_url:
                 set_key(env_file, "AGENT_BOOTSTRAP_URL", bootstrap_url)
             set_key(env_file, "AGENT_BOOTSTRAP_VERIFY", "true" if bootstrap_verify else "false")
-            set_key(env_file, "AGENT_NAME", name)
-            set_key(env_file, "AGENT_PERSONALITY", personality)
-            logger.info(f"Configuration saved to {env_file}")
+            logger.info(f"Settings saved to {env_file}")
         except Exception as e:
             logger.error(f"Failed to save configuration to .env: {e}")
         
@@ -246,8 +245,6 @@ class AgentService:
         research_field = os.getenv("AGENT_RESEARCH_FIELD", "AI Governance")
         bootstrap_url = os.getenv("AGENT_BOOTSTRAP_URL")
         bootstrap_verify = os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true"
-        name = os.getenv("AGENT_NAME", "Agent")
-        personality = os.getenv("AGENT_PERSONALITY", "Professional")
         
         if base_url and api_key:
             return {
@@ -256,9 +253,7 @@ class AgentService:
                 "model": model,
                 "research_field": research_field,
                 "bootstrap_url": bootstrap_url,
-                "bootstrap_verify": bootstrap_verify,
-                "name": name,
-                "personality": personality
+                "bootstrap_verify": bootstrap_verify
             }
         return None
 
@@ -560,7 +555,8 @@ class AgentService:
             id=str(uuid.uuid4()),
             content=content,
             sender="user",
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
+            chat_id="resident"
         )
         self.history.append(user_msg)
         self.resident_memory.log_interaction("resident", content, msg_type="chat") # Log to private memory
@@ -581,7 +577,8 @@ class AgentService:
             id=str(uuid.uuid4()),
             content=f"{response_text}", 
             sender="agent",
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
+            chat_id="resident"
         )
         self.history.append(agent_msg)
         self.resident_memory.log_interaction("agent", response_text, msg_type="chat") # Log to private memory
@@ -607,6 +604,13 @@ class AgentService:
                 # Process based on type
                 logger.info(f"Processing P2P message type {msg_type} from {sender_id[:8]}...")
                 
+                recipient_id = msg.get('recipient_id')
+                
+                # Determine chat_id: Group ID if group message, else Sender ID
+                effective_chat_id = sender_id
+                if msg_type == "GROUP" and recipient_id:
+                    effective_chat_id = recipient_id
+
                 # Use 'content' text if available
                 text_content = str(content)
                 if isinstance(content, dict) and 'text' in content:
@@ -617,7 +621,7 @@ class AgentService:
                     channel="p2p",
                     sender_id=sender_id,
                     content=text_content,
-                    chat_id=sender_id,
+                    chat_id=effective_chat_id,
                     metadata={"message_type": msg_type}
                 )
                 thought_output = await self.run_pipeline(msg_obj)
@@ -625,9 +629,10 @@ class AgentService:
                 # Archive interaction
                 self.history.append(Message(
                     id=str(uuid.uuid4()), 
-                    content=f"P2P({msg_type}): {thought_output[:50]}...", 
+                    content=text_content, 
                     sender=sender_id, 
-                    timestamp=datetime.now()
+                    timestamp=datetime.now(),
+                    chat_id=effective_chat_id
                 ))
             except Exception as e:
                 logger.error(f"Error processing P2P message from {sender_id}: {e}")
@@ -860,13 +865,20 @@ class AgentService:
             
 
 
-    async def send_p2p_message(self, target_id: str, content: str) -> dict:
+    async def send_p2p_message(self, target_id: str, content: Any) -> dict:
         """Send a P2P message to a specific peer."""
         if not p2p_service._initialized:
              return {"success": False, "error": "P2P not initialized"}
              
+        # Normalize content to string for moderation
+        text_to_check = content
+        if isinstance(content, dict) and 'text' in content:
+            text_to_check = content['text']
+        elif not isinstance(content, str):
+            text_to_check = str(content)
+
         # 1. Moderation Check
-        is_compliant, reason = await self._check_compliance(content, target_id)
+        is_compliant, reason = await self._check_compliance(text_to_check, target_id)
         if not is_compliant:
             msg = f"⚠️ Message Refused: {reason}"
             
@@ -875,17 +887,16 @@ class AgentService:
                 id=str(uuid.uuid4()),
                 content=msg,
                 sender="agent",
-                timestamp=datetime.now()
+                timestamp=datetime.now(),
+                chat_id=target_id
             ))
             self.resident_memory.log_interaction("agent", msg, "moderation")
             
-            # Return success=True so frontend doesn't throw generic error, 
-            # but user sees the refusal message.
             return {"success": True, "status": "refused"}
              
         # Construct message payload
         msg_payload = {
-            "text": content,
+            "text": text_to_check,
             "timestamp": datetime.now().isoformat()
         }
         
@@ -911,9 +922,10 @@ class AgentService:
              # Log to history as sent message
              self.history.append(Message(
                 id=str(uuid.uuid4()),
-                content=f"Sent P2P ({msg_type}): {content}",
-                sender="me",
-                timestamp=datetime.now()
+                content=text_to_check,
+                sender="agent",
+                timestamp=datetime.now(),
+                chat_id=target_id
              ))
              
              return {"success": True}

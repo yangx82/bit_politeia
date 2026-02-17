@@ -7,6 +7,7 @@ class Message(BaseModel):
     content: str
     sender: str  # "user" or "agent"
     timestamp: datetime
+    chat_id: Optional[str] = None
 
 class ChatRequest(BaseModel):
     content: str
@@ -40,7 +41,6 @@ class P2PMessage(BaseModel):
     message_type: str
     content: dict
     timestamp: datetime
-    signature: str
     signature: str
     nonce: str
 
