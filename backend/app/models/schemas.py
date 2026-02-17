@@ -41,4 +41,43 @@ class P2PMessage(BaseModel):
     content: dict
     timestamp: datetime
     signature: str
+    signature: str
     nonce: str
+
+class ProposalModel(BaseModel):
+    proposal_id: str
+    initiator_id: str
+    group_id: str
+    content: str
+    timestamp: datetime
+    scope: str
+    status: str
+    pdf_hash: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+class VoteRequest(BaseModel):
+    election_id: str
+    candidate_id: Optional[str] = None
+    approval: bool = True
+    reason: str = ""
+    reward_amount: float = 0.0
+
+class ElectionModel(BaseModel):
+    election_id: str
+    group_id: str
+    election_type: str
+    initiator_id: str
+    start_time: datetime
+    end_time: datetime
+    status: str
+    candidates: List[str]
+    proposal_id: Optional[str] = None
+    results: Optional[dict] = None # For tally results
+
+class ProposalCreateRequest(BaseModel):
+    group_id: str
+    content: str
+    duration_minutes: int = 60
+

@@ -118,6 +118,12 @@ async def websocket_relay(websocket: WebSocket, node_id: str):
             # Parse message to determine target
             try:
                 message = json.loads(data)
+                
+                # Handle PING/Heartbeat
+                if message.get("type") == "PING":
+                    await websocket.send_text(json.dumps({"type": "PONG"}))
+                    continue
+
                 # Check for standard SignedMessage format or specific relay envelope
                 # Expecting SignedMessage which has 'recipient_id'
                 target_id = message.get("recipient_id")
@@ -139,7 +145,7 @@ async def websocket_relay(websocket: WebSocket, node_id: str):
                              }
                              await websocket.send_text(json.dumps(error_msg))
                 else:
-                    logger.warning(f"Relay: Received malformed message from {node_id} (No recipient_id)")
+                    logger.warning(f"Relay: Received malformed message from {node_id} (No recipient_id or type)")
                     
             except json.JSONDecodeError:
                 logger.warning(f"Relay: Received invalid JSON from {node_id}")

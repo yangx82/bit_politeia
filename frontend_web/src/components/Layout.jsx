@@ -1,6 +1,6 @@
 import React from 'react'
 import { Outlet, Link, useLocation } from 'react-router-dom'
-import { MessageSquare, Users, Archive, User } from 'lucide-react'
+import { MessageSquare, Users, Archive, User, Gavel } from 'lucide-react'
 
 const SidebarItem = ({ to, icon: Icon, label, active }) => (
     <Link
@@ -25,6 +25,7 @@ const Layout = () => {
                 <div className="flex-1 space-y-2">
                     <SidebarItem to="/chat" icon={MessageSquare} label="Messages" active={location.pathname === '/chat' || location.pathname === '/'} />
                     <SidebarItem to="/contacts" icon={Users} label="Contacts" active={location.pathname === '/contacts'} />
+                    <SidebarItem to="/governance" icon={Gavel} label="Governance" active={location.pathname === '/governance'} />
                     <SidebarItem to="/archives" icon={Archive} label="Archives" active={location.pathname === '/archives'} />
                     <SidebarItem to="/profile" icon={User} label="Profile" active={location.pathname === '/profile'} />
                 </div>

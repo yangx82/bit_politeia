@@ -85,4 +85,33 @@ async def get_status():
     status = await agent_service.get_status()
     # Inject Public Key from Crypto Service
     status.public_key = crypto_service.get_public_key_string()
+    status.public_key = crypto_service.get_public_key_string()
     return status
+
+from ...models.schemas import ProposalModel, ProposalCreateRequest, VoteRequest, ElectionModel
+
+@router.get("/governance/proposals", response_model=list[dict])
+async def get_proposals():
+    """Get all proposals."""
+    return await agent_service.get_proposals()
+
+@router.post("/governance/proposals")
+async def create_proposal(request: ProposalCreateRequest):
+    """Create a new proposal."""
+    return await agent_service.create_proposal(request.group_id, request.content, request.duration_minutes)
+
+@router.get("/governance/elections", response_model=list[dict])
+async def get_elections():
+    """Get active elections."""
+    return await agent_service.get_elections()
+
+@router.post("/governance/vote")
+async def cast_vote(request: VoteRequest):
+    """Cast a vote on an election."""
+    return await agent_service.cast_vote(
+        request.election_id, 
+        request.approval, 
+        request.reason, 
+        request.candidate_id
+    )
+

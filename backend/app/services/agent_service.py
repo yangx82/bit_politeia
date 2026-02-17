@@ -798,11 +798,67 @@ class AgentService:
                 parts = res_text.split("REJECTED", 1)
                 reason = parts[1].strip().lstrip(":").strip()
                 return False, reason
-            
+                
             return True, ""
         except Exception as e:
-            logger.error(f"Compliance check failed: {e}")
-            return True, "" # Fallback to allow if check fails
+            logger.error(f"Compliance Check Error: {e}")
+            return True, "" # Fail open if LLM fails
+
+
+    # Governance Wrappers
+    async def create_proposal(self, group_id: str, content: str, duration_minutes: int = 60) -> dict:
+        if not self.governance_manager:
+            return {"error": "Governance Manager not initialized"}
+        
+        proposal, election = self.governance_manager.initiate_proposal(group_id, content, duration_minutes)
+        return {
+            "proposal": proposal.to_dict(),
+            "election": election.to_dict()
+        }
+
+    async def get_proposals(self) -> list[dict]:
+        if not self.governance_manager:
+            return []
+        # Return list of proposals
+        return [p.to_dict() for p in self.governance_manager.proposals.values()]
+
+    async def get_elections(self) -> list[dict]:
+        if not self.governance_manager:
+            return []
+        
+        elections = []
+        for e in self.governance_manager.active_elections.values():
+            data = e.to_dict()
+            # Add realtime tally
+            data["tally"] = e.tally()
+            elections.append(data)
+        return elections
+
+    async def cast_vote(self, election_id: str, approval: bool, reason: str = "", candidate_id: str = None) -> dict:
+        if not self.governance_manager:
+            return {"error": "Governance Manager not initialized"}
+            
+        if not p2p_service.local_node:
+             return {"error": "Local node not initialized"}
+             
+        voter_id = p2p_service.local_node.node_id
+        
+        vote = Vote(
+            voter_id=voter_id,
+            candidate_id=candidate_id,
+            approval=approval,
+            reason=reason,
+            timestamp=datetime.now()
+        )
+        
+        success = self.governance_manager.receive_ballot(election_id, [vote])
+        if success:
+            return {"status": "success", "election_id": election_id}
+        else:
+             return {"status": "failed", "reason": "Vote rejected (invalid or closed)"}
+
+            
+
 
     async def send_p2p_message(self, target_id: str, content: str) -> dict:
         """Send a P2P message to a specific peer."""

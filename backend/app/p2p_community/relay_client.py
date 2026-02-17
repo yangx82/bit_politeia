@@ -34,6 +34,7 @@ class RelayClient:
         self.running = True
         asyncio.create_task(self._connect_loop())
         asyncio.create_task(self._sender_loop())
+        asyncio.create_task(self._ping_loop())
 
     async def stop(self):
         self.running = False
@@ -61,10 +62,14 @@ class RelayClient:
                 # websockets.connect handles ssl context via 'ssl' param
                 # 403 Fix: Add Origin header to satisfy strict CORS or Firewall rules
                 # Websockets 14.0+: extra_headers removed, use origin param directly or additional_headers
+                # Added keep-alive settings (ping_interval=None to disable automatic ping, we do application level)
+                # Actually proper WS ping/pong is better, but app-level ensures full stack works
                 async with websockets.connect(
                     self.ws_url, 
                     ssl=ssl_context,
-                    origin="http://localhost"
+                    origin="http://localhost",
+                    ping_interval=20,
+                    ping_timeout=20
                 ) as ws:
                     self.websocket = ws
                     logger.info(f"RelayClient: Connected! (Node ID: {self.node_id})")
@@ -75,6 +80,10 @@ class RelayClient:
                         try:
                             message_text = await ws.recv()
                             message = json.loads(message_text)
+                            
+                            if message.get("type") == "PONG":
+                                continue
+                                
                             # Pass to NetworkManager to handle
                             if self.message_handler:
                                 asyncio.create_task(self.message_handler(message))
@@ -91,6 +100,17 @@ class RelayClient:
             if self.running:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60) # Max 60s backoff
+
+    async def _ping_loop(self):
+        """Periodic PING to keep connection alive through NAT."""
+        while self.running:
+            try:
+                if self.websocket:
+                    await self.websocket.send(json.dumps({"type": "PING"}))
+            except Exception as e:
+                logger.debug(f"Ping failed: {e}")
+            
+            await asyncio.sleep(25) # Send ping every 25 seconds
 
     async def _sender_loop(self):
         """Loop to send queued messages."""

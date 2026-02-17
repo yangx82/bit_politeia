@@ -35,6 +35,7 @@ test_output*
 **/*.sqlite-journal
 resident_memory.json
 agent_config.json
+governance_store.json
 
 # Ignore temporary and build artifacts
 **/__pycache__/
