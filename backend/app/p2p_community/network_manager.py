@@ -151,6 +151,12 @@ class NetworkManager:
 
         # --- Start Relay Client ---
         from .relay_client import RelayClient
+        
+        # Stop existing client if any
+        if hasattr(self, 'relay_client') and self.relay_client:
+            logger.info("Stopping existing RelayClient...")
+            await self.relay_client.stop()
+
         self.relay_client = RelayClient(
             server_url=self.bootstrap.server_url,
             node_id=node.node_id,

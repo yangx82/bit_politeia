@@ -310,9 +310,37 @@ from ..agent.tools_fs import list_dir, read_file, write_file, edit_file
 from ..agent.tools_web import fetch_web_page
 from ..agent.tools_cron import schedule_reminder, list_reminders, cancel_reminder, start_scheduler, get_scheduler_status
 
+@tool
+async def ask_resident(question: str) -> str:
+    """
+    Ask the local resident (human user) for advice, instructions, or approval.
+    The question will appear in the resident's chat window.
+    """
+    try:
+        from app.services.agent_service import agent_service
+        from app.models.schemas import Message
+        from datetime import datetime
+        import uuid
+        
+        # Log to agent's history so it shows in UI
+        agent_service.history.append(Message(
+            id=str(uuid.uuid4()),
+            content=question,
+            sender="agent",
+            timestamp=datetime.now(),
+            chat_id="resident"
+        ))
+        
+        # Also log to resident memory
+        agent_service.resident_memory.log_interaction("agent", question, msg_type="chat")
+        
+        return f"Question sent to resident: {question}"
+    except Exception as e:
+        return f"Error asking resident: {str(e)}"
+
 # List of tools to bind to the agent
 AGENT_TOOLS = [
-    send_p2p_message, get_my_status, read_community_rules, update_system_parameter, 
+    send_p2p_message, ask_resident, get_my_status, read_community_rules, update_system_parameter, 
     propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, 
     pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, 
     read_skill_guide, execute_shell_command,

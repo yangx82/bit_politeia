@@ -40,6 +40,7 @@ from .consolidation import ConsolidationService
 class AgentService:
     def __init__(self):
         self.history: list[Message] = []
+        self.processed_message_ids: set[str] = set() # For de-duplication
         self.status = AgentStatus(is_online=True, reputation=10, balance=100.0)
         self.message_bus = message_bus
         self.scheduler = AsyncIOScheduler()
@@ -525,7 +526,7 @@ class AgentService:
             timestamp=datetime.now()
         )
         self.history.append(user_msg_obj)
-        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat")
+        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", chat_id=msg.chat_id)
 
         # 2. Pipeline Execution
         response_text = await self.run_pipeline(msg)
@@ -544,10 +545,11 @@ class AgentService:
              id=str(uuid.uuid4()),
              content=response_text,
              sender="agent",
-             timestamp=datetime.now()
+             timestamp=datetime.now(),
+             chat_id=msg.chat_id
         )
         self.history.append(agent_msg_obj)
-        self.resident_memory.log_interaction("agent", response_text, msg_type="chat")
+        self.resident_memory.log_interaction("agent", response_text, msg_type="chat", chat_id=msg.chat_id)
 
     # 1. User Contact
     async def process_user_instruction(self, content: str) -> Message:
@@ -559,7 +561,7 @@ class AgentService:
             chat_id="resident"
         )
         self.history.append(user_msg)
-        self.resident_memory.log_interaction("resident", content, msg_type="chat") # Log to private memory
+        self.resident_memory.log_interaction("resident", content, msg_type="chat", chat_id="resident") # Log to private memory
         
         # Agent response via Pipeline
         msg_obj = InboundMessage(
@@ -581,7 +583,7 @@ class AgentService:
             chat_id="resident"
         )
         self.history.append(agent_msg)
-        self.resident_memory.log_interaction("agent", response_text, msg_type="chat") # Log to private memory
+        self.resident_memory.log_interaction("agent", response_text, msg_type="chat", chat_id="resident") # Log to private memory
         return agent_msg
 
     # 2. Community Contact (P2P Listener)
@@ -601,6 +603,18 @@ class AgentService:
             msg_type = msg.get('message_type')
             
             try:
+                # 1. De-duplication
+                m_id = msg.get('message_id')
+                if m_id:
+                    if m_id in self.processed_message_ids:
+                        continue
+                    self.processed_message_ids.add(m_id)
+                    # Keep set size reasonable (last 1000 IDs)
+                    if len(self.processed_message_ids) > 1000:
+                        # Convert to list to pop first element (simple FIFO)
+                        l = list(self.processed_message_ids)
+                        self.processed_message_ids = set(l[100:])
+                        
                 # Process based on type
                 logger.info(f"Processing P2P message type {msg_type} from {sender_id[:8]}...")
                 
@@ -622,11 +636,10 @@ class AgentService:
                     sender_id=sender_id,
                     content=text_content,
                     chat_id=effective_chat_id,
-                    metadata={"message_type": msg_type}
+                    metadata={"message_id": m_id, "message_type": msg_type}
                 )
-                thought_output = await self.run_pipeline(msg_obj)
                 
-                # Archive interaction
+                # 2. Log Inbound Message to history
                 self.history.append(Message(
                     id=str(uuid.uuid4()), 
                     content=text_content, 
@@ -634,6 +647,23 @@ class AgentService:
                     timestamp=datetime.now(),
                     chat_id=effective_chat_id
                 ))
+                self.resident_memory.log_interaction(sender_id, text_content, msg_type="chat", chat_id=effective_chat_id)
+                
+                # 3. Run Pipeline to get Response
+                response_text = await self.run_pipeline(msg_obj)
+                
+                # 4. Send Reply back to Peer
+                await self.send_p2p_message(sender_id, response_text)
+                
+                # 5. Log Agent Response to history
+                self.history.append(Message(
+                    id=str(uuid.uuid4()),
+                    content=response_text,
+                    sender="agent",
+                    timestamp=datetime.now(),
+                    chat_id=effective_chat_id
+                ))
+                self.resident_memory.log_interaction("agent", response_text, msg_type="chat", chat_id=effective_chat_id)
             except Exception as e:
                 logger.error(f"Error processing P2P message from {sender_id}: {e}")
                 # Optional: Push back to inbox or Dead Letter Queue?
@@ -655,7 +685,7 @@ class AgentService:
              summary = await self.reporter.generate_daily_brief(interests)
              
              # Log this brief
-             self.resident_memory.log_interaction("agent_report", summary, "report")
+             self.resident_memory.log_interaction("agent_report", summary, "report", chat_id="resident")
         
         elif self.llm:
              msg_obj = InboundMessage(
@@ -673,7 +703,8 @@ class AgentService:
             id=str(uuid.uuid4()), 
             content=summary, 
             sender="agent", 
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
+            chat_id="resident"
         ))
 
     # 4. Ad-hoc Task: Periodic Participation Reward
@@ -694,7 +725,8 @@ class AgentService:
         self.resident_memory.log_interaction(
             "system", 
             f"Received {reward_amount} STATER as Participation Reward.", 
-            "income"
+            "income",
+            chat_id="resident"
         )
         
         # Push a visual notice to history
@@ -702,7 +734,8 @@ class AgentService:
             id=str(uuid.uuid4()),
             content=f"💰 [Economy] Received {reward_amount} STATER Participation Reward.",
             sender="system",
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
+            chat_id="resident"
         ))
 
     async def get_history(self) -> list[Message]:
@@ -732,7 +765,8 @@ class AgentService:
                 id=entry.get('id', str(uuid.uuid4())),
                 content=entry.get('content', ''),
                 sender=entry.get('sender', 'unknown'),
-                timestamp=datetime.fromisoformat(entry.get('timestamp'))
+                timestamp=datetime.fromisoformat(entry.get('timestamp')),
+                chat_id=entry.get('chat_id')
             ))
         logger.info(f"AgentService: Loaded {len(self.history)} messages from persistent storage.")
 
@@ -744,7 +778,8 @@ class AgentService:
                 id=entry.get('id', str(uuid.uuid4())),
                 content=entry.get('content', ''),
                 sender=entry.get('sender', 'unknown'),
-                timestamp=datetime.fromisoformat(entry.get('timestamp'))
+                timestamp=datetime.fromisoformat(entry.get('timestamp')),
+                chat_id=entry.get('chat_id')
             ))
         return messages
 
@@ -890,7 +925,7 @@ class AgentService:
                 timestamp=datetime.now(),
                 chat_id=target_id
             ))
-            self.resident_memory.log_interaction("agent", msg, "moderation")
+            self.resident_memory.log_interaction("agent", msg, "moderation", chat_id=target_id)
             
             return {"success": True, "status": "refused"}
              

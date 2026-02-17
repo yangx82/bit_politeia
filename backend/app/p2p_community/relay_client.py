@@ -38,6 +38,8 @@ class RelayClient:
 
     async def stop(self):
         self.running = False
+        # Wake up sender loop if waiting on empty queue
+        await self._send_queue.put(None)
         if self.websocket:
             await self.websocket.close()
 
@@ -116,6 +118,10 @@ class RelayClient:
         """Loop to send queued messages."""
         while self.running:
             message = await self._send_queue.get()
+            if message is None:
+                self._send_queue.task_done()
+                break
+                
             if self.websocket:
                 try:
                     await self.websocket.send(json.dumps(message))
