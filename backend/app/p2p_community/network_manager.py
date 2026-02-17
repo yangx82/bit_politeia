@@ -54,17 +54,40 @@ class NetworkManager:
 
     def _sync_topology(self, topology_data: Dict):
         """Sync local view with topology data including endpoints and members."""
+        logger.info("[Network] Syncing topology with bootstrap data...")
+        
         # 1. Sync Groups
+        server_group_ids = set()
         if "groups" in topology_data:
             for gid, gdata in topology_data["groups"].items():
+                server_group_ids.add(gid)
                 if gid not in self.groups:
                     self.groups[gid] = Group(
                         group_id=gdata["group_id"],
                         level=gdata["level"],
-                        parent_id=gdata["parent_id"]
+                        parent_id=gdata["parent_id"],
+                        name=gdata.get("name")
                     )
+                else:
+                    # Update name if changed
+                    if gdata.get("name"):
+                        self.groups[gid].name = gdata["name"]
         
-        # Sync members from hierarchy (Critical for P2P discovery)
+        # REMOVE Stale Groups
+        stale_groups = [gid for gid in self.groups if gid not in server_group_ids]
+        for gid in stale_groups:
+            logger.warning(f"[Network] Removing stale group {gid} (not in bootstrap)")
+            
+            # If local node is in this group, leave it
+            if self.local_node_id and self.local_node_id in self.nodes:
+                local_node = self.nodes[self.local_node_id]
+                if gid in local_node.group_ids:
+                    local_node.group_ids.remove(gid)
+                    logger.info(f"[Network] Local node removed from stale group {gid}")
+            
+            del self.groups[gid]
+
+        # Sync members from hierarchy
         if "hierarchy" in topology_data:
             for gid, members in topology_data["hierarchy"].items():
                 if gid in self.groups:
@@ -77,19 +100,23 @@ class NetworkManager:
                 if gid not in parent.child_ids:
                     parent.add_child(gid)
 
-        # 2. Sync Nodes (Endpoints are critical for routing)
+        # 2. Sync Nodes
         if "nodes" in topology_data:
             for nid, ndata in topology_data["nodes"].items():
                 if nid not in self.nodes:
                     node = Node(
                         node_id=nid,
                         network_manager=self,
-                        public_key=ndata.get("public_key", "")
+                        public_key=ndata.get("public_key", ""),
+                        name=ndata.get("name", "Agent")
                     )
                     self.nodes[nid] = node
                 
-                # Update endpoint and public key if provided
+                # Update endpoint and metadata
                 self.nodes[nid].public_key = ndata.get("public_key", self.nodes[nid].public_key)
+                if ndata.get("name"):
+                    self.nodes[nid].name = ndata.get("name")
+                
                 ip = ndata.get("ip_address")
                 port = ndata.get("port")
                 if ip and port:

@@ -144,10 +144,12 @@ class AgentService:
             
         logger.info(f"Setting P2P Endpoint to: {p2p_endpoint}")
 
-        # Initialize P2P Service
-        node_id = crypto_service.get_node_id()
-        # Pass name to P2P Init
-        await p2p_service.initialize(node_id, p2p_endpoint, name=self.name)
+        if p2p_service.local_node:
+            await p2p_service.update_node_info(name=name)
+        else:
+             # Initialize if not already (first run)
+             node_id = crypto_service.get_node_id()
+             await p2p_service.initialize(node_id, p2p_endpoint, name=name)
         
         # Start Message Bus and Listener
         await self.message_bus.start()
@@ -696,6 +698,7 @@ class AgentService:
                 
             peers.append({
                 "node_id": node_id,
+                "name": node.name,
                 "public_key": node.public_key,
                 "endpoint": node.endpoint,
                 "status": "online" if node.endpoint else "unknown", # Simple status check

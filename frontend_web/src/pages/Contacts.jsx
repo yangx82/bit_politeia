@@ -97,7 +97,7 @@ const Contacts = () => {
                                     <Users size={24} />
                                 </div>
                                 <div>
-                                    <h3 className="font-bold text-slate-800">Group {group.group_id.substring(0, 6)}...</h3>
+                                    <h3 className="font-bold text-slate-800">{group.name || `Group ${group.group_id.substring(0, 6)}...`}</h3>
                                     <div className="flex gap-2 mt-1">
                                         <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-500">
                                             L{group.level}

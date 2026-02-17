@@ -96,6 +96,19 @@ class P2PService:
     def get_network_status(self) -> Dict[str, Any]:
         return self.network_manager.get_network_structure()
 
+    async def update_node_info(self, name: str = None):
+        """Update local node info and sync with bootstrap."""
+        if not self.local_node:
+            logger.warning("Cannot update node info: P2PService not initialized")
+            return
+            
+        if name:
+            self.local_node.name = name
+            
+        # Re-register with bootstrap to update metadata
+        await self.network_manager.register_node(self.local_node)
+        logger.info(f"Updated node info for {self.local_node.node_id}: name='{self.local_node.name}'")
+
     def get_my_groups(self) -> List[str]:
         if self.local_node:
             return list(self.local_node.group_ids)

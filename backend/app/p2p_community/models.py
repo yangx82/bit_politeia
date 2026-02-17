@@ -5,8 +5,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Group:
-    def __init__(self, group_id: str, level: int, parent_id: Optional[str] = None):
+    def __init__(self, group_id: str, level: int, parent_id: Optional[str] = None, name: str = None):
         self.group_id = group_id
+        self.name = name or group_id
         self.level = level
         self.parent_id = parent_id
         self.child_ids: List[str] = []
@@ -34,6 +35,7 @@ class Group:
     def to_dict(self) -> dict:
         return {
             "group_id": self.group_id,
+            "name": self.name,
             "level": self.level,
             "parent_id": self.parent_id,
             "child_ids": self.child_ids,

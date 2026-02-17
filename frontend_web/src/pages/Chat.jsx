@@ -42,49 +42,7 @@ const Chat = () => {
 
     // --- DATA FETCHING ---
 
-    const fetchData = async () => {
-        try {
-            // 1. Fetch History
-            const historyRes = await api.get('/api/v1/history')
-            const history = historyRes.data
 
-            // 2. Fetch Peers (for naming)
-            const peersRes = await api.get('/api/v1/p2p/peers')
-            const pMap = {}
-            if (peersRes.data) {
-                peersRes.data.forEach(p => { pMap[p.node_id] = p.name })
-            }
-            setPeersMap(pMap)
-
-            // 3. Fetch Groups (for naming)
-            try {
-                const groupsRes = await api.get('/api/v1/p2p/groups')
-                const gMap = {}
-                if (groupsRes.data) {
-                    groupsRes.data.forEach(g => { gMap[g.group_id] = g })
-                }
-                setGroupsMap(gMap)
-            } catch (e) {
-                console.warn("Failed to fetch groups", e)
-            }
-
-            setMessages(history)
-        } catch (err) {
-            console.error("Failed to fetch data:", err)
-        } finally {
-            setLoading(false)
-        }
-    }
-
-    // Include polling & Load Local Identity
-    useEffect(() => {
-        fetchData()
-        const storedName = localStorage.getItem('bp_name')
-        if (storedName) setAgentName(storedName)
-
-        const interval = setInterval(fetchData, 3000)
-        return () => clearInterval(interval)
-    }, [])
 
     // --- SESSION LOGIC ---
 
@@ -97,6 +55,48 @@ const Chat = () => {
     }
 
     // Derived state: Sessions
+    // --- DATA FETCHING ---
+    const fetchData = async () => {
+        try {
+            const [msgRes, peerRes, groupRes] = await Promise.all([
+                api.get('/api/v1/history'),
+                api.get('/api/v1/p2p/peers'),
+                api.get('/api/v1/p2p/groups')
+            ])
+
+            // Deduplicate messages by ID to prevent key warnings/flicker
+            const uniqueMsgs = Array.from(new Map(msgRes.data.map(m => [m.id, m])).values())
+            // Sort by timestamp
+            uniqueMsgs.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+            setMessages(uniqueMsgs)
+
+            // Map peers: ID -> Name
+            const pMap = {}
+            peerRes.data.forEach(p => {
+                pMap[p.node_id] = p.name || 'Unknown Agent'
+            })
+            setPeersMap(pMap)
+
+            // Map groups: ID -> Name (or true if just existence check needed, but name is better)
+            const gMap = {}
+            groupRes.data.forEach(g => {
+                gMap[g.group_id] = g.name || `Group ${g.group_id.substring(0, 8)}`
+            })
+            setGroupsMap(gMap)
+
+        } catch (err) {
+            console.error("Failed to fetch chat data", err)
+        }
+    }
+
+    // Initial Load & Polling
+    useEffect(() => {
+        fetchData()
+        const interval = setInterval(fetchData, 3000) // Poll every 3s
+        return () => clearInterval(interval)
+    }, [])
+
+    // --- SESSION MANAGEMENT ---
     const sessions = useMemo(() => {
         const sessMap = {}
 
@@ -114,10 +114,21 @@ const Chat = () => {
             }
 
             if (!sessMap[sessionId]) {
-                // Determine Name for Resident Session
-                const displayName = sessionId === 'resident'
-                    ? `${agentName} (My Agent)`
-                    : (peersMap[sessionId] || sessionId.substring(0, 8))
+                // Determine Name for Session
+                let displayName = sessionId
+
+                if (sessionId === 'resident') {
+                    displayName = `${agentName} (My Agent)`
+                } else if (groupsMap[sessionId]) {
+                    // It's a Group
+                    displayName = groupsMap[sessionId]
+                } else if (peersMap[sessionId]) {
+                    // It's a Peer
+                    displayName = peersMap[sessionId]
+                } else {
+                    // Fallback
+                    displayName = sessionId.substring(0, 8)
+                }
 
                 sessMap[sessionId] = {
                     id: sessionId,
@@ -125,7 +136,7 @@ const Chat = () => {
                     name: displayName,
                     lastMessage: msg,
                     unread: 0,
-                    avatar: sessionId === 'resident' ? '🤖' : '👤'
+                    avatar: sessionId === 'resident' ? '🤖' : (groupsMap[sessionId] ? '👥' : '👤')
                 }
             }
 
@@ -351,7 +362,7 @@ const Chat = () => {
                                     <h2 className="font-bold text-slate-800">
                                         {activeSessionId === 'resident'
                                             ? `${agentName} (My Agent)`
-                                            : (peersMap[activeSessionId] || (groupsMap[activeSessionId] ? `Group ${activeSessionId.substring(0, 6)}` : activeSessionId))}
+                                            : (groupsMap[activeSessionId] || peersMap[activeSessionId] || activeSessionId)}
                                     </h2>
                                     <p className="text-xs text-slate-500 flex items-center gap-1">
                                         {activeSessionId === 'resident' ? 'Always Active' : (groupsMap[activeSessionId] ? 'P2P Group' : 'P2P Connection')}
