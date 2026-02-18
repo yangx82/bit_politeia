@@ -50,8 +50,12 @@ class SessionManager:
         
         filepath = os.path.join(self.data_dir, f"{session.user_id}.json")
         try:
+            # Use model_dump(mode='json') to ensure all fields are serializable
+            # This handles datetime and other pydantic-supported types correctly.
+            # For complex mixed types (like history_slice containing LangChain objects),
+            # pydantic's mode='json' is generally safer than model_dump_json for raw writing.
             with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(session.model_dump_json(indent=2))
+                json.dump(session.model_dump(mode='json'), f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save session {session.session_id}: {e}")
 
