@@ -72,8 +72,9 @@ class AgentService:
         self.name = json_config.get("name") or os.getenv("AGENT_NAME") or "Agent"
         self.personality = json_config.get("personality") or os.getenv("AGENT_PERSONALITY") or "Professional and helpful"
         
-        # Hydrate History from Disk
+        # Hydrate History and System State from Disk
         self._hydrate_history()
+        self._hydrate_system_state()
         self.verbose_llm = False # Control flag for console output
         
         # Start Scheduler with robustness
@@ -232,8 +233,13 @@ class AgentService:
             
             logger.info(f"Agent LLM Initialized Successfully. Tools: {len(all_tools)}")
             
+            # Hydrate system state (inbox, de-dup IDs) after potential initialization
+            self._hydrate_system_state()
+            
         except Exception as e:
             logger.error(f"Failed to initialize Agent LLM: {e}")
+            
+        return self.status
 
     # ... (process_message, etc.) ...
     
@@ -358,8 +364,10 @@ class AgentService:
         
         # 3. Wrapping Up: Consolidate, Notify, Archive
         await stages[3].run(context, self) # Consolidate
+        session_manager.save_session(context.session) # Save intermediate
         await stages[4].run(context, self) # Notify
         await stages[5].run(context, self) # Archive
+        session_manager.save_session(context.session) # Final save
         
         return context.final_answer or "No response generated."
 
@@ -609,6 +617,7 @@ class AgentService:
                     if m_id in self.processed_message_ids:
                         continue
                     self.processed_message_ids.add(m_id)
+                    self._save_system_state() # Persist de-dup IDs
                     # Keep set size reasonable (last 1000 IDs)
                     if len(self.processed_message_ids) > 1000:
                         # Convert to list to pop first element (simple FIFO)
@@ -674,6 +683,25 @@ class AgentService:
                     sender="system",
                     timestamp=datetime.now()
                 ))
+        
+        # 6. Clear Disk Inbox after processing batch
+        if p2p_service.local_node:
+            try:
+                import os
+                node_id = p2p_service.local_node.node_id
+                inbox_path = f"data/p2p/inbox_{node_id}.jsonl"
+                if os.path.exists(inbox_path):
+                    # For safety, we could just clear it, as we've already 
+                    # either processed messages OR they are now in the memory inbox.
+                    # But if we clear it, then crash, we might lose messages currently in memory inbox.
+                    # Correct way: the memory inbox IS the pending queue.
+                    # We should probably only append to disk and never clear "the file", 
+                    # but pruning is complex.
+                    # Simplified for BP: clear the file once it's emptied from memory.
+                    if not p2p_service.local_node.inbox:
+                        os.remove(inbox_path)
+            except Exception as ex:
+                logger.error(f"Failed to clear disk inbox: {ex}")
 
     # 3. Scheduled Task
     async def trigger_scheduled_task(self):
@@ -765,10 +793,69 @@ class AgentService:
                 id=entry.get('id', str(uuid.uuid4())),
                 content=entry.get('content', ''),
                 sender=entry.get('sender', 'unknown'),
-                timestamp=datetime.fromisoformat(entry.get('timestamp')),
+                timestamp=datetime.fromisoformat(entry.get('timestamp')) if entry.get('timestamp') else datetime.now(),
                 chat_id=entry.get('chat_id')
             ))
         logger.info(f"AgentService: Loaded {len(self.history)} messages from persistent storage.")
+
+    def _save_system_state(self):
+        """Save deduplication IDs and other internal states to disk."""
+        try:
+            import json
+            import os
+            os.makedirs("data/system", exist_ok=True)
+            state = {
+                "processed_message_ids": list(self.processed_message_ids)
+            }
+            with open("data/system/agent_state.json", 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save system state: {e}")
+
+    def _hydrate_system_state(self):
+        """Load deduplication IDs and hydrate P2P inbox from disk."""
+        try:
+            import json
+            import os
+            # 1. Load De-duplication IDs
+            state_path = "data/system/agent_state.json"
+            if os.path.exists(state_path):
+                with open(state_path, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
+                    self.processed_message_ids = set(state.get("processed_message_ids", []))
+            
+            # 2. Hydrate P2P Inbox
+            # Wait for node initialization if needed? Usually called after config?
+            # Actually __init__ calls it, but p2p_service might not have local_node yet.
+            # Local node is created in P2PService.initialize_node.
+            # So hydration should happen after initialize_node.
+            # Let's adjust where _hydrate_system_state is called or make it safe.
+            
+            from .p2p_service import p2p_service
+            if not p2p_service.local_node:
+                return
+                
+            node_id = p2p_service.local_node.node_id
+            inbox_path = f"data/p2p/inbox_{node_id}.jsonl"
+            
+            if os.path.exists(inbox_path):
+                pending_messages = []
+                with open(inbox_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if line.strip():
+                            try:
+                                msg_data = json.loads(line)
+                                # Only add if not already processed (in case of crash between processing and clearing)
+                                m_id = msg_data.get('message_id')
+                                if not m_id or m_id not in self.processed_message_ids:
+                                    pending_messages.append(msg_data)
+                            except: continue
+                
+                if pending_messages:
+                    logger.info(f"Hydrated {len(pending_messages)} pending messages from disk inbox.")
+                    p2p_service.local_node.inbox.extend(pending_messages)
+        except Exception as e:
+            logger.error(f"Failed to hydrate system state: {e}")
 
     async def search_history(self, query: str = None, date_from: str = None, date_to: str = None) -> list[Message]:
         results = self.resident_memory.search_history(query, date_from, date_to)
@@ -948,11 +1035,14 @@ class AgentService:
              if p2p_service.network_manager and target_id in p2p_service.network_manager.groups:
                  msg_type = MessageType.GROUP.value
                  
-             await p2p_service.send_message(
+             success = await p2p_service.send_message(
                  target_id=target_id,
                  content=msg_payload,
                  msg_type=msg_type
              )
+             
+             if not success:
+                 return {"success": False, "error": "Transport failure (Offline or Relay Disconnected)"}
              
              # Log to history as sent message
              self.history.append(Message(

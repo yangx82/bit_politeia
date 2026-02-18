@@ -43,9 +43,12 @@ class RelayClient:
         if self.websocket:
             await self.websocket.close()
 
-    async def send(self, message: Dict):
-        """Queue a message to be sent via relay."""
+    async def send(self, message: Dict) -> bool:
+        """Queue a message to be sent via relay. Returns True if queued, False if disconnected."""
+        if not self.websocket or not self.running:
+            return False
         await self._send_queue.put(message)
+        return True
 
     async def _connect_loop(self):
         """Persistent connection loop with exponential backoff."""

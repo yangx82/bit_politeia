@@ -249,7 +249,7 @@ class NetworkManager:
             content=content
         )
         
-        await self.route_message(signed_msg)
+        return await self.route_message(signed_msg)
 
     async def _send_http_message(self, endpoint: str, message: SignedMessage) -> bool:
         """Send a signed message to a remote node's API. Returns success boolean."""
@@ -270,20 +270,19 @@ class NetworkManager:
         """Fallback: Send message via Bootstrap Relay."""
         if hasattr(self, 'relay_client') and self.relay_client.websocket:
             logger.info(f"Fallback: Sending message to {target_id} via RELAY")
-            await self.relay_client.send(message.to_dict())
-            return True
+            return await self.relay_client.send(message.to_dict())
         return False
 
-    async def route_message(self, message: SignedMessage):
+    async def route_message(self, message: SignedMessage) -> bool:
         """Route message to local node or remote peer via HTTP, fallback to Relay."""
         logger.info(f"[Network] Routing {message.message_type.value} message to {message.recipient_id}")
 
         # Helper to route to single node with fallback
-        async def send_to_node(node_id: str, msg: SignedMessage):
+        async def send_to_node(node_id: str, msg: SignedMessage) -> bool:
             if node_id == self.local_node_id:
                 if self.local_node_id in self.nodes:
                     await self.nodes[self.local_node_id].receive_message(msg)
-                return
+                return True
 
             if node_id in self.nodes:
                 target = self.nodes[node_id]
@@ -293,30 +292,36 @@ class NetworkManager:
                 
                 if not success:
                     # Fallback to Relay
-                    await self._send_via_relay(node_id, msg)
+                    return await self._send_via_relay(node_id, msg)
+                return True
             else:
                  # Try Relay even if unknown (maybe new node)
-                 await self._send_via_relay(node_id, msg)
+                 return await self._send_via_relay(node_id, msg)
 
-
+        # Handle routing based on message type
         if message.message_type == MessageType.DIRECT:
-            await send_to_node(message.recipient_id, message)
-
+            return await send_to_node(message.recipient_id, message)
+        
         elif message.message_type == MessageType.GROUP:
-            if message.recipient_id in self.groups:
-                members = self.groups[message.recipient_id].members
-                tasks = []
-                for mid in members:
-                    if mid == self.local_node_id:
+            group_id = message.recipient_id
+            if group_id in self.groups:
+                members = self.groups[group_id].members
+                results = []
+                for member_id in members:
+                    if member_id == self.local_node_id:
                         if message.sender_id != self.local_node_id:
-                            # Deliver group messages sent by others to our inbox
-                            tasks.append(self.nodes[mid].receive_message(message))
-                    else:
-                        tasks.append(send_to_node(mid, message))
-                if tasks:
-                    await asyncio.gather(*tasks)
+                            # Delivery to self
+                            if self.local_node_id in self.nodes:
+                                await self.nodes[self.local_node_id].receive_message(message)
+                            results.append(True)
+                        continue
+                    results.append(await send_to_node(member_id, message))
+                return any(results) if results else True # success if empty or at least one peer reached
             else:
                 logger.warning(f"Target group {message.recipient_id} not found")
+                return False
+        
+        return await send_to_node(message.recipient_id, message)
 
     def get_network_structure(self):
         """Returns a dict representation of the hierarchy."""

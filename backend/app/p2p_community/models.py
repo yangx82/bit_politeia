@@ -124,6 +124,17 @@ class Node:
             
         logger.info(f"[Node {self.node_id}] Received {msg_data.get('message_type', 'unknown')} from {msg_data.get('sender_id', 'unknown')}")
         self.inbox.append(msg_data)
+        
+        # Persist to disk inbox for resumption
+        try:
+            import json
+            import os
+            os.makedirs("data/p2p", exist_ok=True)
+            inbox_path = f"data/p2p/inbox_{self.node_id}.jsonl"
+            with open(inbox_path, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(msg_data) + "\n")
+        except Exception as e:
+            logger.error(f"Failed to persist inbox message: {e}")
 
     def get_structure_info(self):
         """

@@ -30,15 +30,15 @@ async def send_p2p_message(recipient_id: str, content: str, message_type: str = 
         # or we might need to use `broadcast_message` for groups.
         
         if message_type.upper() == "GROUP":
-             await p2p_service.broadcast_message(recipient_id, payload)
-             return f"Broadcasted to group {recipient_id}"
+             success = await p2p_service.broadcast_message(recipient_id, payload)
+             return f"Broadcasted to group {recipient_id}: {'SUCCESS' if success else 'FAILED (Network/Relay Error)'}"
         elif message_type.upper() == "DIRECT":
-             await p2p_service.send_message(recipient_id, payload)
-             return f"Sent direct message to {recipient_id}"
+             success = await p2p_service.send_message(recipient_id, payload)
+             return f"Sent direct message to {recipient_id}: {'SUCCESS' if success else 'FAILED (Target Offline or Relay Error)'}"
         else:
              # Default or GOSSIP
-             await p2p_service.send_message(recipient_id, payload) # Fallback
-             return f"Sent message to {recipient_id}"
+             success = await p2p_service.send_message(recipient_id, payload) # Fallback
+             return f"Sent message to {recipient_id}: {'SUCCESS' if success else 'FAILED'}"
              
     except Exception as e:
         logger.error(f"Tool Error sending message: {e}")

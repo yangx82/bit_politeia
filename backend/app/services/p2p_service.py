@@ -72,7 +72,7 @@ class P2PService:
         if not self.local_node:
             raise RuntimeError("P2PService not initialized")
             
-        await self.local_node.send_message(target_id, content, msg_type)
+        return await self.local_node.send_message(target_id, content, msg_type)
 
     async def broadcast_to_group(self, group_id: str, text: str, subject: str = None):
         """
@@ -91,7 +91,7 @@ class P2PService:
             "text": text,
             "subject": subject
         }
-        await self.local_node.send_message(group_id, content, MessageType.GROUP.value)
+        return await self.local_node.send_message(group_id, content, MessageType.GROUP.value)
 
     def get_network_status(self) -> Dict[str, Any]:
         return self.network_manager.get_network_structure()
