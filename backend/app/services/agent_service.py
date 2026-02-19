@@ -601,6 +601,9 @@ class AgentService:
         if verbose:
             logger.info("Checking P2P inbox...")
 
+        import base64
+        import os
+
         if not p2p_service.local_node:
             return
             
@@ -639,6 +642,25 @@ class AgentService:
                 text_content = str(content)
                 if isinstance(content, dict) and 'text' in content:
                     text_content = content['text']
+                
+                # Special Handling for FILE type
+                if msg_type == "file" and isinstance(content, dict) and "data" in content:
+                    try:
+                        file_name = content.get("info", "downloaded_file")
+                        file_data = base64.b64decode(content["data"])
+                        
+                        download_dir = "data/downloads"
+                        os.makedirs(download_dir, exist_ok=True)
+                        file_path = os.path.join(download_dir, f"{sender_id[:8]}_{file_name}")
+                        
+                        with open(file_path, "wb") as f:
+                            f.write(file_data)
+                            
+                        text_content = f"Received file: {file_name} (Saved to {file_path})"
+                        # Update content for history log
+                    except Exception as e:
+                        text_content = f"Failed to receive file: {e}"
+                        logger.error(text_content)
                 
                 # Use Pipeline
                 msg_obj = InboundMessage(

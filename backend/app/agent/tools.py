@@ -45,6 +45,64 @@ async def send_p2p_message(recipient_id: str, content: str, message_type: str = 
         return f"Error sending message: {str(e)}"
 
 @tool
+async def send_file(recipient_id: str, file_path: str, description: str = "File") -> str:
+    """
+    Send a local file to another node.
+    Args:
+        recipient_id: The UUID of the target Node.
+        file_path: Absolute path to the local file to send.
+        description: Brief description of the file.
+    """
+    import base64
+    import os
+    
+    if not os.path.exists(file_path):
+        return f"Error: File not found at {file_path}"
+        
+    try:
+        file_name = os.path.basename(file_path)
+        with open(file_path, "rb") as f:
+            file_data = f.read()
+            
+        encoded_data = base64.b64encode(file_data).decode('utf-8')
+        
+        payload = {
+            "text": f"Sending file: {file_name} - {description}",
+            "info": file_name,
+            "data": encoded_data,
+            "mime": "application/octet-stream" # Simplified
+        }
+        
+        # We need to manually specify the 'file' message type.
+        # Ideally p2p_service.send_message should support 'file' string mapping to MessageType.FILE
+        # Since we modified MessageType enum, we can pass "file" or MessageType.FILE.value
+        
+        success = await p2p_service.send_message(recipient_id, payload, msg_type="file")
+        
+        if success:
+             # Log the action (handled by send_message return usually, but we want implicit history log of action)
+             # sending a big base64 string to history is bad. We logged the text part in payload?
+             # send_message logic in models.py doesn't automatically log to history for the sender?
+             # Wait, previous fix added logging to `send_p2p_message` (the tool helper/service method).
+             # accessing p2p_service directly bypasses `AgentService.send_p2p_message`.
+             # So we should log manually here or use `AgentService` wrapper if available.
+             # Tools access `p2p_service` directly. 
+             # Let's log a summary to resident memory.
+            from app.services.agent_service import agent_service
+            agent_service.resident_memory.log_interaction(
+                "agent", 
+                f"Sent file '{file_name}' to {recipient_id}", 
+                msg_type="chat", 
+                chat_id=recipient_id
+            )
+            return f"Successfully sent file {file_name} to {recipient_id}"
+        else:
+            return "Failed to send file (Network Error)"
+            
+    except Exception as e:
+        return f"Error sending file: {str(e)}"
+
+@tool
 async def get_my_status() -> str:
     """
     Get the current status of the agent, including Node ID, Group memberships, 
@@ -338,9 +396,9 @@ async def ask_resident(question: str) -> str:
     except Exception as e:
         return f"Error asking resident: {str(e)}"
 
-# List of tools to bind to the agent
+# List of Tools to bind to the agent
 AGENT_TOOLS = [
-    send_p2p_message, ask_resident, get_my_status, read_community_rules, update_system_parameter, 
+    send_p2p_message, send_file, ask_resident, get_my_status, read_community_rules, update_system_parameter, 
     propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, 
     pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, 
     read_skill_guide, execute_shell_command,

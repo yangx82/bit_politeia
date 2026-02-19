@@ -25,6 +25,7 @@ class MessageType(Enum):
     VOTE = "vote"               # 投票
     SYNC = "sync"               # 架构同步
     HEARTBEAT = "heartbeat"     # 心跳/存活检测
+    FILE = "file"               # 文件传输
 
 
 @dataclass
