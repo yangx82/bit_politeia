@@ -105,7 +105,7 @@ class Node:
         # to the protocol handler in network manager or a service.
         # This method is kept for backward compatibility but using new protocol.
         
-        await self.network_manager.send_signed_message(
+        return await self.network_manager.send_signed_message(
             sender_id=self.node_id,
             target_id=target_id,
             msg_type=msg_type,

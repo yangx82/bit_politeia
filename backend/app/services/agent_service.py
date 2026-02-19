@@ -1281,6 +1281,12 @@ class AgentService:
         # P2P Info
         if p2p_service.local_node:
             self.status.node_id = p2p_service.local_node.node_id
+            
+            # Update Relay Connection Status
+            if p2p_service.network_manager and hasattr(p2p_service.network_manager, 'relay_client'):
+                rc = p2p_service.network_manager.relay_client
+                self.status.relay_connected = rc.running and rc.websocket is not None
+            
             # TODO: Get actual balance, reputation
             
         return self.status
