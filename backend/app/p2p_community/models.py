@@ -5,8 +5,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Group:
-    def __init__(self, group_id: str, level: int, parent_id: Optional[str] = None):
+    def __init__(self, group_id: str, level: int, parent_id: Optional[str] = None, name: str = None):
         self.group_id = group_id
+        self.name = name or group_id
         self.level = level
         self.parent_id = parent_id
         self.child_ids: List[str] = []
@@ -34,6 +35,7 @@ class Group:
     def to_dict(self) -> dict:
         return {
             "group_id": self.group_id,
+            "name": self.name,
             "level": self.level,
             "parent_id": self.parent_id,
             "child_ids": self.child_ids,
@@ -45,9 +47,10 @@ class Group:
 
 
 class Node:
-    def __init__(self, node_id: str, network_manager, public_key: str):
+    def __init__(self, node_id: str, network_manager, public_key: str, name: str = "Agent"):
         self.node_id = node_id  # This is the Node ID (Public Key usually)
         self.public_key = public_key
+        self.name = name
         self.network_manager = network_manager
         self.level: int = 1  # Default level for new nodes
         self.endpoint: Optional[str] = None # Address of the node's API (e.g. http://192.168.1.5:8001)
@@ -102,7 +105,7 @@ class Node:
         # to the protocol handler in network manager or a service.
         # This method is kept for backward compatibility but using new protocol.
         
-        await self.network_manager.send_signed_message(
+        return await self.network_manager.send_signed_message(
             sender_id=self.node_id,
             target_id=target_id,
             msg_type=msg_type,
@@ -121,6 +124,17 @@ class Node:
             
         logger.info(f"[Node {self.node_id}] Received {msg_data.get('message_type', 'unknown')} from {msg_data.get('sender_id', 'unknown')}")
         self.inbox.append(msg_data)
+        
+        # Persist to disk inbox for resumption
+        try:
+            import json
+            import os
+            os.makedirs("data/p2p", exist_ok=True)
+            inbox_path = f"data/p2p/inbox_{self.node_id}.jsonl"
+            with open(inbox_path, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(msg_data) + "\n")
+        except Exception as e:
+            logger.error(f"Failed to persist inbox message: {e}")
 
     def get_structure_info(self):
         """

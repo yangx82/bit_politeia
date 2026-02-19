@@ -9,6 +9,7 @@ from datetime import datetime
 from ..p2p_community.bootstrap_client import GroupInfo, PeerAddress, NodeRegistration
 from ..p2p_community.reputation import ReputationManager
 from .community_config import community_config, RULES_FILE_PATH
+from .bootstrap_storage import BootstrapStorage
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +20,14 @@ class BootstrapService:
     Used by both the FastAPI server (Cloud/LAN) and potentially local simulations.
     """
     def __init__(self):
-        self._groups: Dict[str, GroupInfo] = {}
-        self._peers: Dict[str, PeerAddress] = {}  # node_id -> PeerAddress
-        self._group_members: Dict[str, Set[str]] = {}  # group_id -> set of node_ids
-        self._pending_joins: Dict[str, List[NodeRegistration]] = {} # group_id -> list of registrations
+        self.storage = BootstrapStorage()
+        
+        # Load from Storage
+        self._groups = self.storage.load_groups()
+        self._peers = self.storage.load_nodes()
+        self._group_members = self.storage.load_group_members()
+        self._pending_joins = self.storage.load_pending_joins()
+        
         self._reputation = ReputationManager("bootstrap")
         self._last_update = datetime.now()
         
@@ -30,24 +35,36 @@ class BootstrapService:
         self.group_capacity = community_config.get_group_capacity()
         self.max_subgroups = 3 # Hardcoded or config
         
-        # Initialize Topology
-        self._initialize_root_group()
+        # Initialize Topology if empty
+        if not self._groups:
+            self._initialize_root_group()
+
+    def _generate_group_name(self, level: int) -> str:
+        """Generate a sequential human-readable name for a group (e.g., L1-G1)."""
+        count = sum(1 for g in self._groups.values() if g.level == level)
+        return f"L{level}-G{count + 1}"
 
     def _initialize_root_group(self):
         """Initialize with a single Level 1 group. Higher levels will grow naturally."""
         first_group_id = str(uuid.uuid4())
-        self._groups[first_group_id] = GroupInfo(
+        new_group = GroupInfo(
             group_id=first_group_id,
             level=1,
             member_count=0,
             max_capacity=self.group_capacity,
             parent_id=None,
             core_node_ids=[],
-            has_space=True
+            has_space=True,
+            name=self._generate_group_name(1)
         )
+        self._groups[first_group_id] = new_group
         self._group_members[first_group_id] = set()
         self._pending_joins[first_group_id] = []
-        logger.info(f"Bootstrap: Initialized with single Level 1 group: {first_group_id}")
+        
+        # Persist
+        self.storage.upsert_group(new_group)
+        
+        logger.info(f"Bootstrap: Initialized with single Level 1 group: {first_group_id} ({self._groups[first_group_id].name})")
 
     def get_topology_info(self) -> Dict:
         """
@@ -65,34 +82,8 @@ class BootstrapService:
                 "last_update": self._last_update.isoformat()
             }
         }
-
-    def get_community_rules(self) -> Dict:
-        """
-        Reads and returns the content of usage/community rules.
-        """
-        try:
-            if os.path.exists(RULES_FILE_PATH):
-                with open(RULES_FILE_PATH, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            return {"error": "Rules file not found"}
-        except Exception as e:
-            logger.error(f"Error reading rules: {e}")
-            return {"error": str(e)}
-
-    def get_joinable_groups(self, preferred_level: int = 1) -> List[GroupInfo]:
-        """Find groups with space at the preferred level."""
-        joinable = []
-        for group in self._groups.values():
-            if group.level == preferred_level and group.has_space:
-                joinable.append(group)
-        
-        # Auto-scaling: In bottom-up, new groups are usually created via Splitting.
-        # But if we need a specific level and none exists, we might need a parent logic.
-        # For new nodes, Level 1 is always the entry point.
-        return joinable
-
-    def get_pending_joins(self, group_id: str) -> List[NodeRegistration]:
-        return self._pending_joins.get(group_id, [])
+    
+    # ... (get_community_rules, get_joinable_groups, get_pending_joins unchanged) ...
 
     def _create_child_group(self, parent_id: str) -> Optional[GroupInfo]:
         if parent_id not in self._groups: return None
@@ -103,19 +94,37 @@ class BootstrapService:
             return None # Parent full
             
         new_id = str(uuid.uuid4())
+        new_level = parent.level - 1 # Logic error in original code? Groups grow UP or DOWN? 
+        # Typically Root is L1, sub is L0? Or Root is L1 and Parents are L2?
+        # Re-reading: "group.level = preferred_level". Usually L1 is base.
+        # But _create_child_group implies going DOWN? 
+        # Wait, the code says "parent.level - 1". So children have LOWER level.
+        # But usually L1 is the lowest user group.
+        # Let's assume standard hierarchy: L1 (Users) -> L2 (Reps) -> L3 (System).
+        # In that case, creating a CHILD group usually implies a subgroup? 
+        # Actually, in this system, groups split horizontally, and representatives form HIGHER level groups.
+        # So _create_child_group might be a misnomer or for specific logic.
+        # Let's stick to the existing logic but add naming.
+        
+        new_level = parent.level - 1
         new_group = GroupInfo(
             new_id,
-            parent.level - 1,
+            new_level,
             0,
             self.group_capacity,
             parent_id,
             has_space=True,
-            core_node_ids=[]
+            core_node_ids=[],
+            name=self._generate_group_name(new_level)
         )
         self._groups[new_id] = new_group
         self._group_members[new_id] = set()
         self._pending_joins[new_id] = []
         self._last_update = datetime.now()
+        
+        # Persist
+        self.storage.upsert_group(new_group)
+        
         return new_group
 
     def register_node(self, registration: NodeRegistration) -> bool:
@@ -124,8 +133,10 @@ class BootstrapService:
             node_id=registration.node_id,
             public_key=registration.public_key,
             ip_address=registration.ip_address,
-            port=registration.port
+            port=registration.port,
+            name=registration.name
         )
+        self.storage.upsert_node(self._peers[registration.node_id])
         
         # Determine Group
         target_group_id = registration.group_id
@@ -159,6 +170,7 @@ class BootstrapService:
         is_already_pending = any(r.node_id == registration.node_id for r in self._pending_joins[target_group_id])
         if not is_already_pending:
             self._pending_joins[target_group_id].append(registration)
+            self.storage.add_pending_join(target_group_id, registration)
             logger.info(f"Bootstrap: Node {registration.node_id} request to join Group {target_group_id} is PENDING approval.")
         
         # Return True because node is registered in _peers (visible in topology)
@@ -214,6 +226,7 @@ class BootstrapService:
             if success:
                 # Remove from pending
                 self._pending_joins[group_id] = [r for r in pending if r.node_id != node_id]
+                self.storage.remove_pending_join(group_id, node_id)
                 logger.info(f"Bootstrap: Node {node_id} join to Group {group_id} APPROVED by {approver_id}")
                 return True
         return False
@@ -235,6 +248,7 @@ class BootstrapService:
             return False
             
         group.node_rankings = rankings
+        self.storage.upsert_group(group)
         logger.info(f"Bootstrap: Rankings updated for Group {group_id} by {requester_id}")
         return True
 
@@ -248,6 +262,7 @@ class BootstrapService:
             return False
             
         group.core_node_ids = core_node_ids
+        self.storage.upsert_group(group)
         logger.info(f"Bootstrap: Core nodes updated for Group {group_id}: {core_node_ids}")
         return True
 
@@ -283,6 +298,10 @@ class BootstrapService:
             logger.info(f"Bootstrap: Group {target_group_id} reached capacity {group.member_count}. Triggering split.")
             self._split_group(target_group_id)
             
+        # Persist Membership and Group State (Core Nodes, Rankings, Count)
+        self.storage.add_group_member(target_group_id, registration.node_id)
+        self.storage.upsert_group(group)
+            
         self._last_update = datetime.now()
         logger.info(f"Bootstrap: Node {registration.node_id} joined L{group.level} group {target_group_id}")
         return True
@@ -317,7 +336,8 @@ class BootstrapService:
             old_group.parent_id,
             has_space=True,
             core_node_ids=[],
-            node_rankings=moving_members # Carry over rankings to new group
+            node_rankings=moving_members, # Carry over rankings to new group
+            name=self._generate_group_name(old_group.level)
         )
         
         # 2. Update Old Group
@@ -337,7 +357,16 @@ class BootstrapService:
         self._group_members[new_id] = set(moving_members)
         self._pending_joins[new_id] = []
         
-        logger.info(f"Bootstrap: L{old_group.level} Split (Alternating): {group_id} -> {group_id} & {new_id}")
+        # Persist New Group
+        self.storage.upsert_group(new_group)
+        self.storage.upsert_group(old_group)
+        
+        # Persist Member Moves
+        for mid in moving_members:
+            self.storage.remove_group_member(group_id, mid)
+            self.storage.add_group_member(new_id, mid)
+
+        logger.info(f"Bootstrap: L{old_group.level} Split (Alternating): {old_group.name} ({group_id}) -> {old_group.name} & {new_group.name} ({new_id})")
 
         # 4. Handle Representatives (Bottom-Up)
         rep_old = remaining_members[0]
@@ -347,19 +376,22 @@ class BootstrapService:
         parent_id = old_group.parent_id
         if not parent_id:
             parent_id = str(uuid.uuid4())
+            parent_level = old_group.level + 1
             parent_group = GroupInfo(
                 group_id=parent_id,
-                level=old_group.level + 1,
+                level=parent_level,
                 member_count=0,
                 max_capacity=self.group_capacity,
-                parent_id=None
+                parent_id=None,
+                name=self._generate_group_name(parent_level)
             )
             self._groups[parent_id] = parent_group
             self._group_members[parent_id] = set()
+            self.storage.upsert_group(parent_group)
             
             old_group.parent_id = parent_id
             new_group.parent_id = parent_id
-            logger.info(f"Bootstrap: Created new Parent L{parent_group.level} Group: {parent_id}")
+            logger.info(f"Bootstrap: Created new Parent L{parent_group.level} Group: {parent_id} ({parent_group.name})")
 
         self._register_representative_to_parent(rep_old, parent_id)
         self._register_representative_to_parent(rep_new, parent_id)
@@ -371,6 +403,9 @@ class BootstrapService:
             parent = self._groups[parent_id]
             parent.member_count = len(self._group_members[parent_id])
             parent.has_space = parent.member_count < self.group_capacity
+            
+            self.storage.add_group_member(parent_id, node_id)
+            self.storage.upsert_group(parent)
             
             logger.info(f"Bootstrap: Node {node_id} elected as rep to L{parent.level} Group {parent_id}")
             

@@ -30,19 +30,77 @@ async def send_p2p_message(recipient_id: str, content: str, message_type: str = 
         # or we might need to use `broadcast_message` for groups.
         
         if message_type.upper() == "GROUP":
-             await p2p_service.broadcast_message(recipient_id, payload)
-             return f"Broadcasted to group {recipient_id}"
+             success = await p2p_service.broadcast_message(recipient_id, payload)
+             return f"Broadcasted to group {recipient_id}: {'SUCCESS' if success else 'FAILED (Network/Relay Error)'}"
         elif message_type.upper() == "DIRECT":
-             await p2p_service.send_message(recipient_id, payload)
-             return f"Sent direct message to {recipient_id}"
+             success = await p2p_service.send_message(recipient_id, payload)
+             return f"Sent direct message to {recipient_id}: {'SUCCESS' if success else 'FAILED (Target Offline or Relay Error)'}"
         else:
              # Default or GOSSIP
-             await p2p_service.send_message(recipient_id, payload) # Fallback
-             return f"Sent message to {recipient_id}"
+             success = await p2p_service.send_message(recipient_id, payload) # Fallback
+             return f"Sent message to {recipient_id}: {'SUCCESS' if success else 'FAILED'}"
              
     except Exception as e:
         logger.error(f"Tool Error sending message: {e}")
         return f"Error sending message: {str(e)}"
+
+@tool
+async def send_file(recipient_id: str, file_path: str, description: str = "File") -> str:
+    """
+    Send a local file to another node.
+    Args:
+        recipient_id: The UUID of the target Node.
+        file_path: Absolute path to the local file to send.
+        description: Brief description of the file.
+    """
+    import base64
+    import os
+    
+    if not os.path.exists(file_path):
+        return f"Error: File not found at {file_path}"
+        
+    try:
+        file_name = os.path.basename(file_path)
+        with open(file_path, "rb") as f:
+            file_data = f.read()
+            
+        encoded_data = base64.b64encode(file_data).decode('utf-8')
+        
+        payload = {
+            "text": f"Sending file: {file_name} - {description}",
+            "info": file_name,
+            "data": encoded_data,
+            "mime": "application/octet-stream" # Simplified
+        }
+        
+        # We need to manually specify the 'file' message type.
+        # Ideally p2p_service.send_message should support 'file' string mapping to MessageType.FILE
+        # Since we modified MessageType enum, we can pass "file" or MessageType.FILE.value
+        
+        success = await p2p_service.send_message(recipient_id, payload, msg_type="file")
+        
+        if success:
+             # Log the action (handled by send_message return usually, but we want implicit history log of action)
+             # sending a big base64 string to history is bad. We logged the text part in payload?
+             # send_message logic in models.py doesn't automatically log to history for the sender?
+             # Wait, previous fix added logging to `send_p2p_message` (the tool helper/service method).
+             # accessing p2p_service directly bypasses `AgentService.send_p2p_message`.
+             # So we should log manually here or use `AgentService` wrapper if available.
+             # Tools access `p2p_service` directly. 
+             # Let's log a summary to resident memory.
+            from app.services.agent_service import agent_service
+            agent_service.resident_memory.log_interaction(
+                "agent", 
+                f"Sent file '{file_name}' to {recipient_id}", 
+                msg_type="chat", 
+                chat_id=recipient_id
+            )
+            return f"Successfully sent file {file_name} to {recipient_id}"
+        else:
+            return "Failed to send file (Network Error)"
+            
+    except Exception as e:
+        return f"Error sending file: {str(e)}"
 
 @tool
 async def get_my_status() -> str:
@@ -262,27 +320,91 @@ async def read_skill_guide(skill_name: str) -> str:
     Call this BEFORE using any tool from a skill you are unfamiliar with.
     """
     try:
-        from app.agent.skill_manager import skill_manager
+        from app.services.skill_manager import skill_manager
         # Ensure latest skills are loaded or just read from cache
         # skill_manager.load_skills() # Optional: reload if needed
         return skill_manager.get_skill_instruction(skill_name)
     except Exception as e:
         return f"Failed to read skill guide: {str(e)}"
 
+@tool
+async def delegate_task(recipient_id: str, task: str, context: Optional[str] = None, inputs_json: Optional[str] = None) -> str:
+    """
+    Delegate a structured task to another agent. 
+    Use this for multi-agent collaboration or offloading complex sub-tasks.
+    Args:
+        recipient_id: Node ID of the target agent.
+        task: The high-level objective.
+        context: Optional background info or context.
+        inputs_json: Optional JSON string of input parameters.
+    """
+    try:
+        inputs = json.loads(inputs_json) if inputs_json else {}
+        # We'll use p2p_service to route this. 
+        # The receiver's AgentService should have a handler for 'task_handoff'.
+        
+        # Unique Handoff ID
+        import uuid
+        handoff_id = str(uuid.uuid4())
+        
+        payload = {
+            "type": "task_handoff",
+            "handoff_id": handoff_id,
+            "task": task,
+            "context": context,
+            "inputs": inputs
+        }
+        
+        await p2p_service.send_message(recipient_id, payload)
+        return f"Task delegated to {recipient_id}. Handoff ID: {handoff_id}. Awaiting result..."
+        
+    except Exception as e:
+        logger.error(f"Failed to delegate task: {e}")
+        return f"Error: {str(e)}"
+
 # Import execution tool
 from ..agent.tools_exec import execute_shell_command
-from ..agent.tools_fs import list_dir, read_file, write_file, edit_file
+from ..agent.tools_fs import list_dir, read_file, write_file, edit_file, copy_files, move_files
 from ..agent.tools_web import fetch_web_page
 from ..agent.tools_cron import schedule_reminder, list_reminders, cancel_reminder, start_scheduler, get_scheduler_status
 
-# List of tools to bind to the agent
+@tool
+async def ask_resident(question: str) -> str:
+    """
+    Ask the local resident (human user) for advice, instructions, or approval.
+    The question will appear in the resident's chat window.
+    """
+    try:
+        from app.services.agent_service import agent_service
+        from app.models.schemas import Message
+        from datetime import datetime
+        import uuid
+        
+        # Log to agent's history so it shows in UI
+        agent_service.history.append(Message(
+            id=str(uuid.uuid4()),
+            content=question,
+            sender="agent",
+            timestamp=datetime.now(),
+            chat_id="resident"
+        ))
+        
+        # Also log to resident memory
+        agent_service.resident_memory.log_interaction("agent", question, msg_type="chat", chat_id="resident")
+        
+        return f"Question sent to resident: {question}"
+    except Exception as e:
+        return f"Error asking resident: {str(e)}"
+
+# List of Tools to bind to the agent
 AGENT_TOOLS = [
-    send_p2p_message, get_my_status, read_community_rules, update_system_parameter, 
+    send_p2p_message, send_file, ask_resident, get_my_status, read_community_rules, update_system_parameter, 
     propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, 
     pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, 
     read_skill_guide, execute_shell_command,
-    list_dir, read_file, write_file, edit_file,
+    list_dir, read_file, write_file, edit_file, copy_files, move_files,
     fetch_web_page,
     schedule_reminder, list_reminders, cancel_reminder,
-    start_scheduler, get_scheduler_status
+    start_scheduler, get_scheduler_status,
+    delegate_task
 ]

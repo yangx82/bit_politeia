@@ -7,6 +7,10 @@ import logging
 import os
 import asyncio
 from contextlib import asynccontextmanager
+
+# Critical for China: Set HuggingFace Mirror before any imports that might use it
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
 from dotenv import load_dotenv
 
 # Load env vars
@@ -89,6 +93,8 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api/v1")
+from app.api.gateway import router as gateway_router
+app.include_router(gateway_router)
 
 @app.get("/")
 async def root():

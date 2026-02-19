@@ -115,3 +115,54 @@ async def edit_file(path: str, old_text: str, new_text: str) -> str:
         return f"Successfully edited {path}"
     except Exception as e:
         return f"Error editing file: {str(e)}"
+
+@tool
+async def copy_files(source: str, destination: str) -> str:
+    """
+    Copy a file or directory recursively.
+    Args:
+        source: Source path.
+        destination: Destination path.
+    """
+    import shutil
+    try:
+        src_path = _resolve_path(source)
+        dst_path = _resolve_path(destination)
+        
+        if not src_path.exists():
+            return f"Error: Source not found: {source}"
+            
+        if src_path.is_dir():
+            shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+        else:
+            # Ensure parent dir exists
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_path, dst_path)
+            
+        return f"Successfully copied {source} to {destination}"
+    except Exception as e:
+        return f"Error copying files: {str(e)}"
+
+@tool
+async def move_files(source: str, destination: str) -> str:
+    """
+    Move a file or directory.
+    Args:
+        source: Source path.
+        destination: Destination path.
+    """
+    import shutil
+    try:
+        src_path = _resolve_path(source)
+        dst_path = _resolve_path(destination)
+        
+        if not src_path.exists():
+            return f"Error: Source not found: {source}"
+            
+        # Ensure parent dir exists
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        shutil.move(src_path, dst_path)
+        return f"Successfully moved {source} to {destination}"
+    except Exception as e:
+        return f"Error moving files: {str(e)}"

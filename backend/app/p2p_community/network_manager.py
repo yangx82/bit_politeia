@@ -54,17 +54,40 @@ class NetworkManager:
 
     def _sync_topology(self, topology_data: Dict):
         """Sync local view with topology data including endpoints and members."""
+        logger.info("[Network] Syncing topology with bootstrap data...")
+        
         # 1. Sync Groups
+        server_group_ids = set()
         if "groups" in topology_data:
             for gid, gdata in topology_data["groups"].items():
+                server_group_ids.add(gid)
                 if gid not in self.groups:
                     self.groups[gid] = Group(
                         group_id=gdata["group_id"],
                         level=gdata["level"],
-                        parent_id=gdata["parent_id"]
+                        parent_id=gdata["parent_id"],
+                        name=gdata.get("name")
                     )
+                else:
+                    # Update name if changed
+                    if gdata.get("name"):
+                        self.groups[gid].name = gdata["name"]
         
-        # Sync members from hierarchy (Critical for P2P discovery)
+        # REMOVE Stale Groups
+        stale_groups = [gid for gid in self.groups if gid not in server_group_ids]
+        for gid in stale_groups:
+            logger.warning(f"[Network] Removing stale group {gid} (not in bootstrap)")
+            
+            # If local node is in this group, leave it
+            if self.local_node_id and self.local_node_id in self.nodes:
+                local_node = self.nodes[self.local_node_id]
+                if gid in local_node.group_ids:
+                    local_node.group_ids.remove(gid)
+                    logger.info(f"[Network] Local node removed from stale group {gid}")
+            
+            del self.groups[gid]
+
+        # Sync members from hierarchy
         if "hierarchy" in topology_data:
             for gid, members in topology_data["hierarchy"].items():
                 if gid in self.groups:
@@ -77,19 +100,23 @@ class NetworkManager:
                 if gid not in parent.child_ids:
                     parent.add_child(gid)
 
-        # 2. Sync Nodes (Endpoints are critical for routing)
+        # 2. Sync Nodes
         if "nodes" in topology_data:
             for nid, ndata in topology_data["nodes"].items():
                 if nid not in self.nodes:
                     node = Node(
                         node_id=nid,
                         network_manager=self,
-                        public_key=ndata.get("public_key", "")
+                        public_key=ndata.get("public_key", ""),
+                        name=ndata.get("name", "Agent")
                     )
                     self.nodes[nid] = node
                 
-                # Update endpoint and public key if provided
+                # Update endpoint and metadata
                 self.nodes[nid].public_key = ndata.get("public_key", self.nodes[nid].public_key)
+                if ndata.get("name"):
+                    self.nodes[nid].name = ndata.get("name")
+                
                 ip = ndata.get("ip_address")
                 port = ndata.get("port")
                 if ip and port:
@@ -116,10 +143,29 @@ class NetworkManager:
             node_id=node.node_id,
             public_key=node.public_key,
             ip_address=host,
-            port=port
+            port=port,
+            name=node.name
         )
         await self.bootstrap.register_node(reg)
         logger.info(f"Registered local node {node.node_id} at {host}:{port}")
+
+        # --- Start Relay Client ---
+        from .relay_client import RelayClient
+        
+        # Stop existing client if any
+        if hasattr(self, 'relay_client') and self.relay_client:
+            logger.info("Stopping existing RelayClient...")
+            await self.relay_client.stop()
+
+        self.relay_client = RelayClient(
+            server_url=self.bootstrap.server_url,
+            node_id=node.node_id,
+            message_handler=self.handle_relayed_message,
+            verify_ssl=self.bootstrap.verify
+        )
+        await self.relay_client.start()
+        logger.info(f"RelayClient started (SSL Verify: {self.bootstrap.verify})")
+        # ---------------------------
 
         # Auto-join first level group if none assigned
         if not node.group_ids:
@@ -128,6 +174,18 @@ class NetworkManager:
                 await node.join_group(joinable[0].group_id)
             else:
                 logger.warning(f"No joinable groups found for node {node.node_id}")
+
+    async def handle_relayed_message(self, message_data: Dict):
+        """Handle messages received via RelayClient."""
+        try:
+            # Parse dict back to SignedMessage
+            message = SignedMessage.from_dict(message_data)
+            logger.info(f"[Network] Received RELAYED message {message.message_id} from {message.sender_id}")
+            
+            # Route locally
+            await self.route_message(message)
+        except Exception as e:
+            logger.error(f"Failed to handle relayed message: {e}")
 
     async def register_node_to_group(self, node_id: str, group_id: str) -> bool:
         """Join a group and notify bootstrap if it's the local node."""
@@ -157,7 +215,8 @@ class NetworkManager:
                 public_key=node.public_key,
                 ip_address=host,
                 port=port,
-                group_id=group_id
+                group_id=group_id,
+                name=node.name
             )
             await self.bootstrap.register_node(reg)
 
@@ -190,51 +249,79 @@ class NetworkManager:
             content=content
         )
         
-        await self.route_message(signed_msg)
+        return await self.route_message(signed_msg)
 
-    async def _send_http_message(self, endpoint: str, message: SignedMessage):
-        """Send a signed message to a remote node's API."""
+    async def _send_http_message(self, endpoint: str, message: SignedMessage) -> bool:
+        """Send a signed message to a remote node's API. Returns success boolean."""
         try:
             url = f"{endpoint.rstrip('/')}/api/v1/p2p/message"
             # Use the existing http_client for efficiency
             resp = await self.http_client.post(url, json=message.to_dict())
-            if resp.status_code != 200:
-                logger.error(f"Transport error to {endpoint}: HTTP {resp.status_code}")
+            if resp.status_code == 200:
+                return True
+            else:
+                logger.warning(f"Transport error to {endpoint}: HTTP {resp.status_code}")
+                return False
         except Exception as e:
-            logger.error(f"Failed to reach peer {endpoint}: {e}")
+            logger.warning(f"Failed to reach peer {endpoint}: {e}")
+            return False
 
-    async def route_message(self, message: SignedMessage):
-        """Route message to local node or remote peer via HTTP."""
+    async def _send_via_relay(self, target_id: str, message: SignedMessage):
+        """Fallback: Send message via Bootstrap Relay."""
+        if hasattr(self, 'relay_client') and self.relay_client.websocket:
+            logger.info(f"Fallback: Sending message to {target_id} via RELAY")
+            return await self.relay_client.send(message.to_dict())
+        return False
+
+    async def route_message(self, message: SignedMessage) -> bool:
+        """Route message to local node or remote peer via HTTP, fallback to Relay."""
         logger.info(f"[Network] Routing {message.message_type.value} message to {message.recipient_id}")
 
-        if message.message_type == MessageType.DIRECT:
-            if message.recipient_id == self.local_node_id:
+        # Helper to route to single node with fallback
+        async def send_to_node(node_id: str, msg: SignedMessage) -> bool:
+            if node_id == self.local_node_id:
                 if self.local_node_id in self.nodes:
-                    await self.nodes[self.local_node_id].receive_message(message)
-            elif message.recipient_id in self.nodes:
-                target = self.nodes[message.recipient_id]
-                if target.endpoint:
-                    await self._send_http_message(target.endpoint, message)
-            else:
-                logger.warning(f"Target node {message.recipient_id} unknown")
+                    await self.nodes[self.local_node_id].receive_message(msg)
+                return True
 
+            if node_id in self.nodes:
+                target = self.nodes[node_id]
+                success = False
+                if target.endpoint:
+                    success = await self._send_http_message(target.endpoint, msg)
+                
+                if not success:
+                    # Fallback to Relay
+                    return await self._send_via_relay(node_id, msg)
+                return True
+            else:
+                 # Try Relay even if unknown (maybe new node)
+                 return await self._send_via_relay(node_id, msg)
+
+        # Handle routing based on message type
+        if message.message_type == MessageType.DIRECT:
+            return await send_to_node(message.recipient_id, message)
+        
         elif message.message_type == MessageType.GROUP:
-            if message.recipient_id in self.groups:
-                members = self.groups[message.recipient_id].members
-                tasks = []
-                for mid in members:
-                    if mid == self.local_node_id:
+            group_id = message.recipient_id
+            if group_id in self.groups:
+                members = self.groups[group_id].members
+                results = []
+                for member_id in members:
+                    if member_id == self.local_node_id:
                         if message.sender_id != self.local_node_id:
-                            # Deliver group messages sent by others to our inbox
-                            tasks.append(self.nodes[mid].receive_message(message))
-                    elif mid in self.nodes:
-                        target = self.nodes[mid]
-                        if target.endpoint:
-                            tasks.append(self._send_http_message(target.endpoint, message))
-                if tasks:
-                    await asyncio.gather(*tasks)
+                            # Delivery to self
+                            if self.local_node_id in self.nodes:
+                                await self.nodes[self.local_node_id].receive_message(message)
+                            results.append(True)
+                        continue
+                    results.append(await send_to_node(member_id, message))
+                return any(results) if results else True # success if empty or at least one peer reached
             else:
                 logger.warning(f"Target group {message.recipient_id} not found")
+                return False
+        
+        return await send_to_node(message.recipient_id, message)
 
     def get_network_structure(self):
         """Returns a dict representation of the hierarchy."""
@@ -242,5 +329,6 @@ class NetworkManager:
             "total_nodes": len(self.nodes),
             "total_groups": len(self.groups),
             "groups": {g_id: g.to_dict() for g_id, g in self.groups.items()},
-            "nodes": {n_id: {"public_key": n.public_key[:16] + "..."} for n_id, n in self.nodes.items()}
+            "nodes": {n_id: {"public_key": n.public_key[:16] + "..."} for n_id, n in self.nodes.items()},
+            "relay_connected": getattr(self, 'relay_client', None) and self.relay_client.websocket is not None
         }

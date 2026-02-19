@@ -21,7 +21,7 @@ class P2PService:
         self.local_node: Optional[Node] = None
         self._initialized = False
 
-    async def initialize(self, node_id: str, node_url: str = None):
+    async def initialize(self, node_id: str, node_url: str = None, name: str = "Agent"):
         """
         Initialize the P2P service and local node.
         """
@@ -46,10 +46,20 @@ class P2PService:
         self.local_node = Node(
             node_id=node_id, 
             network_manager=self.network_manager,
-            public_key=public_key
+            public_key=public_key,
+            name=name
         )
         if node_url:
             self.local_node.endpoint = node_url
+        
+        # Pass name to network manager registration if needed?
+        # Actually network_manager.register_node just adds to local dict.
+        # But we need to ensure when we call bootstrap_client.register_node that we pass the name.
+        # NetworkManager.register_node calls bootstrap_client.register_node? 
+        # No, NetworkManager.register_node seems to be local.
+        # I need to check where the actual bootstrap registration happens.
+        # It happens in `await self.network_manager.register_node(self.local_node)` line 54?
+        # Let's check NetworkManager code.
         
         await self.network_manager.register_node(self.local_node)
         self._initialized = True
@@ -62,7 +72,7 @@ class P2PService:
         if not self.local_node:
             raise RuntimeError("P2PService not initialized")
             
-        await self.local_node.send_message(target_id, content, msg_type)
+        return await self.local_node.send_message(target_id, content, msg_type)
 
     async def broadcast_to_group(self, group_id: str, text: str, subject: str = None):
         """
@@ -81,14 +91,39 @@ class P2PService:
             "text": text,
             "subject": subject
         }
-        await self.local_node.send_message(group_id, content, MessageType.GROUP.value)
+        return await self.local_node.send_message(group_id, content, MessageType.GROUP.value)
 
     def get_network_status(self) -> Dict[str, Any]:
         return self.network_manager.get_network_structure()
+
+    async def update_node_info(self, name: str = None):
+        """Update local node info and sync with bootstrap."""
+        if not self.local_node:
+            logger.warning("Cannot update node info: P2PService not initialized")
+            return
+            
+        if name:
+            self.local_node.name = name
+            
+        # Re-register with bootstrap to update metadata
+        await self.network_manager.register_node(self.local_node)
+        logger.info(f"Updated node info for {self.local_node.node_id}: name='{self.local_node.name}'")
 
     def get_my_groups(self) -> List[str]:
         if self.local_node:
             return list(self.local_node.group_ids)
         return []
+
+    def get_groups(self) -> List[Dict[str, Any]]:
+        """
+        Get all known groups with details.
+        """
+        if not self._initialized:
+            return []
+            
+        groups_data = []
+        for gid, group in self.network_manager.groups.items():
+            groups_data.append(group.to_dict())
+        return groups_data
 
 p2p_service = P2PService()

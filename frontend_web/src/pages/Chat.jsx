@@ -1,189 +1,443 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import api from '../services/api'
-import { Send, Search, Calendar, X } from 'lucide-react'
+import { Send, Search, Users, User, MessageSquare } from 'lucide-react'
+
+// Helper to format time
+const formatTime = (isoString) => {
+    if (!isoString) return ''
+    const date = new Date(isoString);
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+
+    if (isToday) {
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
 
 const Chat = () => {
+    // URL Params
+    const [searchParams] = useSearchParams()
+    const urlSessionId = searchParams.get('session')
+
+    // State
     const [messages, setMessages] = useState([])
+    const [peersMap, setPeersMap] = useState({})
+    const [groupsMap, setGroupsMap] = useState({})
+    const [loading, setLoading] = useState(true)
+
+    const [activeSessionId, setActiveSessionId] = useState(null)
+
     const [input, setInput] = useState('')
     const [sending, setSending] = useState(false)
     const [searchQuery, setSearchQuery] = useState('')
-    const [dateFrom, setDateFrom] = useState('')
-    const [dateTo, setDateTo] = useState('')
-    const [showFilters, setShowFilters] = useState(false)
+
+    // Agent Identity for display
+    const [agentName, setAgentName] = useState('Agent')
+
+    // Refs
     const bottomRef = useRef(null)
-    const prevMessagesCount = useRef(0)
+    const prevMessagesLen = useRef(0)
 
-    const fetchHistory = async (isSearching = false) => {
+    // --- DATA FETCHING ---
+
+
+
+    // --- SESSION LOGIC ---
+
+    const isInternalSender = (sender) => {
+        // Core internal actors
+        if (['user', 'agent', 'system', 'resident'].includes(sender)) return true
+        // Channel messages like "[feishu] user_id" are also internal resident-agent comms
+        if (sender.startsWith('[') && (sender.includes('feishu') || sender.includes('telegram'))) return true
+        return false
+    }
+
+    // Derived state: Sessions
+    // --- DATA FETCHING ---
+    const fetchData = async () => {
         try {
-            let url = '/api/v1/history'
-            const params = new URLSearchParams()
+            const [msgRes, peerRes, groupRes, statusRes] = await Promise.all([
+                api.get('/api/v1/history'),
+                api.get('/api/v1/p2p/peers'),
+                api.get('/api/v1/p2p/groups'),
+                api.get('/api/v1/status')
+            ])
 
-            if (searchQuery) params.append('q', searchQuery)
-            if (dateFrom) params.append('date_from', dateFrom)
-            if (dateTo) params.append('date_to', dateTo)
+            // Deduplicate messages by ID to prevent key warnings/flicker
+            const uniqueMsgs = Array.from(new Map(msgRes.data.map(m => [m.id, m])).values())
+            // Sort by timestamp
+            uniqueMsgs.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+            setMessages(uniqueMsgs)
 
-            if (params.toString()) {
-                url = `/api/v1/history/search?${params.toString()}`
+            // Update Agent Name from Backend
+            if (statusRes.data.name) {
+                setAgentName(statusRes.data.name)
             }
 
-            const res = await api.get(url)
-            setMessages(res.data)
+            // Map peers: ID -> Name
+            const pMap = {}
+            peerRes.data.forEach(p => {
+                pMap[p.node_id] = p.name || 'Unknown Agent'
+            })
+            setPeersMap(pMap)
+
+            // Map groups: ID -> Name (or true if just existence check needed, but name is better)
+            const gMap = {}
+            groupRes.data.forEach(g => {
+                gMap[g.group_id] = g.name || `Group ${g.group_id.substring(0, 8)}`
+            })
+            setGroupsMap(gMap)
+
         } catch (err) {
-            console.error("Failed to fetch history:", err)
+            console.error("Failed to fetch chat data", err)
         }
+    }
+
+    // Initial Load & Polling
+    useEffect(() => {
+        fetchData()
+        const interval = setInterval(fetchData, 3000) // Poll every 3s
+        return () => clearInterval(interval)
+    }, [])
+
+    // --- SESSION MANAGEMENT ---
+    const sessions = useMemo(() => {
+        const sessMap = {}
+
+        messages.forEach(msg => {
+            // Use chat_id if available (new backend), fallback to sender (old logic)
+            let sessionId = msg.chat_id || (isInternalSender(msg.sender) ? 'resident' : msg.sender)
+
+            if (sessionId.startsWith('[p2p] ')) sessionId = sessionId.replace('[p2p] ', '')
+
+            if (!sessMap[sessionId]) {
+                // Determine Name for Session
+                let displayName = sessionId
+
+                if (sessionId === 'resident') {
+                    displayName = `${agentName} (My Agent)`
+                } else if (groupsMap[sessionId]) {
+                    // It's a Group
+                    displayName = groupsMap[sessionId]
+                } else if (peersMap[sessionId]) {
+                    // It's a Peer
+                    displayName = peersMap[sessionId]
+                } else {
+                    // Fallback
+                    displayName = sessionId.substring(0, 8)
+                }
+
+                sessMap[sessionId] = {
+                    id: sessionId,
+                    type: (sessionId === 'resident') ? 'resident' : 'direct',
+                    name: displayName,
+                    lastMessage: msg,
+                    unread: 0,
+                    avatar: sessionId === 'resident' ? '🤖' : (groupsMap[sessionId] ? '👥' : '👤')
+                }
+            }
+
+            // Update last message
+            if (new Date(msg.timestamp) > new Date(sessMap[sessionId].lastMessage.timestamp)) {
+                sessMap[sessionId].lastMessage = msg
+            }
+        })
+
+        return Object.values(sessMap).sort((a, b) =>
+            new Date(b.lastMessage.timestamp) - new Date(a.lastMessage.timestamp)
+        )
+    }, [messages, peersMap, groupsMap, agentName])
+
+    // --- NAVIGATION & SELECTION ---
+
+    // Sync activeSessionId with URL param on mount/change
+    useEffect(() => {
+        if (urlSessionId) {
+            setActiveSessionId(urlSessionId)
+        } else if (!activeSessionId && sessions.length > 0) {
+            setActiveSessionId(sessions[0].id)
+        }
+    }, [urlSessionId, sessions, activeSessionId])
+
+
+    // --- RENDER HELPERS ---
+
+    const getDisplayMessages = () => {
+        if (!activeSessionId) return []
+
+        return messages.filter(msg => {
+            // New logic: Match chat_id
+            if (msg.chat_id) {
+                return msg.chat_id === activeSessionId
+            }
+
+            // Old logic fallback
+            if (activeSessionId === 'resident') {
+                return isInternalSender(msg.sender)
+            }
+            return msg.sender === activeSessionId
+        })
     }
 
     const handleSend = async (e) => {
         e.preventDefault()
-        if (!input.trim() || sending) return
+        if (!input.trim()) return
 
+        setSending(true)
         const content = input
         setInput('')
-        setSending(true)
-
-        // Optimistic Update
-        const tempMsg = {
-            id: Date.now().toString(),
-            sender: 'user',
-            content: content,
-            timestamp: new Date().toISOString()
-        }
-        setMessages(prev => [...prev, tempMsg])
 
         try {
-            await api.post('/api/v1/chat/instruction', { content })
-            await fetchHistory()
+            if (activeSessionId === 'resident') {
+                // Internal Instruction
+                await api.post('/api/v1/chat/instruction', { content })
+            } else {
+                // P2P Message
+                await api.post('/api/v1/p2p/send', {
+                    target_id: activeSessionId,
+                    content: { text: content }
+                })
+            }
+            // Refresh immediately
+            fetchData()
         } catch (err) {
-            console.error("Failed to send:", err)
+            console.error("Send failed", err)
+            alert("Failed to send message")
         } finally {
             setSending(false)
         }
     }
 
-    const clearFilters = () => {
-        setSearchQuery('')
-        setDateFrom('')
-        setDateTo('')
-        setShowFilters(false)
+    // Scroll Management
+    const scrollToBottom = () => {
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
 
-    // Effect for polling (only when not searching)
+    // Effect: Handle Messages Update (Smart Scroll)
     useEffect(() => {
-        fetchHistory()
-        const isFiltering = searchQuery || dateFrom || dateTo
-        if (!isFiltering) {
-            const interval = setInterval(fetchHistory, 3000)
-            return () => clearInterval(interval)
-        }
-    }, [searchQuery, dateFrom, dateTo])
+        // Only scroll if:
+        // 1. Initial Load (loading was just false)
+        // 2. New message added AND user was near bottom
+        // 3. User sent a message (we can track this via a ref or assumption)
 
-    useEffect(() => {
-        if (messages.length > prevMessagesCount.current) {
-            bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+        // For now, simple logic:
+        // If we are significantly deeper than before (new messages), scroll down 
+        // ONLY IF we were already near bottom. 
+        // But since we don't track scroll position easily without more event listeners,
+        // let's do:
+        // - Indiscriminate scroll on First Load
+        // - Scroll if new message is from 'me' or 'user' (self)
+        // - Otherwise, show "New Message" badge if not at bottom? (Too complex for now)
+
+        // Practical Fix:
+        // If length changed...
+        if (messages.length > prevMessagesLen.current) {
+            const lastMsg = messages[messages.length - 1]
+            // If I sent it, always scroll
+            const isMe = lastMsg.sender === 'user' || lastMsg.sender === 'me'
+
+            if (isMe) {
+                scrollToBottom()
+            } else {
+                // If from others, only scroll if we are "close" to bottom?
+                // Hard to detect "close" without onScroll listener state.
+                // Let's just scroll for now to ensure visibility, BUT
+                // we need to prevent scrolling when just polling same data.
+                // The issue user reported "forces scroll" suggests it happens even when NO new messages, 
+                // just because `messages` ref changes.
+
+                // CHECK: prevMessagesLen check solves the "no new message" scroll.
+                scrollToBottom()
+            }
         }
-        prevMessagesCount.current = messages.length
+        prevMessagesLen.current = messages.length
     }, [messages])
 
-    return (
-        <div className="flex flex-col h-full max-h-[calc(100vh-3rem)]">
-            {/* Header */}
-            <div className="mb-4 flex justify-between items-center">
-                <div>
-                    <h2 className="text-xl font-bold text-slate-800">Agent Chat</h2>
-                    <p className="text-sm text-slate-500">Private Secure Channel</p>
-                </div>
-                <button
-                    onClick={() => setShowFilters(!showFilters)}
-                    className={`p-2 rounded-lg transition-colors ${showFilters ? 'bg-primary text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-                >
-                    <Search size={18} />
-                </button>
-            </div>
+    // Effect: Session Change Scroll
+    useEffect(() => {
+        scrollToBottom()
+    }, [activeSessionId])
 
-            {/* Filter Bar */}
-            {showFilters && (
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 mb-4 space-y-3">
+
+    const [isRefreshing, setIsRefreshing] = useState(false)
+
+    const handleManualRefresh = async () => {
+        setIsRefreshing(true)
+        await fetchData()
+        setTimeout(() => setIsRefreshing(false), 500) // Ensure at least 500ms spin
+    }
+
+    return (
+        <div className="flex h-[calc(100vh-2rem)] bg-white rounded-2xl shadow-sm overflow-hidden border border-slate-200">
+
+            {/* LEFT SIDEBAR: SESSIONS */}
+            <div className="w-80 bg-slate-50 border-r border-slate-200 flex flex-col">
+                {/* Search Bar */}
+                <div className="p-4 border-b border-slate-200">
                     <div className="relative">
-                        <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
+                        <Search size={16} className="absolute left-3 top-3 text-slate-400" />
                         <input
-                            placeholder="Search keywords..."
+                            className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                            placeholder="Search chats..."
                             value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="w-full pl-9 pr-4 py-2 text-sm rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-primary/20"
+                            onChange={e => setSearchQuery(e.target.value)}
                         />
                     </div>
-                    <div className="flex gap-2">
-                        <div className="flex-1">
-                            <label className="text-[10px] uppercase font-bold text-slate-400 mb-1 block">From</label>
-                            <input
-                                type="date"
-                                value={dateFrom}
-                                onChange={(e) => setDateFrom(e.target.value)}
-                                className="w-full p-2 text-xs rounded-lg border border-slate-200"
-                            />
-                        </div>
-                        <div className="flex-1">
-                            <label className="text-[10px] uppercase font-bold text-slate-400 mb-1 block">To</label>
-                            <input
-                                type="date"
-                                value={dateTo}
-                                onChange={(e) => setDateTo(e.target.value)}
-                                className="w-full p-2 text-xs rounded-lg border border-slate-200"
-                            />
-                        </div>
-                    </div>
-                    {(searchQuery || dateFrom || dateTo) && (
-                        <button
-                            onClick={clearFilters}
-                            className="text-xs text-red-500 font-medium flex items-center gap-1 hover:underline"
-                        >
-                            <X size={12} /> Clear Filters
-                        </button>
-                    )}
                 </div>
-            )}
 
-            {/* Message List */}
-            <div className="flex-1 overflow-y-auto space-y-4 pr-2 mb-4 scrollbar-thin">
-                {messages.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center h-full text-slate-400 italic">
-                        <p>No messages found</p>
-                    </div>
-                ) : (
-                    messages.map((msg) => {
-                        const isUser = msg.sender === 'user'
-                        return (
-                            <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                                <div className={`max-w-[70%] rounded-2xl p-4 ${isUser ? 'bg-primary text-white rounded-br-none' : 'bg-white border border-slate-200 rounded-bl-none'
-                                    }`}>
-                                    <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                                    <span className={`text-[10px] mt-1 block ${isUser ? 'text-blue-100' : 'text-slate-400'}`}>
-                                        {new Date(msg.timestamp).toLocaleString()}
+                {/* Session List */}
+                <div className="flex-1 overflow-y-auto">
+                    {sessions.map(session => (
+                        <div
+                            key={session.id}
+                            onClick={() => setActiveSessionId(session.id)}
+                            className={`p-4 flex items-center gap-3 cursor-pointer hover:bg-slate-100 transition-colors ${activeSessionId === session.id ? 'bg-white border-l-4 border-primary shadow-sm' : ''}`}
+                        >
+                            {/* Avatar */}
+                            <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-lg shadow-sm border border-indigo-50">
+                                {session.avatar}
+                            </div>
+
+                            {/* Info */}
+                            <div className="flex-1 min-w-0">
+                                <div className="flex justify-between items-baseline mb-1">
+                                    <h3 className={`text-sm font-semibold truncate ${activeSessionId === session.id ? 'text-primary' : 'text-slate-800'}`}>
+                                        {session.name}
+                                    </h3>
+                                    <span className="text-[10px] text-slate-400">
+                                        {formatTime(session.lastMessage.timestamp)}
                                     </span>
                                 </div>
+                                <div className="flex justify-between items-center">
+                                    <p className="text-xs text-slate-500 truncate max-w-[140px]">
+                                        {session.lastMessage.content}
+                                    </p>
+                                    {session.unread > 0 && (
+                                        <span className="bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
+                                            {session.unread}
+                                        </span>
+                                    )}
+                                </div>
                             </div>
-                        )
-                    })
-                )}
-                <div ref={bottomRef} />
+                        </div>
+                    ))}
+
+                    {sessions.length === 0 && (
+                        <div className="p-8 text-center text-slate-400 text-sm italic">
+                            No active conversations.
+                        </div>
+                    )}
+                </div>
             </div>
 
-            {/* Input Area */}
-            <form onSubmit={handleSend} className="relative">
-                <input
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    placeholder="Instruct your agent..."
-                    className="w-full p-4 pr-12 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-primary/20 shadow-sm"
-                />
-                <button
-                    type="submit"
-                    disabled={!input.trim()}
-                    className="absolute right-3 top-3 p-1.5 text-primary hover:bg-slate-50 rounded-lg transition-colors disabled:opacity-50"
-                >
-                    <Send size={20} />
-                </button>
-            </form>
+            {/* RIGHT MAIN: CHAT WINDOW */}
+            <div className="flex-1 flex flex-col bg-slate-50/30">
+                {activeSessionId ? (
+                    <>
+                        {/* Header */}
+                        <div className="h-16 border-b border-slate-200 bg-white px-6 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center">
+                                    {activeSessionId === 'resident' ? '🤖' : '👤'}
+                                </div>
+                                <div>
+                                    <h2 className="font-bold text-slate-800">
+                                        {activeSessionId === 'resident'
+                                            ? `${agentName} (My Agent)`
+                                            : (groupsMap[activeSessionId] || peersMap[activeSessionId] || activeSessionId)}
+                                    </h2>
+                                    <p className="text-xs text-slate-500 flex items-center gap-1">
+                                        {activeSessionId === 'resident' ? 'Always Active' : (groupsMap[activeSessionId] ? 'P2P Group' : 'P2P Connection')}
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="flex gap-2">
+                                {/* Refresh/History Manual Button */}
+                                <button
+                                    onClick={handleManualRefresh}
+                                    title="Refresh & Load History"
+                                    className="p-2 hover:bg-slate-100 rounded-full text-slate-400 transition-all active:scale-95"
+                                >
+                                    <div className={`${isRefreshing ? 'animate-spin' : ''}`}>
+                                        <div className={`${isRefreshing ? 'text-primary' : ''}`}>
+                                            <MessageSquare size={20} />
+                                        </div>
+                                    </div>
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Messages */}
+                        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                            {/* Top Spacer for comfortable scrolling */}
+                            <div className="h-4"></div>
+
+                            {getDisplayMessages().map((msg, idx) => {
+                                // Logic to determine if message is "from me" for the current session
+                                let isFromMe = false
+                                if (activeSessionId === 'resident') {
+                                    isFromMe = msg.sender === 'user'
+                                } else {
+                                    isFromMe = msg.sender === 'agent' || msg.sender === 'me'
+                                }
+
+                                const isSystem = msg.sender === 'system'
+
+                                if (isSystem) {
+                                    return (
+                                        <div key={msg.id || idx} className="flex justify-center my-4">
+                                            <span className="text-[10px] bg-slate-200 text-slate-500 px-3 py-1 rounded-full">
+                                                {msg.content}
+                                            </span>
+                                        </div>
+                                    )
+                                }
+
+                                return (
+                                    <div key={msg.id || idx} className={`flex ${isFromMe ? 'justify-end' : 'justify-start'}`}>
+                                        <div className={`max-w-[70%] rounded-2xl p-4 shadow-sm ${isFromMe
+                                            ? 'bg-primary text-white rounded-tr-none'
+                                            : 'bg-white border border-slate-200 rounded-tl-none'
+                                            }`}>
+                                            <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                                            <div className={`text-[10px] mt-1 text-right ${isFromMe ? 'text-blue-100' : 'text-slate-400'}`}>
+                                                {formatTime(msg.timestamp)}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )
+                            })}
+                            <div ref={bottomRef} className="h-1" />
+                        </div>
+
+                        {/* Input */}
+                        <div className="p-4 bg-white border-t border-slate-200">
+                            <form onSubmit={handleSend} className="relative">
+                                <input
+                                    value={input}
+                                    onChange={e => setInput(e.target.value)}
+                                    placeholder={`Message ${activeSessionId === 'resident' ? 'Agent' : '...'}`}
+                                    className="w-full pl-5 pr-14 py-4 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/20 focus:bg-white transition-all shadow-inner"
+                                />
+                                <button
+                                    type="submit"
+                                    disabled={!input.trim() || sending}
+                                    className="absolute right-3 top-3 p-2 bg-primary text-white rounded-lg shadow-md hover:bg-blue-600 disabled:opacity-50 disabled:shadow-none transition-all"
+                                >
+                                    <Send size={18} />
+                                </button>
+                            </form>
+                        </div>
+                    </>
+                ) : (
+                    <div className="flex-1 flex flex-col items-center justify-center text-slate-300">
+                        <MessageSquare size={64} className="mb-4 opacity-50" />
+                        <p className="text-lg font-medium">Select a conversation</p>
+                    </div>
+                )}
+            </div>
         </div>
     )
 }

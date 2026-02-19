@@ -36,7 +36,8 @@ const Profile = () => {
         apiKey: '',
         model: '',
         field: '',
-        verboseLlm: false
+        verboseLlm: false,
+        bootstrapVerify: true
     })
     const [updating, setUpdating] = useState(false)
 
@@ -45,7 +46,11 @@ const Profile = () => {
             const { default: api } = await import('../services/api')
             const response = await api.get('/api/v1/status')
             const statusData = response.data
-            setUser(prev => ({ ...prev, balance: statusData.balance }))
+            setUser(prev => ({
+                ...prev,
+                balance: statusData.balance,
+                relayConnected: statusData.relay_connected
+            }))
         } catch (err) {
             console.error('Failed to fetch balance:', err)
         }
@@ -62,7 +67,10 @@ const Profile = () => {
             apiKey: userData.apiKey || '',
             model: userData.model || 'gpt-4o',
             field: userData.field || '',
-            verboseLlm: userData.verboseLlm || false
+            verboseLlm: userData.verboseLlm || false,
+            bootstrapVerify: userData.bootstrapVerify !== undefined ? userData.bootstrapVerify : true,
+            name: userData.name || 'Agent',
+            personality: userData.personality || 'Professional'
         })
         fetchStatus()
     }, [])
@@ -78,7 +86,10 @@ const Profile = () => {
                 model: agentConfig.model,
                 research_field: agentConfig.field,
                 bootstrap_url: agentConfig.bootstrapUrl,
-                verbose_llm: agentConfig.verboseLlm
+                verbose_llm: agentConfig.verboseLlm,
+                bootstrap_verify: agentConfig.bootstrapVerify,
+                name: agentConfig.name,
+                personality: agentConfig.personality
             })
 
             const updatedStatus = response.data
@@ -91,6 +102,9 @@ const Profile = () => {
             localStorage.setItem('bp_field', agentConfig.field)
             localStorage.setItem('bp_bootstrap_url', agentConfig.bootstrapUrl)
             localStorage.setItem('bp_verbose_llm', agentConfig.verboseLlm)
+            localStorage.setItem('bp_bootstrap_verify', agentConfig.bootstrapVerify)
+            localStorage.setItem('bp_name', agentConfig.name)
+            localStorage.setItem('bp_personality', agentConfig.personality)
 
             // Refresh local user state with new balance
             const localUser = Store.getUser()
@@ -115,12 +129,25 @@ const Profile = () => {
                     <Card title="Identity" icon={User}>
                         <div className="space-y-3">
                             <div>
+                                <label className="text-xs text-slate-500 uppercase font-bold">Agent Name</label>
+                                <p className="font-medium text-slate-800">{agentConfig.name || 'Agent'}</p>
+                            </div>
+                            <div>
                                 <label className="text-xs text-slate-500 uppercase font-bold">Email</label>
                                 <p className="font-medium text-slate-800">{user.email}</p>
                             </div>
                             <div>
                                 <label className="text-xs text-slate-500 uppercase font-bold">Research Field</label>
                                 <p className="font-medium text-slate-800">{user.field}</p>
+                            </div>
+                            <div>
+                                <label className="text-xs text-slate-500 uppercase font-bold">Network Status</label>
+                                <div className="flex items-center gap-2 mt-1">
+                                    <div className={`w-2 h-2 rounded-full ${user.relayConnected ? 'bg-green-500' : 'bg-slate-300'}`} />
+                                    <span className="font-medium text-slate-800 text-sm">
+                                        {user.relayConnected ? 'Internet P2P (Relay Connected)' : 'LAN P2P (Direct Only)'}
+                                    </span>
+                                </div>
                             </div>
                         </div>
                     </Card>
@@ -177,21 +204,46 @@ const Profile = () => {
                             onChange={e => setAgentConfig({ ...agentConfig, model: e.target.value })}
                         />
                         <Input
+                            label="Agent Name"
+                            value={agentConfig.name}
+                            onChange={e => setAgentConfig({ ...agentConfig, name: e.target.value })}
+                        />
+                        <div className="flex flex-col gap-1 mb-3">
+                            <label className="text-xs text-slate-500 uppercase font-bold">Personality Guidelines</label>
+                            <textarea
+                                className="p-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm"
+                                rows="3"
+                                value={agentConfig.personality}
+                                onChange={e => setAgentConfig({ ...agentConfig, personality: e.target.value })}
+                            />
+                        </div>
+
+                        <Input
                             label="Monitoring Research Field"
                             placeholder="e.g. AI Governance, Quantum Computing"
                             value={agentConfig.field}
                             onChange={e => setAgentConfig({ ...agentConfig, field: e.target.value })}
                         />
 
-                        <div className="flex items-center mt-3 mb-2 p-2 bg-slate-50 rounded-lg border border-slate-200">
+                        <div className="flex items-center mt-4 mb-2">
                             <input
                                 type="checkbox"
                                 id="verboseLlm"
                                 checked={agentConfig.verboseLlm}
                                 onChange={e => setAgentConfig({ ...agentConfig, verboseLlm: e.target.checked })}
-                                className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                                className="w-4 h-4 text-primary focus:ring-primary border-slate-300 rounded"
                             />
-                            <label htmlFor="verboseLlm" className="ml-2 text-sm font-medium text-slate-700">Enable Verbose LLM Output (Backend Console)</label>
+                            <label htmlFor="verboseLlm" className="ml-2 text-sm text-slate-600">Enable Verbose LLM Output</label>
+                        </div>
+                        <div className="flex items-center mb-4">
+                            <input
+                                type="checkbox"
+                                id="bootstrapVerify"
+                                checked={agentConfig.bootstrapVerify}
+                                onChange={e => setAgentConfig({ ...agentConfig, bootstrapVerify: e.target.checked })}
+                                className="w-4 h-4 text-primary focus:ring-primary border-slate-300 rounded"
+                            />
+                            <label htmlFor="bootstrapVerify" className="ml-2 text-sm text-slate-600">Verify Bootstrap SSL Certificate</label>
                         </div>
 
                         <button

@@ -5,6 +5,7 @@ import Onboarding from './pages/Onboarding'
 import Chat from './pages/Chat'
 import Profile from './pages/Profile'
 import Contacts from './pages/Contacts'
+import Governance from './pages/Governance'
 import Archive from './pages/Archive'
 
 function App() {
@@ -31,6 +32,7 @@ function App() {
                     <Route path="/chat" element={<Chat />} />
                     <Route path="/profile" element={<Profile />} />
                     <Route path="/contacts" element={<Contacts />} />
+                    <Route path="/governance" element={<Governance />} />
                     <Route path="/archives" element={<Archive />} />
                 </Route>
             </Routes>

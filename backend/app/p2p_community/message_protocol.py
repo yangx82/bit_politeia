@@ -25,6 +25,7 @@ class MessageType(Enum):
     VOTE = "vote"               # 投票
     SYNC = "sync"               # 架构同步
     HEARTBEAT = "heartbeat"     # 心跳/存活检测
+    FILE = "file"               # 文件传输
 
 
 @dataclass
@@ -57,13 +58,17 @@ class SignedMessage:
     
     @classmethod
     def from_dict(cls, data: dict) -> 'SignedMessage':
+        ts = data["timestamp"]
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts)
+            
         return cls(
             message_id=data["message_id"],
             sender_id=data["sender_id"],
             recipient_id=data["recipient_id"],
             message_type=MessageType(data["message_type"]),
             content=data["content"],
-            timestamp=datetime.fromisoformat(data["timestamp"]),
+            timestamp=ts,
             signature=data["signature"],
             nonce=data["nonce"]
         )

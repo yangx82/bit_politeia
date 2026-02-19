@@ -12,6 +12,7 @@ class PeerAddress:
     public_key: str
     ip_address: str
     port: int
+    name: Optional[str] = None
     last_seen: datetime = field(default_factory=datetime.now)
 
     def to_dict(self) -> dict:
@@ -20,6 +21,7 @@ class PeerAddress:
             "public_key": self.public_key,
             "ip_address": self.ip_address,
             "port": self.port,
+            "name": self.name,
             "last_seen": self.last_seen.isoformat()
         }
 
@@ -30,6 +32,7 @@ class GroupInfo:
     member_count: int
     max_capacity: int
     parent_id: Optional[str] = None
+    name: Optional[str] = None
     has_space: bool = False
     core_node_ids: List[str] = field(default_factory=list)
     node_rankings: List[str] = field(default_factory=list)  # Ordered list of IDs
@@ -41,6 +44,7 @@ class GroupInfo:
             "member_count": self.member_count,
             "max_capacity": self.max_capacity,
             "parent_id": self.parent_id,
+            "name": self.name,
             "has_space": self.has_space,
             "core_node_ids": self.core_node_ids,
             "node_rankings": self.node_rankings
@@ -53,6 +57,7 @@ class NodeRegistration:
     ip_address: str
     port: int
     group_id: Optional[str] = None
+    name: Optional[str] = None
     
     def to_dict(self) -> dict:
         return {
@@ -60,7 +65,8 @@ class NodeRegistration:
             "public_key": self.public_key,
             "ip_address": self.ip_address,
             "port": self.port,
-            "group_id": self.group_id
+            "group_id": self.group_id,
+            "name": self.name
         }
 
 class BootstrapClient:
@@ -73,11 +79,19 @@ class BootstrapClient:
         self.verify = verify
         self.client = httpx.AsyncClient(timeout=15.0, verify=verify)  # Increased for LAN stability
 
-    def set_server_url(self, url: str):
+    async def set_server_url(self, url: str):
         """Dynamically update the bootstrap server URL."""
         if url:
             self.server_url = url.rstrip("/")
             logger.info(f"BootstrapClient: Server URL updated to {self.server_url}")
+
+    async def set_verify(self, verify: bool):
+        """Update SSL verification setting and recreate client."""
+        self.verify = verify
+        # Close old client if possible, though httpx handles it
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(timeout=15.0, verify=verify)
+        logger.info(f"BootstrapClient: SSL verification set to {verify}")
 
     async def get_joinable_groups(self, preferred_level: int = 1) -> List[GroupInfo]:
         """Fetch topology and filter for joinable groups."""

@@ -50,10 +50,12 @@ def _guard_command(command: str) -> Optional[str]:
     
     return None
 
+from .sandbox import get_default_sandbox
+
 @tool
 async def execute_shell_command(command: str, working_dir: Optional[str] = None) -> str:
     """
-    Execute a shell command. 
+    Execute a shell command in a sandboxed environment.
     Use this to run Python scripts (e.g., `python script.py`), install packages, or manage files.
     
     Args:
@@ -66,38 +68,25 @@ async def execute_shell_command(command: str, working_dir: Optional[str] = None)
         if error:
             return error
             
-        cwd = working_dir or os.getcwd()
-        logger.info(f"Executing Shell Command: {command} in {cwd}")
+        logger.info(f"Executing Sandboxed Command: {command}")
         
-        process = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-        )
+        # Use simple global accessor or we could pass sandbox through context
+        sandbox = get_default_sandbox()
+        stdout, stderr, exit_code = await sandbox.execute(command, working_dir=working_dir)
         
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=60 # 60s timeout
-            )
-        except asyncio.TimeoutError:
-            try:
-                process.kill()
-            except Exception:
-                pass
-            return "Error: Command timed out after 60 seconds."
-            
         output_parts = []
         if stdout:
-            output_parts.append(stdout.decode("utf-8", errors="replace"))
+            output_parts.append(stdout)
             
         if stderr:
-             output_parts.append(f"STDERR:\n{stderr.decode('utf-8', errors='replace')}")
+             output_parts.append(f"STDERR:\n{stderr}")
              
         result = "\n".join(output_parts)
         if not result:
             result = "(no output)"
+            
+        if exit_code != 0:
+            result += f"\n[Exit Code: {exit_code}]"
             
         return result
         

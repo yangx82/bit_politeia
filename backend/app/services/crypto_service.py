@@ -65,6 +65,16 @@ class CryptoService:
         )
         return pem.decode('utf-8')
 
+    def get_node_id(self) -> str:
+        """Generate a consistent, URL-safe Node ID (SHA256 of Public Key)."""
+        pem = self.public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
+        digest.update(pem)
+        return digest.finalize().hex()
+
     def sign_message(self, message: str) -> str:
         signature = self.private_key.sign(
             message.encode('utf-8'),

@@ -23,7 +23,10 @@ async def configure_agent(request: ConfigRequest):
         request.model, 
         rf,
         bu,
-        request.verbose_llm
+        request.verbose_llm,
+        request.bootstrap_verify,
+        request.name,
+        request.personality
     )
     return await get_status()
 
@@ -43,11 +46,24 @@ async def search_history(q: str = None, date_from: str = None, date_to: str = No
 async def receive_p2p_message(message: P2PMessage):
     return await agent_service.receive_p2p_message(message)
 
+@router.get("/debug/inbox")
+async def debug_inbox():
+    """Debug: Get current contents of P2P inbox."""
+    from ...services.p2p_service import p2p_service
+    if p2p_service.local_node:
+        return {"inbox": p2p_service.local_node.inbox, "node_id": p2p_service.local_node.node_id}
+    return {"error": "Node not initialized"}
+
 # Frontend P2P Endpoints
 @router.get("/p2p/peers")
 async def get_peers():
     """Get list of connected P2P nodes."""
     return await agent_service.get_peers()
+
+@router.get("/p2p/groups")
+async def get_groups():
+    """Get list of P2P groups."""
+    return await agent_service.get_groups()
 
 @router.post("/p2p/send")
 async def send_p2p_message(payload: dict = Body(...)):
@@ -69,4 +85,33 @@ async def get_status():
     status = await agent_service.get_status()
     # Inject Public Key from Crypto Service
     status.public_key = crypto_service.get_public_key_string()
+    status.public_key = crypto_service.get_public_key_string()
     return status
+
+from ...models.schemas import ProposalModel, ProposalCreateRequest, VoteRequest, ElectionModel
+
+@router.get("/governance/proposals", response_model=list[dict])
+async def get_proposals():
+    """Get all proposals."""
+    return await agent_service.get_proposals()
+
+@router.post("/governance/proposals")
+async def create_proposal(request: ProposalCreateRequest):
+    """Create a new proposal."""
+    return await agent_service.create_proposal(request.group_id, request.content, request.duration_minutes)
+
+@router.get("/governance/elections", response_model=list[dict])
+async def get_elections():
+    """Get active elections."""
+    return await agent_service.get_elections()
+
+@router.post("/governance/vote")
+async def cast_vote(request: VoteRequest):
+    """Cast a vote on an election."""
+    return await agent_service.cast_vote(
+        request.election_id, 
+        request.approval, 
+        request.reason, 
+        request.candidate_id
+    )
+

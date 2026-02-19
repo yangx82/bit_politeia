@@ -77,7 +77,7 @@ class ResidentMemory:
         except Exception as e:
             logger.error(f"Migration failed: {e}")
 
-    def log_interaction(self, sender: str, content: str, msg_type: str = "chat"):
+    def log_interaction(self, sender: str, content: str, msg_type: str = "chat", chat_id: str = None):
         """
         Log interaction to appropriate topic file.
         msg_type maps to: 'chat', 'research', 'system'. Default 'chat'.
@@ -91,7 +91,8 @@ class ResidentMemory:
             "timestamp": datetime.now().isoformat(),
             "sender": sender,
             "content": content,
-            "type": msg_type
+            "type": msg_type,
+            "chat_id": chat_id
         }
         
         try:
