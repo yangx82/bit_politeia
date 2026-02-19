@@ -332,7 +332,7 @@ async def ask_resident(question: str) -> str:
         ))
         
         # Also log to resident memory
-        agent_service.resident_memory.log_interaction("agent", question, msg_type="chat")
+        agent_service.resident_memory.log_interaction("agent", question, msg_type="chat", chat_id="resident")
         
         return f"Question sent to resident: {question}"
     except Exception as e:

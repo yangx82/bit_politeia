@@ -531,7 +531,8 @@ class AgentService:
             id=str(uuid.uuid4()),
             content=msg.content,
             sender=formatted_sender,
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
+            chat_id=msg.chat_id
         )
         self.history.append(user_msg_obj)
         self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", chat_id=msg.chat_id)
@@ -664,15 +665,8 @@ class AgentService:
                 # 4. Send Reply back to Peer
                 await self.send_p2p_message(sender_id, response_text)
                 
-                # 5. Log Agent Response to history
-                self.history.append(Message(
-                    id=str(uuid.uuid4()),
-                    content=response_text,
-                    sender="agent",
-                    timestamp=datetime.now(),
-                    chat_id=effective_chat_id
-                ))
-                self.resident_memory.log_interaction("agent", response_text, msg_type="chat", chat_id=effective_chat_id)
+                # 5. Log Agent Response - remove redundant history.append
+                # (handled inside send_p2p_message for consistency)
             except Exception as e:
                 logger.error(f"Error processing P2P message from {sender_id}: {e}")
                 # Optional: Push back to inbox or Dead Letter Queue?
@@ -1052,6 +1046,8 @@ class AgentService:
                 timestamp=datetime.now(),
                 chat_id=target_id
              ))
+             # Also log to disk/memory for resumption
+             self.resident_memory.log_interaction("agent", text_to_check, msg_type="chat", chat_id=target_id)
              
              return {"success": True}
         except Exception as e:
