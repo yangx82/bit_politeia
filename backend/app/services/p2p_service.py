@@ -6,6 +6,7 @@ from .crypto_service import crypto_service
 from ..p2p_community.network_manager import NetworkManager
 from ..p2p_community.message_protocol import MessageProtocol, MessageType
 from ..p2p_community.models import Node
+from .webrtc_service import WebRTCManager
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,9 @@ class P2PService:
         self.network_manager = NetworkManager(self.message_protocol)
         self.local_node: Optional[Node] = None
         self._initialized = False
+        
+        # Initialize WebRTC Manager
+        self.webrtc_manager = WebRTCManager(self.send_signaling_message, self.handle_webrtc_message)
 
     async def initialize(self, node_id: str, node_url: str = None, name: str = "Agent"):
         """
@@ -62,8 +66,70 @@ class P2PService:
         # Let's check NetworkManager code.
         
         await self.network_manager.register_node(self.local_node)
+        
+        # Register Signaling Handler
+        self.local_node.set_message_handler(self.handle_p2p_message)
+        
         self._initialized = True
         logger.info(f"P2PService initialized for Node {node_id} at {node_url}")
+
+    async def send_signaling_message(self, target_id: str, msg_type: str, content: Dict[str, Any]):
+        """Callback for WebRTCManager to send signaling via Relay/HTTP."""
+        await self.send_message(target_id, content, msg_type)
+
+    async def handle_webrtc_message(self, peer_id: str, message: str):
+        """Callback: Handle message received via WebRTC Data Channel."""
+        # Wrap as generic message structure
+        msg_data = {
+            "sender_id": peer_id,
+            "recipient_id": self.local_node.node_id if self.local_node else "unknown",
+            "message_type": MessageType.DIRECT.value, # Default to DIRECT for now
+            "content": {"text": message}, # Assuming simple text for now, can be parsed if JSON
+            "timestamp": "now" # Should get actual time
+        }
+        # Try parse JSON if message looks like it
+        try:
+            import json
+            import datetime
+            content = json.loads(message)
+            # Reconstruct full object if possible
+            if "type" in content:
+                msg_data["content"] = content
+        except:
+            pass
+            
+        if self.local_node:
+             # We call receive_message directly (bypassing message_handler interceptor to avoid loops? 
+             # No, receive_message calls message_handler. 
+             # But this IS the handler result. We want to put it in inbox.
+             # Wait, receive_message puts in inbox.
+             # But if we call receive_message, it might trigger the interceptor again?
+             # My interceptor checks for SDP/ICE. This is "DIRECT" type. So it should pass through.
+             await self.local_node.receive_message(msg_data)
+
+    async def handle_p2p_message(self, message: Dict[str, Any]) -> bool:
+        """
+        Intercept P2P messages for WebRTC signaling.
+        Returns True if handled, False otherwise.
+        """
+        msg_type = message.get("message_type")
+        sender_id = message.get("sender_id")
+        content = message.get("content", {})
+        
+        if msg_type == MessageType.SDP_OFFER.value:
+            await self.webrtc_manager.handle_offer(sender_id, content.get("sdp"))
+            return True
+            
+        elif msg_type == MessageType.SDP_ANSWER.value:
+            await self.webrtc_manager.handle_answer(sender_id, content.get("sdp"))
+            return True
+            
+        elif msg_type == MessageType.ICE_CANDIDATE.value:
+            # TODO: Handle ICE (WebRTCManager needs update to handle trickle ICE if used)
+            # await self.webrtc_manager.handle_candidate(sender_id, content)
+            return True
+            
+        return False
 
     async def send_message(self, target_id: str, content: Dict[str, Any], msg_type: str = MessageType.DIRECT.value):
         """

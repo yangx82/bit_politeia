@@ -1038,48 +1038,41 @@ class AgentService:
             ))
             self.resident_memory.log_interaction("agent", msg, "moderation", chat_id=target_id)
             
-            return {"success": True, "status": "refused"}
+            return {"success": True, "status": "refused", "reason": reason}
              
-        # Construct message payload
-        msg_payload = {
-            "text": text_to_check,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        # Use P2P service to send
-        from ..p2p_community.message_protocol import MessageType
-        # Note: P2PService.send_message might need update if it doesn't handle direct routing fully yet,
-        # but NetworkManager.route_message does.
-        # Let's use p2p_service.send_message wrapper if available, or call network_manager directly.
-        # P2PService.send_message is cleaner.
+        # 2. Send Strategy
+        logger.info(f"Sending P2P message to {target_id}...")
+        mode = "unknown"
         
         try:
-             # Determine message type
-             msg_type = MessageType.DIRECT.value
-             if p2p_service.network_manager and target_id in p2p_service.network_manager.groups:
-                 msg_type = MessageType.GROUP.value
-                 
-             success = await p2p_service.send_message(
-                 target_id=target_id,
-                 content=msg_payload,
-                 msg_type=msg_type
-             )
-             
-             if not success:
-                 return {"success": False, "error": "Transport failure (Offline or Relay Disconnected)"}
-             
-             # Log to history as sent message
-             self.history.append(Message(
+            # Try WebRTC First
+            sent_via_webrtc = await p2p_service.webrtc_manager.send_message(target_id, text_to_check)
+            
+            if sent_via_webrtc:
+                logger.info(f"Message sent via WebRTC to {target_id}")
+                mode = "webrtc"
+            else:
+                # Fallback to HTTP/Relay
+                msg_content = {"text": text_to_check}
+                await p2p_service.send_message(target_id, msg_content)
+                logger.info(f"Message sent via HTTP/Relay to {target_id}")
+                mode = "http"
+                
+                # Trigger Upgrade if simple text
+                asyncio.create_task(p2p_service.webrtc_manager.initiate_connection(target_id))
+
+            # Log to history
+            self.history.append(Message(
                 id=str(uuid.uuid4()),
-                content=text_to_check,
+                content=f"{text_to_check}",
                 sender="agent",
                 timestamp=datetime.now(),
                 chat_id=target_id
-             ))
-             # Also log to disk/memory for resumption
-             self.resident_memory.log_interaction("agent", text_to_check, msg_type="chat", chat_id=target_id)
-             
-             return {"success": True}
+            ))
+            self.resident_memory.log_interaction("agent", text_to_check, msg_type="chat", chat_id=target_id)
+            
+            return {"success": True, "mode": mode}
+            
         except Exception as e:
             logger.error(f"Failed to send P2P message: {e}")
             return {"success": False, "error": str(e)}

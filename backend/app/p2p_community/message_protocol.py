@@ -26,6 +26,11 @@ class MessageType(Enum):
     SYNC = "sync"               # 架构同步
     HEARTBEAT = "heartbeat"     # 心跳/存活检测
     FILE = "file"               # 文件传输
+    
+    # WebRTC Signaling
+    SDP_OFFER = "sdp_offer"
+    SDP_ANSWER = "sdp_answer"
+    ICE_CANDIDATE = "ice_candidate"
 
 
 @dataclass

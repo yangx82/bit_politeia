@@ -1,4 +1,4 @@
-from typing import List, Optional, Set, Dict, Any
+from typing import List, Optional, Set, Dict, Any, Callable
 from dataclasses import dataclass, field
 import logging
 
@@ -59,6 +59,11 @@ class Node:
         self.group_ids: Set[str] = set()
         
         self.inbox: List[dict] = []
+        self.message_handler: Optional[Callable[[Dict[str, Any]], Any]] = None
+
+    def set_message_handler(self, handler: Callable[[Dict[str, Any]], Any]):
+        """Set a handler to intercept messages. Return True to stop default processing."""
+        self.message_handler = handler
 
     def can_join_group(self, target_group: Group) -> bool:
         """
@@ -123,6 +128,21 @@ class Node:
             msg_data = message
             
         logger.info(f"[Node {self.node_id}] Received {msg_data.get('message_type', 'unknown')} from {msg_data.get('sender_id', 'unknown')}")
+        
+        # Allow external handler to intercept (e.g., for WebRTC Signaling)
+        if self.message_handler:
+            try:
+                # Assuming handler is async
+                import inspect
+                if inspect.iscoroutinefunction(self.message_handler):
+                    if await self.message_handler(msg_data):
+                        return # Handled externally, skip inbox
+                else:
+                    if self.message_handler(msg_data):
+                        return
+            except Exception as e:
+                logger.error(f"Error in message handler: {e}")
+
         self.inbox.append(msg_data)
         
         # Persist to disk inbox for resumption
