@@ -195,11 +195,22 @@ class NotifyStage(PipelineStage):
     async def run(self, context: PipelineContext, agent: Any):
         logger.info(f"[{context.session.session_id}] Stage: Notify")
         if context.final_answer:
+            # 1. Always mirror to Gateway for Observability (Neural Gateway / UI Debugging)
             await agent.message_bus.publish_outbound(OutboundMessage(
-                channel=context.input_message.channel,
+                channel="gateway",
                 chat_id=context.input_message.sender_id,
-                content=context.final_answer
+                content=context.final_answer,
+                type="agent_message"
             ))
+
+            # 2. Publish to source channel ONLY if it has a real subscriber (skip 'resident')
+            # 'resident' is handled by the direct HTTP request/response cycle.
+            if context.input_message.channel != "resident":
+                await agent.message_bus.publish_outbound(OutboundMessage(
+                    channel=context.input_message.channel,
+                    chat_id=context.input_message.sender_id,
+                    content=context.final_answer
+                ))
 
 class ArchiveStage(PipelineStage):
     """Stage 6: Persistence & Cleanup."""
