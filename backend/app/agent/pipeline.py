@@ -113,8 +113,17 @@ class PlanStage(PipelineStage):
         if response.content:
             context.thoughts.append(response.content)
             context.session.message_count += 1
+            
+            # CRITICAL FIX: Thoughts are internal monologue.
+            # 1. ALWAYS send to "gateway" for UI observability.
+            # 2. NEVER send to P2P channels.
+            # 3. Use input sender_id as chat_id only if it helps UI grouping, 
+            #    BUT ensuring the channel is NOT the P2P transport.
+            
+            # We publish to "gateway" with the chat_id of the current context
+            # so the UI can show thoughts in the relevant conversation window.
             await agent.message_bus.publish_outbound(OutboundMessage(
-                channel=context.input_message.channel,
+                channel="gateway", 
                 chat_id=context.input_message.sender_id,
                 content=str(response.content),
                 type="thought"
@@ -142,8 +151,9 @@ class ExecuteStage(PipelineStage):
             tool_call_id = tool_call["id"]
             
             # Emit Tool Call Event
+            # Emit Tool Call Event - Internal Log
             await agent.message_bus.publish_outbound(OutboundMessage(
-                channel=context.input_message.channel,
+                channel="gateway",
                 chat_id=context.input_message.sender_id,
                 content=f"Invoking {tool_name} with {args}",
                 type="tool_call",
