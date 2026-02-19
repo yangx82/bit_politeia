@@ -112,12 +112,13 @@ except ImportError:
     CHROMA_AVAILABLE = False
     logger.warning("ChromaDB or SentenceTransformers not found. Falling back to simple keyword search.")
 
+
 try:
-    from rank_bm25 import BM25Okapi
-    BM25_AVAILABLE = True
+    import sqlite3
+    SQLITE_AVAILABLE = True
 except ImportError:
-    BM25_AVAILABLE = False
-    logger.warning("rank_bm25 not found. Hybrid search will range-limit to vector only.")
+    SQLITE_AVAILABLE = False
+    logger.warning("sqlite3 not found. Keyword search will be disabled.")
 
 class KnowledgeBase:
     """
@@ -152,9 +153,26 @@ class KnowledgeBase:
                 self.collection = None
                 self.chroma_client = None
 
-        # Hybrid Search Init
-        self.bm25 = None
-        self.bm25_corpus = [] # List of {text, metadata}
+        # SQLite FTS5 Init
+        self.fts_db_path = "backend/data/memory_fts.db"
+        self.fts_conn = None
+        if SQLITE_AVAILABLE:
+            try:
+                self.fts_conn = sqlite3.connect(self.fts_db_path, check_same_thread=False)
+                self.fts_conn.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+                        content, 
+                        source, 
+                        timestamp, 
+                        sender, 
+                        type
+                    )
+                """)
+                self.fts_conn.commit()
+                logger.info(f"SQLite FTS5 initialized at {self.fts_db_path}")
+            except Exception as e:
+                logger.error(f"Failed to initialize SQLite FTS5: {e}")
+                self.fts_conn = None
 
     def _load_embedding_model(self, model_name: str):
         """
@@ -278,9 +296,10 @@ class KnowledgeBase:
         else:
             logger.info("No items to ingest.")
 
-        # update BM25 index (in-memory)
-        if BM25_AVAILABLE:
-            self._update_bm25_index(history)
+
+        # update FTS index (persistent)
+        if self.fts_conn:
+            self._update_fts_index(history)
 
     def ingest_insights(self, insights: List[str]):
         """Ingest consolidated insights into Vector Store."""
@@ -321,11 +340,12 @@ class KnowledgeBase:
             )
             logger.info(f"Ingested {len(documents)} insights into Core Memory")
             
-            # Also update BM25
-            if BM25_AVAILABLE:
-                # reconstruct dicts to match _update_bm25_index expectation
-                mock_history = [{"content": t, "timestamp": m["timestamp"], "sender": "system"} for t, m in zip(documents, metadatas)]
-                self._update_bm25_index(mock_history)
+
+            # Also update FTS
+            if self.fts_conn:
+                # reconstruct dicts to match _update_fts_index expectation
+                mock_history = [{"content": t, "timestamp": m["timestamp"], "sender": "system", "type": "insight"} for t, m in zip(documents, metadatas)]
+                self._update_fts_index(mock_history)
 
     def _ingest_history_fallback(self, history: List[Dict]):
         """Legacy keyword ingestion."""
@@ -387,28 +407,67 @@ class KnowledgeBase:
             logger.error(f"Vector search failed: {e}")
             return self._retrieve_context_fallback(query, limit)
 
-    def _update_bm25_index(self, history: List[Dict]):
-        """Maintain ephemeral BM25 index."""
-        new_docs = []
-        for msg in history:
-            text = msg.get("content", "")
-            if text:
-                 new_docs.append({
-                    "content": text,
+
+    def _update_fts_index(self, history: List[Dict]):
+        """Update SQLite FTS5 index."""
+        if not self.fts_conn:
+            return
+
+        try:
+            cursor = self.fts_conn.cursor()
+            new_rows = []
+            for msg in history:
+                text = msg.get("content", "")
+                if text:
+                    new_rows.append((
+                        text,
+                        "resident_history",
+                        str(msg.get("timestamp", "")),
+                        str(msg.get("sender", "unknown")),
+                        str(msg.get("type", "chat"))
+                    ))
+            
+            if new_rows:
+                cursor.executemany("INSERT INTO memory_fts (content, source, timestamp, sender, type) VALUES (?, ?, ?, ?, ?)", new_rows)
+                self.fts_conn.commit()
+                logger.info(f"Inserted {len(new_rows)} items into FTS index.")
+        except Exception as e:
+            logger.error(f"Failed to update FTS index: {e}")
+
+    def _search_fts(self, query: str, limit: int = 10) -> List[Dict]:
+        """Search SQLite FTS5 index."""
+        if not self.fts_conn:
+            return []
+            
+        try:
+            # Sanitize query for FTS5 (basic)
+            # FTS5 uses specific syntax, user query might break it. 
+            # We treat the whole query as a phrase or set of tokens.
+            # Simple approach: remove special chars or quote.
+            # safe_query = f'"{query.replace("\"", "")}"' 
+            # actually better to just let sqlite handle simple tokens, or wrap in Double Quotes for phrase
+            
+            cursor = self.fts_conn.cursor()
+            # Ranking by BM25 (default in FTS5)
+            sql = "SELECT content, source, timestamp, sender, type FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?"
+            cursor.execute(sql, (query, limit))
+            rows = cursor.fetchall()
+            
+            results = []
+            for r in rows:
+                results.append({
+                    "content": r[0],
                     "metadata": {
-                        "source": "resident_history",
-                        "timestamp": str(msg.get("timestamp", "")),
-                        "sender": str(msg.get("sender", "unknown"))
+                        "source": r[1],
+                        "timestamp": r[2],
+                        "sender": r[3],
+                        "type": r[4]
                     }
                 })
-        
-        # Append to master corpus
-        self.bm25_corpus.extend(new_docs)
-        
-        # Rebuild Index (Expense: Low for <10k msg, optimize later if needed)
-        tokenized_corpus = [doc["content"].split(" ") for doc in self.bm25_corpus]
-        self.bm25 = BM25Okapi(tokenized_corpus)
-        logger.info(f"Updated BM25 Index with {len(new_docs)} new items. Total: {len(self.bm25_corpus)}")
+            return results
+        except Exception as e:
+            logger.warning(f"FTS search error: {e}")
+            return []
 
     def retrieve_hybrid(self, query: str, limit: int = 3) -> str:
         """
@@ -434,19 +493,18 @@ class KnowledgeBase:
                         "score": 0.0 # Placeholder
                     })
 
-            # 2. Keyword Search (BM25)
-            bm25_docs = []
-            if BM25_AVAILABLE and self.bm25:
-                tokenized_query = query.split(" ")
+            # 2. Keyword Search (SQLite FTS5)
+            fts_docs = []
+            if self.fts_conn:
                 # Get top N * 2
-                bm25_top = self.bm25.get_top_n(tokenized_query, self.bm25_corpus, n=limit * 2)
-                for doc in bm25_top:
-                    bm25_docs.append({
+                fts_top = self._search_fts(query, limit=limit * 2)
+                for doc in fts_top:
+                    fts_docs.append({
                         "content": doc["content"],
                         "metadata": doc["metadata"]
                     })
             else:
-                 # Fallback if no BM25
+                 # Fallback if no FTS
                  return self.retrieve_context(query, limit)
 
             # 3. Reciprocal Rank Fusion
@@ -461,8 +519,8 @@ class KnowledgeBase:
                 doc_map[text] = doc
                 fusion_scores[text] = fusion_scores.get(text, 0) + (1 / (k + rank + 1))
 
-            # Score BM25 Results
-            for rank, doc in enumerate(bm25_docs):
+            # Score FTS Results
+            for rank, doc in enumerate(fts_docs):
                 text = doc["content"]
                 if text not in doc_map:
                      doc_map[text] = doc

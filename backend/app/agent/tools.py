@@ -320,7 +320,7 @@ async def read_skill_guide(skill_name: str) -> str:
     Call this BEFORE using any tool from a skill you are unfamiliar with.
     """
     try:
-        from app.agent.skill_manager import skill_manager
+        from app.services.skill_manager import skill_manager
         # Ensure latest skills are loaded or just read from cache
         # skill_manager.load_skills() # Optional: reload if needed
         return skill_manager.get_skill_instruction(skill_name)
@@ -364,7 +364,7 @@ async def delegate_task(recipient_id: str, task: str, context: Optional[str] = N
 
 # Import execution tool
 from ..agent.tools_exec import execute_shell_command
-from ..agent.tools_fs import list_dir, read_file, write_file, edit_file
+from ..agent.tools_fs import list_dir, read_file, write_file, edit_file, copy_files, move_files
 from ..agent.tools_web import fetch_web_page
 from ..agent.tools_cron import schedule_reminder, list_reminders, cancel_reminder, start_scheduler, get_scheduler_status
 
@@ -402,7 +402,7 @@ AGENT_TOOLS = [
     propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, 
     pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, 
     read_skill_guide, execute_shell_command,
-    list_dir, read_file, write_file, edit_file,
+    list_dir, read_file, write_file, edit_file, copy_files, move_files,
     fetch_web_page,
     schedule_reminder, list_reminders, cancel_reminder,
     start_scheduler, get_scheduler_status,

@@ -10,7 +10,7 @@ import logging
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage, BaseMessage
 
 from ..services.memory_store import memory_store
-from ..agent.skill_manager import skill_manager
+from ..services.skill_manager import skill_manager
 from ..agent.prompts import AGENT_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)

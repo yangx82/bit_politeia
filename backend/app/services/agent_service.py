@@ -23,7 +23,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
 from ..agent.prompts import AGENT_SYSTEM_PROMPT
 from ..agent.tools import AGENT_TOOLS
-from ..agent.skill_manager import skill_manager
+from ..agent.tools_meta import create_tool_tool
+from .skill_manager import skill_manager
 from ..agent.context import ContextBuilder
 from ..p2p_community.governance import GovernanceManager, Vote
 import json
@@ -214,11 +215,18 @@ class AgentService:
                 temperature=0.7
             )
             # Load custom skills (Run in thread to avoid blocking loop)
+            # Load custom skills (Run in thread to avoid blocking loop)
+            # 1. Load Autonomous Python Tools
             await asyncio.to_thread(skill_manager.load_skills)
-            skill_tools = skill_manager.get_skill_tools()
+            # 2. Load Claude-Style Skills (e.g. from backend/skills)
+            import os
+            claude_skills_path = os.path.join(os.getcwd(), "backend", "skills")
+            await asyncio.to_thread(skill_manager.load_claude_skills, claude_skills_path)
+            
+            skill_tools = skill_manager.get_active_tools()
             
             # Combine standard tools with skill tools
-            all_tools = AGENT_TOOLS + skill_tools
+            all_tools = AGENT_TOOLS + skill_tools + [create_tool_tool]
             
             # Update system prompt with skill index (Progressive Disclosure) AND IDENTITY
             skill_index_prompt = skill_manager.get_skill_index()

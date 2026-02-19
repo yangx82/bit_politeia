@@ -120,7 +120,7 @@ async def stream_outbound_to_socket(websocket: WebSocket):
     # For now, we only stream messages explicitly sent to 'gateway' or 'debug'.
     
     # Using the new Async Generator!
-    channel_name = "gateway"
+    channel_name = "resident"
     
     async for msg in message_bus.subscribe_async_generator(channel_name):
         try:
