@@ -53,6 +53,10 @@ class WebRTCManager:
         @pc.on("icegatheringstatechange")
         async def on_icegatheringstatechange():
             logger.info(f"[{peer_id}] ICE gathering state is {pc.iceGatheringState}")
+            if pc.iceGatheringState == "complete":
+                # On Windows, gathering 'complete' often follows a bind error, 
+                # but we should check if we actually found any candidates.
+                logger.info(f"[{peer_id}] ICE gathering finished. Signaling state: {pc.signalingState}")
 
         return pc
 
@@ -61,7 +65,7 @@ class WebRTCManager:
         
         @channel.on("message")
         def on_message(message):
-            logger.info(f"[{peer_id}] Received via DataChannel: {message[:50]}...")
+            logger.info(f"[{peer_id}] >>> RECEIVED VIA WEBRTC: {message[:100]}...")
             # Handle received data
             if self.message_callback:
                 if self.loop:
@@ -76,13 +80,22 @@ class WebRTCManager:
 
         @channel.on("open")
         def on_open():
-            logger.info(f"[{peer_id}] Data channel {channel.label} is OPEN")
-            print(f"[DEBUG-RTC] Data Channel OPEN with {peer_id}")
+            logger.info(f"[{peer_id}] !!! DATA CHANNEL '{channel.label}' IS OPEN !!!")
+            print(f"\n[!!!] WebRTC DATA CHANNEL OPEN WITH {peer_id} [!!!]\n", flush=True)
 
     async def initiate_connection(self, peer_id: str):
         """Start a WebRTC connection with a peer."""
-        logger.info(f"Initiating WebRTC connection to {peer_id}")
         pc = await self.get_or_create_pc(peer_id)
+        
+        # Guard: Don't initiate if already connecting or connected
+        if pc.signalingState != "stable":
+            logger.info(f"[{peer_id}] Connection initiation skipped: signalingState is {pc.signalingState}")
+            return
+        if pc.connectionState in ["connecting", "connected"]:
+            logger.info(f"[{peer_id}] Connection initiation skipped: connectionState is {pc.connectionState}")
+            return
+
+        logger.info(f"[{peer_id}] Initiating WebRTC connection...")
         
         # Create Data Channel
         channel = pc.createDataChannel("chat")
@@ -99,31 +112,50 @@ class WebRTCManager:
 
     async def handle_offer(self, peer_id: str, sdp_str: str):
         """Handle incoming SDP Offer."""
-        logger.info(f"Received SDP Offer from {peer_id}")
         pc = await self.get_or_create_pc(peer_id)
+        logger.info(f"[{peer_id}] Received SDP Offer. Current state: signaling={pc.signalingState}, connection={pc.connectionState}")
         
-        offer = object_from_string(sdp_str)
-        await pc.setRemoteDescription(offer)
+        if pc.signalingState != "stable":
+            # Glare resolution (basic: let the offerer with "larger" ID win?)
+            # Or just warn for now. Most robust is to rollback or close and restart.
+            logger.warning(f"[{peer_id}] Received Offer while in state {pc.signalingState}. Potential glare.")
+            # If we already sent an offer, maybe we should just ignore their offer and wait for their answer?
+            # Or vice versa. For now, we attempt to proceed but aiortc might throw.
         
-        # Create Answer
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
-        
-        # Send Answer via Signaling
-        await self.signaling_callback(peer_id, "sdp_answer", {
-            "sdp": object_to_string(pc.localDescription)
-        })
+        try:
+            offer = object_from_string(sdp_str)
+            await pc.setRemoteDescription(offer)
+            
+            # Create Answer
+            answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+            
+            # Send Answer via Signaling
+            await self.signaling_callback(peer_id, "sdp_answer", {
+                "sdp": object_to_string(pc.localDescription)
+            })
+        except Exception as e:
+            logger.error(f"[{peer_id}] Failed to handle offer: {e}")
 
     async def handle_answer(self, peer_id: str, sdp_str: str):
         """Handle incoming SDP Answer."""
-        logger.info(f"Received SDP Answer from {peer_id}")
         if peer_id not in self.pcs:
-            logger.warning(f"Received answer from unknown peer {peer_id}")
+            logger.warning(f"[{peer_id}] Received answer from unknown peer")
             return
             
         pc = self.pcs[peer_id]
-        answer = object_from_string(sdp_str)
-        await pc.setRemoteDescription(answer)
+        logger.info(f"[{peer_id}] Received SDP Answer. Current state: signaling={pc.signalingState}, connection={pc.connectionState}")
+        
+        if pc.signalingState == "stable":
+            logger.info(f"[{peer_id}] Already stable. Ignoring redundant answer.")
+            return
+
+        try:
+            answer = object_from_string(sdp_str)
+            await pc.setRemoteDescription(answer)
+            logger.info(f"[{peer_id}] Remote description set (Answer). State is now stable.")
+        except Exception as e:
+            logger.error(f"[{peer_id}] Failed to handle answer: {e}")
 
     async def send_message(self, peer_id: str, message: str) -> bool:
         """Send message via Data Channel if available."""

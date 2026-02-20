@@ -1131,13 +1131,13 @@ class AgentService:
             sent_via_webrtc = await p2p_service.webrtc_manager.send_message(target_id, text_to_check)
             
             if sent_via_webrtc:
-                logger.info(f"Message sent via WebRTC to {target_id}")
+                logger.info(f"[{target_id}] Message sent via WebRTC: {text_to_check[:100]}...")
                 mode = "webrtc"
             else:
                 # Fallback to HTTP/Relay
                 msg_content = {"text": text_to_check}
                 await p2p_service.send_message(target_id, msg_content)
-                logger.info(f"Message sent via HTTP/Relay to {target_id}")
+                logger.info(f"[{target_id}] Message sent via HTTP/Relay: {text_to_check[:100]}...")
                 mode = "http"
                 
                 # Trigger Upgrade if simple text

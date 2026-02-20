@@ -178,6 +178,19 @@ class NetworkManager:
     async def handle_relayed_message(self, message_data: Dict):
         """Handle messages received via RelayClient."""
         try:
+            # Check for system messages first
+            msg_type = message_data.get("type", message_data.get("message_type"))
+            if msg_type == "SYSTEM_ERROR":
+                logger.warning(f"[Network] Relay System Error: {message_data.get('content')} (Target: {message_data.get('recipient_id')})")
+                return
+
+            # Basic Validation before parsing
+            if "timestamp" not in message_data:
+                logger.warning(f"[Network] Received relayed message missing 'timestamp'. Content: {str(message_data)[:200]}")
+                # If it has recipient_id and content, maybe it's a malformed SignedMessage?
+                # We expect all standard P2P messages to be SignedMessages.
+                return
+
             # Parse dict back to SignedMessage
             message = SignedMessage.from_dict(message_data)
             logger.info(f"[Network] Received RELAYED message {message.message_id} from {message.sender_id}")
@@ -185,7 +198,9 @@ class NetworkManager:
             # Route locally
             await self.route_message(message)
         except Exception as e:
-            logger.error(f"Failed to handle relayed message: {e}")
+            import traceback
+            logger.error(f"Failed to handle relayed message: {e}\n{traceback.format_exc()}")
+            logger.debug(f"Malformed message data: {message_data}")
 
     async def register_node_to_group(self, node_id: str, group_id: str) -> bool:
         """Join a group and notify bootstrap if it's the local node."""

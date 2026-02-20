@@ -137,7 +137,9 @@ class Node:
         else:
             msg_data = message
             
-        logger.info(f"[Node {self.node_id}] Received {msg_data.get('message_type', 'unknown')} from {msg_data.get('sender_id', 'unknown')}")
+        logger.info(f"[{msg_data.get('sender_id', 'unknown')}] <<< RECEIVED via {msg_data.get('message_type', 'P2P')}: {str(msg_data.get('content'))[:100]}...")
+        if msg_data.get("message_type") == "DIRECT":
+             print(f"\n[<<<] INCOMING P2P MESSAGE from {msg_data.get('sender_id')}: {str(msg_data.get('content'))[:100]} [<<<]\n", flush=True)
         
         # Allow external handler to intercept (e.g., for WebRTC Signaling)
         if self.message_handler:

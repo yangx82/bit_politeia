@@ -110,6 +110,23 @@ const Chat = () => {
             // Use chat_id if available (new backend), fallback to sender (old logic)
             let sessionId = msg.chat_id || (isInternalSender(msg.sender) ? 'resident' : msg.sender)
 
+            // Merge Bridge messages into resident session
+            // Check both sender (incoming) and chat_id (outgoing/target)
+            if (
+                (msg.sender && (
+                    msg.sender.startsWith('[feishu]') ||
+                    msg.sender.startsWith('[telegram]') ||
+                    msg.sender.startsWith('[gateway]')
+                )) ||
+                (typeof sessionId === 'string' && (
+                    sessionId.startsWith('[feishu]') ||
+                    sessionId.startsWith('[telegram]') ||
+                    sessionId.startsWith('[gateway]')
+                ))
+            ) {
+                sessionId = 'resident'
+            }
+
             if (sessionId.startsWith('[p2p] ')) sessionId = sessionId.replace('[p2p] ', '')
 
             if (!sessMap[sessionId]) {
@@ -168,14 +185,32 @@ const Chat = () => {
         if (!activeSessionId) return []
 
         return messages.filter(msg => {
-            // New logic: Match chat_id
-            if (msg.chat_id) {
-                return msg.chat_id === activeSessionId
+            // Special handling for Resident Session (Merged View)
+            if (activeSessionId === 'resident') {
+                // Return true if:
+                // 1. Internal Sender (User/Agent/System)
+                // 2. Bridge Message (Sender starts with [feishu] etc)
+                // 3. Bridge Message (ChatID starts with [feishu] etc)
+                // 4. Explicit ChatID == 'resident'
+
+                if (msg.chat_id === 'resident') return true;
+
+                return isInternalSender(msg.sender) ||
+                    (msg.sender && (
+                        msg.sender.startsWith('[feishu]') ||
+                        msg.sender.startsWith('[telegram]') ||
+                        msg.sender.startsWith('[gateway]')
+                    )) ||
+                    (msg.chat_id && (
+                        msg.chat_id.startsWith('[feishu]') ||
+                        msg.chat_id.startsWith('[telegram]') ||
+                        msg.chat_id.startsWith('[gateway]')
+                    ))
             }
 
-            // Old logic fallback
-            if (activeSessionId === 'resident') {
-                return isInternalSender(msg.sender)
+            // Normal Sessions (P2P, Groups, or specific unmerged sessions)
+            if (msg.chat_id) {
+                return msg.chat_id === activeSessionId
             }
             return msg.sender === activeSessionId
         })
@@ -273,7 +308,7 @@ const Chat = () => {
         <div className="flex h-[calc(100vh-2rem)] bg-white rounded-2xl shadow-sm overflow-hidden border border-slate-200">
 
             {/* LEFT SIDEBAR: SESSIONS */}
-            <div className="w-80 bg-slate-50 border-r border-slate-200 flex flex-col">
+            <div className="w-80 shrink-0 bg-slate-50 border-r border-slate-200 flex flex-col">
                 {/* Search Bar */}
                 <div className="p-4 border-b border-slate-200">
                     <div className="relative">
@@ -333,7 +368,7 @@ const Chat = () => {
             </div>
 
             {/* RIGHT MAIN: CHAT WINDOW */}
-            <div className="flex-1 flex flex-col bg-slate-50/30">
+            <div className="flex-1 flex flex-col bg-slate-50/30 min-w-0">
                 {activeSessionId ? (
                     <>
                         {/* Header */}
@@ -375,14 +410,19 @@ const Chat = () => {
                             <div className="h-4"></div>
 
                             {getDisplayMessages().map((msg, idx) => {
-                                // Logic to determine if message is "from me" for the current session
-                                let isFromMe = false
-                                if (activeSessionId === 'resident') {
-                                    isFromMe = msg.sender === 'user'
-                                } else {
-                                    isFromMe = msg.sender === 'agent' || msg.sender === 'me'
-                                }
+                                // Determine Alignment and Style based on Role
+                                let align = 'left' // 'left' or 'right'
+                                let styleClass = ''
+                                let timeClass = ''
 
+                                const isUser = msg.sender === 'user' ||
+                                    msg.sender === 'resident' ||
+                                    (msg.sender && (
+                                        msg.sender.startsWith('[feishu]') ||
+                                        msg.sender.startsWith('[telegram]') ||
+                                        msg.sender.startsWith('[gateway]')
+                                    ))
+                                const isAgent = msg.sender === 'agent' || msg.sender === 'me'
                                 const isSystem = msg.sender === 'system'
 
                                 if (isSystem) {
@@ -395,14 +435,78 @@ const Chat = () => {
                                     )
                                 }
 
+                                if (activeSessionId === 'resident') {
+                                    // Scenario 1: Resident Chat
+                                    // User -> Right (Green)
+                                    // Agent -> Left (Blue)
+                                    if (isUser) {
+                                        align = 'right'
+                                        styleClass = 'bg-emerald-100 text-emerald-900 border border-emerald-200 rounded-tr-none'
+                                        timeClass = 'text-emerald-700/60'
+                                    } else if (isAgent) {
+                                        align = 'left'
+                                        styleClass = 'bg-primary text-white rounded-tl-none'
+                                        timeClass = 'text-blue-100'
+                                    } else {
+                                        // Fallback?
+                                        align = 'left'
+                                        styleClass = 'bg-white border border-slate-200 rounded-tl-none'
+                                        timeClass = 'text-slate-400'
+                                    }
+                                } else {
+                                    // Scenario 2: P2P Chat
+                                    // Agent ("Me") -> Right (Blue)
+                                    // Peer -> Left (White)
+                                    // User (if injecting instruction) -> Right (Green)
+                                    if (isAgent) {
+                                        align = 'right'
+                                        styleClass = 'bg-primary text-white rounded-tr-none'
+                                        timeClass = 'text-blue-100'
+                                    } else if (isUser) {
+                                        align = 'right'
+                                        styleClass = 'bg-emerald-100 text-emerald-900 border border-emerald-200 rounded-tr-none'
+                                        timeClass = 'text-emerald-700/60'
+                                    } else {
+                                        // Peer
+                                        align = 'left'
+                                        styleClass = 'bg-white border border-slate-200 rounded-tl-none'
+                                        timeClass = 'text-slate-400'
+                                    }
+                                }
+
+
+                                // Prepare Content
+                                let displayContent = msg.content
+
+                                // Tag: From Source
+                                if (msg.sender && msg.sender.startsWith('[')) {
+                                    const match = msg.sender.match(/^\[(.*?)\].*/)
+                                    if (match && match[1] !== 'p2p') {
+                                        displayContent = (
+                                            <span>
+                                                {msg.content} <span className="text-[10px] opacity-60 ml-1">(From {match[1]})</span>
+                                            </span>
+                                        )
+                                    }
+                                }
+
+                                // Tag: To Target
+                                if (isAgent && msg.chat_id && msg.chat_id.startsWith('[')) {
+                                    const match = msg.chat_id.match(/^\[(.*?)\].*/)
+                                    if (match && match[1] !== 'p2p') {
+                                        displayContent = (
+                                            <span>
+                                                {msg.content} <span className="text-[10px] opacity-60 ml-1">(To {match[1]})</span>
+                                            </span>
+                                        )
+                                    }
+                                }
+
                                 return (
-                                    <div key={msg.id || idx} className={`flex ${isFromMe ? 'justify-end' : 'justify-start'}`}>
-                                        <div className={`max-w-[70%] rounded-2xl p-4 shadow-sm ${isFromMe
-                                            ? 'bg-primary text-white rounded-tr-none'
-                                            : 'bg-white border border-slate-200 rounded-tl-none'
-                                            }`}>
-                                            <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.content}</p>
-                                            <div className={`text-[10px] mt-1 text-right ${isFromMe ? 'text-blue-100' : 'text-slate-400'}`}>
+                                    <div key={msg.id || idx} className={`flex ${align === 'right' ? 'justify-end' : 'justify-start'} mb-4`}>
+                                        <div className={`max-w-[70%] rounded-2xl p-4 shadow-sm ${styleClass}`}>
+                                            <div className="text-sm whitespace-pre-wrap leading-relaxed">{displayContent}</div>
+                                            <div className={`text-[10px] mt-1 text-right ${timeClass}`}>
                                                 {formatTime(msg.timestamp)}
                                             </div>
                                         </div>

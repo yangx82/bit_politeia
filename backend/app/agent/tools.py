@@ -16,7 +16,7 @@ async def send_p2p_message(recipient_id: str, content: str, message_type: str = 
         message_type: Type of message. Options: 'DIRECT' (one-to-one), 'GROUP' (broadcast to group), 'GOSSIP' (network wide).
     """
     try:
-        print(f"[DEBUG-TOOL] send_p2p_message invoked for {recipient_id}")
+        # print(f"[DEBUG-TOOL] send_p2p_message invoked for {recipient_id}")
         # Use AgentService wrapper to ensure consistent logging and WebRTC fallback logic
         from app.services.agent_service import agent_service
         

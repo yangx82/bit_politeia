@@ -36,7 +36,11 @@ async def send_instruction(request: ChatRequest):
 
 @router.get("/history", response_model=list[Message])
 async def get_history():
-    return await agent_service.get_history()
+    history = await agent_service.get_history()
+    # DEBUG: Print last few messages to check chat_id/sender format
+    if history:
+        print(f"\n[DEBUG-HISTORY] Last message: sender={history[-1].sender}, chat_id={history[-1].chat_id}")
+    return history
 
 @router.get("/history/search", response_model=list[Message])
 async def search_history(q: str = None, date_from: str = None, date_to: str = None):

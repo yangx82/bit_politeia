@@ -127,7 +127,7 @@ class PlanStage(PipelineStage):
                 content=str(response.content),
                 type="thought"
             )
-            print(f"[DEBUG-AG] Publishing Thought: {out_msg.content[:50]}... to {out_msg.channel}")
+            # print(f"[DEBUG-AG] Publishing Thought: {out_msg.content[:50]}... to {out_msg.channel}")
             await agent.message_bus.publish_outbound(out_msg)
 
         if response.tool_calls:
@@ -160,7 +160,7 @@ class ExecuteStage(PipelineStage):
                 type="tool_call",
                 metadata={"tool": tool_name, "args": args}
             )
-            print(f"[DEBUG-AG] Publishing Tool Call: {tool_name} to {out_msg.channel}")
+            # print(f"[DEBUG-AG] Publishing Tool Call: {tool_name} to {out_msg.channel}")
             await agent.message_bus.publish_outbound(out_msg)
 
             try:
@@ -216,14 +216,16 @@ class NotifyStage(PipelineStage):
                 type="agent_message"
             ))
 
-            # 2. Publish to source channel ONLY if it has a real subscriber (skip 'resident')
-            # 'resident' is handled by the direct HTTP request/response cycle.
-            if context.input_message.channel != "resident":
-                await agent.message_bus.publish_outbound(OutboundMessage(
-                    channel=context.input_message.channel,
-                    chat_id=context.input_message.sender_id,
-                    content=context.final_answer
-                ))
+            # 2. Publish to source channel - DISABLED
+            # Reason: The caller (agent_service.process_bus_message) already handles the reply.
+            # Doing it here causes Duplicate Messages.
+            # Also, this logic used sender_id instead of chat_id, which was buggy for groups.
+            # if context.input_message.channel != "resident":
+            #     await agent.message_bus.publish_outbound(OutboundMessage(
+            #         channel=context.input_message.channel,
+            #         chat_id=context.input_message.sender_id,
+            #         content=context.final_answer
+            #     ))
 
 class ArchiveStage(PipelineStage):
     """Stage 6: Persistence & Cleanup."""

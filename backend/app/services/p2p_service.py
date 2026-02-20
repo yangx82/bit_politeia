@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import datetime
 from typing import Dict, Any, Optional, List
 
 from .crypto_service import crypto_service
@@ -93,7 +94,7 @@ class P2PService:
             "recipient_id": self.local_node.node_id if self.local_node else "unknown",
             "message_type": MessageType.DIRECT.value, # Default to DIRECT for now
             "content": {"text": message}, # Assuming simple text for now, can be parsed if JSON
-            "timestamp": "now" # Should get actual time
+            "timestamp": datetime.datetime.now().isoformat()
         }
         # Try parse JSON if message looks like it
         try:
