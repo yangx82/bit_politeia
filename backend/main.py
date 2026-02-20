@@ -82,6 +82,8 @@ logging.basicConfig(
     format="%(levelname)s:    %(name)s - %(message)s"
 )
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logging.getLogger("watchfiles").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 

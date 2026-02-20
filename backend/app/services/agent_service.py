@@ -69,7 +69,7 @@ class AgentService:
             }
             executors = {} # Default: AsyncIOExecutor() handles coroutines
             job_defaults = {
-                'coalesce': False,
+                'coalesce': True, # Merge multiple missed runs into one
                 'max_instances': 3
             }
             self.scheduler = AsyncIOScheduler(jobstores=jobstores, job_defaults=job_defaults)
@@ -139,8 +139,8 @@ class AgentService:
         # Using string references for robust persistence
         self.scheduler.add_job("app.services.agent_service:trigger_scheduled_task_proxy", 'interval', hours=12, misfire_grace_time=60) 
         self.scheduler.add_job("app.services.agent_service:trigger_adhoc_task_proxy", 'interval', hours=12, misfire_grace_time=60, jitter=10) 
-        self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=5, misfire_grace_time=2) 
-        self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', seconds=30) 
+        self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=10, misfire_grace_time=5) 
+        self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', seconds=60) 
         
         # Nightly Consolidation (2:00 AM)
         self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0)
