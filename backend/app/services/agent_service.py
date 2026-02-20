@@ -67,14 +67,12 @@ class AgentService:
                 # Use 4 slashes for absolute path in unix/windows
                 'default': SQLAlchemyJobStore(url=f'sqlite:///{db_path}')
             }
-            executors = {
-                'default': ThreadPoolExecutor(10)
-            }
+            executors = {} # Default: AsyncIOExecutor() handles coroutines
             job_defaults = {
                 'coalesce': False,
                 'max_instances': 3
             }
-            self.scheduler = AsyncIOScheduler(jobstores=jobstores, executors=executors, job_defaults=job_defaults)
+            self.scheduler = AsyncIOScheduler(jobstores=jobstores, job_defaults=job_defaults)
             logger.info(f"Scheduler initialized with SQLite persistence at {db_path}.")
         except ImportError:
             logger.warning("SQLAlchemy not found, using MemoryJobStore (No persistence).")

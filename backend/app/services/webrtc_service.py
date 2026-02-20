@@ -4,6 +4,7 @@ import asyncio
 from typing import Dict, Any, Optional, Callable
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration, RTCIceServer
 from aiortc.contrib.signaling import object_to_string, object_from_string
+from .p2p_service import p2p_service
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ class WebRTCManager:
         self.data_channels: Dict[str, Any] = {} # peer_id -> RTCDataChannel
         self.signaling_callback = signaling_callback # Function to send signaling messages via HTTP/Relay
         self.message_callback = message_callback # Function to handle received data channel messages
-        self.message_callback = message_callback # Function to handle received data channel messages
+        self.negotiating: set[str] = set() # peer_ids currently in handshake
         self.loop = None
 
     def set_loop(self, loop):
@@ -94,36 +95,74 @@ class WebRTCManager:
         if pc.connectionState in ["connecting", "connected"]:
             logger.info(f"[{peer_id}] Connection initiation skipped: connectionState is {pc.connectionState}")
             return
-
+            
+        # Synchronization Guard: Prevent multiple concurrent initiations
+        if peer_id in self.negotiating:
+            logger.info(f"[{peer_id}] Connection initiation skipped: already negotiating.")
+            return
+            
+        self.negotiating.add(peer_id)
         logger.info(f"[{peer_id}] Initiating WebRTC connection...")
         
-        # Create Data Channel
-        channel = pc.createDataChannel("chat")
-        self.setup_data_channel(peer_id, channel)
-        
-        # Create Offer
-        offer = await pc.createOffer()
-        await pc.setLocalDescription(offer)
-        
-        # Send Offer via Signaling
-        await self.signaling_callback(peer_id, "sdp_offer", {
-            "sdp": object_to_string(pc.localDescription)
-        })
+        try:
+            # Create Data Channel
+            channel = pc.createDataChannel("chat")
+            self.setup_data_channel(peer_id, channel)
+            
+            # Create Offer
+            offer = await pc.createOffer()
+            await pc.setLocalDescription(offer)
+            
+            # Send Offer via Signaling (Simple dict, avoids double stringify)
+            await self.signaling_callback(peer_id, "sdp_offer", {
+                "sdp": pc.localDescription.sdp,
+                "type": pc.localDescription.type
+            })
+        except Exception as e:
+            logger.error(f"[{peer_id}] Failed to initiate connection: {e}")
+            self.negotiating.discard(peer_id)
 
-    async def handle_offer(self, peer_id: str, sdp_str: str):
+    async def handle_offer(self, peer_id: str, sdp_data: Any):
         """Handle incoming SDP Offer."""
         pc = await self.get_or_create_pc(peer_id)
         logger.info(f"[{peer_id}] Received SDP Offer. Current state: signaling={pc.signalingState}, connection={pc.connectionState}")
         
         if pc.signalingState != "stable":
-            # Glare resolution (basic: let the offerer with "larger" ID win?)
-            # Or just warn for now. Most robust is to rollback or close and restart.
-            logger.warning(f"[{peer_id}] Received Offer while in state {pc.signalingState}. Potential glare.")
-            # If we already sent an offer, maybe we should just ignore their offer and wait for their answer?
-            # Or vice versa. For now, we attempt to proceed but aiortc might throw.
+            logger.warning(f"[{peer_id}] Received Offer while in state {pc.signalingState}. Glare possible.")
         
         try:
-            offer = object_from_string(sdp_str)
+            # Permissive Parser: Handle nested JSON stringified SDP (Legacy compat)
+            if isinstance(sdp_data, dict) and isinstance(sdp_data.get("sdp"), str) and sdp_data["sdp"].startswith('{"sdp"'):
+                try:
+                    nested = json.loads(sdp_data["sdp"])
+                    sdp_data = nested
+                    logger.info(f"[{peer_id}] Unwrapped nested JSON SDP in Offer.")
+                except:
+                    pass
+
+            # Normalize SDP input
+            if isinstance(sdp_data, str):
+                offer = object_from_string(sdp_data)
+            elif isinstance(sdp_data, dict):
+                offer = RTCSessionDescription(sdp=sdp_data["sdp"], type=sdp_data["type"])
+            else:
+                raise ValueError("Unsupported SDP data format")
+
+            # Glare Handling (Polite Peer logic)
+            # If we both sent offers (signalingState is have-local-offer),
+            # the peer with the lexicographically "smaller" ID backs off (polite).
+            # The one with the "larger" ID ignores the incoming offer and waits for an answer.
+            if pc.signalingState == "have-local-offer":
+                local_id = p2p_service.local_node.node_id if p2p_service.local_node else "z"
+                if local_id < peer_id:
+                    logger.info(f"[{peer_id}] Glare detected. I am POLITE. Rolling back for their offer.")
+                    # In aiortc, we don't necessarily have a 'rollback' like in JS,
+                    # but we can just set their remote description if we haven't committed to our answer yet.
+                    # Or we just accept the remote offer which will overwrite.
+                else:
+                    logger.info(f"[{peer_id}] Glare detected. I am IMPOLITE. Ignoring their offer.")
+                    return
+
             await pc.setRemoteDescription(offer)
             
             # Create Answer
@@ -132,30 +171,50 @@ class WebRTCManager:
             
             # Send Answer via Signaling
             await self.signaling_callback(peer_id, "sdp_answer", {
-                "sdp": object_to_string(pc.localDescription)
+                "sdp": pc.localDescription.sdp,
+                "type": pc.localDescription.type
             })
         except Exception as e:
             logger.error(f"[{peer_id}] Failed to handle offer: {e}")
+            self.negotiating.discard(peer_id)
 
-    async def handle_answer(self, peer_id: str, sdp_str: str):
+    async def handle_answer(self, peer_id: str, sdp_data: Any):
         """Handle incoming SDP Answer."""
         if peer_id not in self.pcs:
             logger.warning(f"[{peer_id}] Received answer from unknown peer")
             return
             
         pc = self.pcs[peer_id]
-        logger.info(f"[{peer_id}] Received SDP Answer. Current state: signaling={pc.signalingState}, connection={pc.connectionState}")
+        logger.info(f"[{peer_id}] Received SDP Answer. State: signaling={pc.signalingState}, connection={pc.connectionState}")
         
         if pc.signalingState == "stable":
             logger.info(f"[{peer_id}] Already stable. Ignoring redundant answer.")
+            self.negotiating.discard(peer_id)
             return
 
         try:
-            answer = object_from_string(sdp_str)
+            # Permissive Parser: Handle nested JSON stringified SDP
+            if isinstance(sdp_data, dict) and isinstance(sdp_data.get("sdp"), str) and sdp_data["sdp"].startswith('{"sdp"'):
+                try:
+                    nested = json.loads(sdp_data["sdp"])
+                    sdp_data = nested
+                    logger.info(f"[{peer_id}] Unwrapped nested JSON SDP in Answer.")
+                except:
+                    pass
+
+            if isinstance(sdp_data, str):
+                answer = object_from_string(sdp_data)
+            elif isinstance(sdp_data, dict):
+                answer = RTCSessionDescription(sdp=sdp_data["sdp"], type=sdp_data["type"])
+            else:
+                raise ValueError("Unsupported SDP data format")
+
             await pc.setRemoteDescription(answer)
             logger.info(f"[{peer_id}] Remote description set (Answer). State is now stable.")
+            self.negotiating.discard(peer_id)
         except Exception as e:
             logger.error(f"[{peer_id}] Failed to handle answer: {e}")
+            self.negotiating.discard(peer_id)
 
     async def send_message(self, peer_id: str, message: str) -> bool:
         """Send message via Data Channel if available."""
