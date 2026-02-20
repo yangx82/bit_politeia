@@ -61,6 +61,16 @@ class Node:
         self.inbox: List[dict] = []
         self.message_handler: Optional[Callable[[Dict[str, Any]], Any]] = None
 
+    def to_dict(self) -> dict:
+        return {
+            "node_id": self.node_id,
+            "public_key": self.public_key,
+            "name": self.name,
+            "level": self.level,
+            "endpoint": self.endpoint,
+            "group_ids": list(self.group_ids)
+        }
+
     def set_message_handler(self, handler: Callable[[Dict[str, Any]], Any]):
         """Set a handler to intercept messages. Return True to stop default processing."""
         self.message_handler = handler

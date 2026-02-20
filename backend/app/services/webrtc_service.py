@@ -2,7 +2,7 @@ import logging
 import json
 import asyncio
 from typing import Dict, Any, Optional, Callable
-from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration, RTCIceServer
 from aiortc.contrib.signaling import object_to_string, object_from_string
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,13 @@ class WebRTCManager:
         if peer_id in self.pcs:
             return self.pcs[peer_id]
         
-        pc = RTCPeerConnection()
+        # Configure STUN server for NAT traversal
+        # This helps resolve the public IP and avoids binding errors on some local interfaces
+        config = RTCConfiguration(iceServers=[
+            RTCIceServer(urls=["stun:stun.l.google.com:19302"])
+        ])
+        
+        pc = RTCPeerConnection(configuration=config)
         self.pcs[peer_id] = pc
         
         @pc.on("datachannel")
