@@ -4,7 +4,7 @@ import asyncio
 from typing import Dict, Any, Optional, Callable
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration, RTCIceServer
 from aiortc.contrib.signaling import object_to_string, object_from_string
-from .p2p_service import p2p_service
+# from .p2p_service import p2p_service  <-- Moved to method level to avoid circular import
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,7 @@ class WebRTCManager:
             # the peer with the lexicographically "smaller" ID backs off (polite).
             # The one with the "larger" ID ignores the incoming offer and waits for an answer.
             if pc.signalingState == "have-local-offer":
+                from .p2p_service import p2p_service
                 local_id = p2p_service.local_node.node_id if p2p_service.local_node else "z"
                 if local_id < peer_id:
                     logger.info(f"[{peer_id}] Glare detected. I am POLITE. Rolling back for their offer.")
