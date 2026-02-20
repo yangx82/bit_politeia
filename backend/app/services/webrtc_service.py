@@ -66,10 +66,45 @@ class WebRTCManager:
         async def on_icecandidate(candidate):
             if candidate:
                 logger.info(f"[{peer_id}] Found ICE Candidate: {candidate.host}:{candidate.port} ({candidate.type})")
+                # Send candidate to remote peer via signaling
+                await self.signaling_callback(peer_id, "ice_candidate", {
+                    "candidate": candidate.foundation, # Simplified placeholder or full candidate?
+                    # aiortc doesn't have a simple .to_dict() for ICECandidate, 
+                    # but we can send the attributes manually or use candidate_to_sdp
+                    "sdpMid": candidate.sdpMid,
+                    "sdpMLineIndex": candidate.sdpMLineIndex,
+                    "candidate": f"candidate:{candidate.foundation} {candidate.component} {candidate.protocol} {candidate.priority} {candidate.host} {candidate.port} typ {candidate.type} " + \
+                                (f"raddr {candidate.relatedAddress} rport {candidate.relatedPort}" if candidate.relatedAddress else "")
+                })
             else:
                 logger.info(f"[{peer_id}] No more ICE candidates.")
 
         return pc
+
+    async def handle_candidate(self, peer_id: str, candidate_data: Any):
+        """Handle incoming ICE Candidate from remote peer."""
+        if peer_id not in self.pcs:
+            logger.warning(f"[{peer_id}] Received ICE candidate for unknown peer connection")
+            return
+            
+        pc = self.pcs[peer_id]
+        try:
+            # Parse candidate data
+            # candidate_data usually looks like {"candidate": "...", "sdpMid": "...", "sdpMLineIndex": ...}
+            from aiortc.sdp import candidate_from_sdp
+            
+            cand_str = candidate_data.get("candidate")
+            if cand_str.startswith("candidate:"):
+                cand_str = cand_str[10:]
+            
+            candidate = candidate_from_sdp(cand_str)
+            candidate.sdpMid = candidate_data.get("sdpMid")
+            candidate.sdpMLineIndex = candidate_data.get("sdpMLineIndex")
+            
+            await pc.addIceCandidate(candidate)
+            logger.info(f"[{peer_id}] Added remote ICE candidate: {candidate.host}:{candidate.port}")
+        except Exception as e:
+            logger.error(f"[{peer_id}] Failed to add ICE candidate: {e}")
 
     def setup_data_channel(self, peer_id: str, channel):
         self.data_channels[peer_id] = channel
