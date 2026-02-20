@@ -4,16 +4,28 @@ Cron/Scheduler tools for Agent.
 Allows the agent to schedule reminders or tasks using APScheduler.
 """
 
+
 import logging
-from typing import Optional
-from langchain_core.tools import tool
+import os
 from datetime import datetime, timedelta
+from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
+
+def _log_debug(msg):
+    try:
+        # backend/app/agent/tools_cron.py -> backend/app/agent -> backend/app -> backend -> data
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        log_path = os.path.join(base_dir, "data", "cron.log")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now()}: {msg}\n")
+    except Exception as e:
+        print(f"cron log fail: {e}")
 
 async def _handle_reminder(message: str):
     """Callback function for scheduled reminders."""
     from ..services.agent_service import agent_service
+    _log_debug(f"Reminder FIRED: {message}")
     logger.info(f"Executing Scheduled Reminder: {message}")
     # We inject this as a user instruction so the agent "receives" the reminder and acts on it.
     await agent_service.process_user_instruction(f"[SCHEDULED REMINDER] {message}")
@@ -33,24 +45,33 @@ async def schedule_reminder(message: str, seconds_delay: int = 0, minutes_delay:
     try:
         from ..services.agent_service import agent_service
         
+        _log_debug(f"Request to schedule: '{message}' in {hours_delay}h {minutes_delay}m {seconds_delay}s")
+        
         if not agent_service.scheduler.running:
             return "Error: Scheduler is not running."
             
         run_date = datetime.now() + timedelta(seconds=seconds_delay, minutes=minutes_delay, hours=hours_delay)
+        _log_debug(f"Calculated run_date: {run_date}")
         
-        # Add job
+        # Add job using string reference to avoid pickling issues
+        # and ensure the function is importable by the scheduler
         job = agent_service.scheduler.add_job(
-            _handle_reminder, 
+            "app.agent.tools_cron:_handle_reminder", 
             'date', 
             run_date=run_date, 
             args=[message],
             name=message[:50]
         )
         
+        _log_debug(f"Job added successfully. ID: {job.id}")
         return f"Reminder scheduled for {run_date.isoformat()} (Job ID: {job.id})"
         
     except Exception as e:
-        return f"Error scheduling reminder: {str(e)}"
+        import traceback
+        error_msg = f"Error scheduling reminder: {str(e)}\n{traceback.format_exc()}"
+        _log_debug(error_msg)
+        # Return the error so the agent knows what happened (and user sees it if agent repeats it)
+        return error_msg
 
 @tool
 async def list_reminders() -> str:

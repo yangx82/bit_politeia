@@ -38,6 +38,14 @@ MSG_TYPE_MAP = {
 }
 
 
+class FeishuConfig:
+    def __init__(self, app_id, app_secret, encrypt_key, verification_token):
+        self.app_id = app_id
+        self.app_secret = app_secret
+        self.encrypt_key = encrypt_key
+        self.verification_token = verification_token
+        self.allow_from = []
+
 class FeishuChannel(BaseChannel):
     """
     Feishu/Lark channel using WebSocket long connection.
@@ -54,13 +62,7 @@ class FeishuChannel(BaseChannel):
     
     def __init__(self, app_id: str, app_secret: str, bus: MessageBus, encrypt_key: str = None, verification_token: str = None):
         # Config object simulation
-        config = type('Config', (), {
-            'app_id': app_id, 
-            'app_secret': app_secret,
-            'encrypt_key': encrypt_key,
-            'verification_token': verification_token,
-            'allow_from': [] 
-        })()
+        config = FeishuConfig(app_id, app_secret, encrypt_key, verification_token)
         
         super().__init__(config, bus)
         self.config = config

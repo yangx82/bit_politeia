@@ -159,8 +159,18 @@ class Node:
         try:
             import json
             import os
-            os.makedirs("data/p2p", exist_ok=True)
-            inbox_path = f"data/p2p/inbox_{self.node_id}.jsonl"
+            from pathlib import Path
+            
+            # Resolve backend/data/p2p safely
+            # app/p2p_community/models.py -> app/p2p_community -> app -> backend
+            current_file = Path(__file__).resolve()
+            backend_dir = current_file.parent.parent.parent
+            data_dir = backend_dir / "data"
+            p2p_dir = data_dir / "p2p"
+            
+            p2p_dir.mkdir(parents=True, exist_ok=True)
+            
+            inbox_path = p2p_dir / f"inbox_{self.node_id}.jsonl"
             with open(inbox_path, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(msg_data) + "\n")
         except Exception as e:

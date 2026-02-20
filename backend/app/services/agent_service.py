@@ -44,10 +44,60 @@ class AgentService:
         self.processed_message_ids: set[str] = set() # For de-duplication
         self.status = AgentStatus(is_online=True, reputation=10, balance=100.0)
         self.message_bus = message_bus
-        self.scheduler = AsyncIOScheduler()
+        self.message_bus = message_bus
+        
+        # Scheduler with Persistence
+        try:
+            from pathlib import Path
+            import os
+            
+            # Resolve absolute path to backend/data
+            # app/services/agent_service.py -> app/services -> app -> backend
+            current_file = Path(__file__).resolve()
+            self.backend_dir = current_file.parent.parent.parent
+            self.data_dir = self.backend_dir / "data"
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            
+            db_path = self.data_dir / "jobs.sqlite"
+            
+            from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+            from apscheduler.executors.pool import ThreadPoolExecutor
+            
+            jobstores = {
+                # Use 4 slashes for absolute path in unix/windows
+                'default': SQLAlchemyJobStore(url=f'sqlite:///{db_path}')
+            }
+            executors = {
+                'default': ThreadPoolExecutor(10)
+            }
+            job_defaults = {
+                'coalesce': False,
+                'max_instances': 3
+            }
+            self.scheduler = AsyncIOScheduler(jobstores=jobstores, executors=executors, job_defaults=job_defaults)
+            logger.info(f"Scheduler initialized with SQLite persistence at {db_path}.")
+        except ImportError:
+            logger.warning("SQLAlchemy not found, using MemoryJobStore (No persistence).")
+            self.scheduler = AsyncIOScheduler()
+        except Exception as e:
+            logger.error(f"Failed to init persistent scheduler: {e}. Fallback to Memory.")
+            self.scheduler = AsyncIOScheduler()
+
+        # Scheduler will be started in start_scheduler() called by main.py lifespan
         self.base_url = None
         self.api_key = None
         self.llm = None
+        
+    def start_scheduler(self):
+        """Start the scheduler if not running."""
+        try:
+            if not self.scheduler.running:
+                self.scheduler.start()
+                logger.info("Scheduler started successfully.")
+            else:
+                logger.info("Scheduler already running.")
+        except Exception as e:
+            logger.error(f"Failed to start scheduler: {e}")
         self.tools_map = {t.name: t for t in AGENT_TOOLS}
         self.governance_manager = None 
         self.reputation_manager = None
@@ -79,13 +129,23 @@ class AgentService:
         self.verbose_llm = False # Control flag for console output
         
         # Start Scheduler with robustness
-        self.scheduler.add_job(self.trigger_scheduled_task, 'interval', hours=12, misfire_grace_time=60) 
-        self.scheduler.add_job(self.trigger_adhoc_task, 'interval', hours=12, misfire_grace_time=60, jitter=10) 
-        self.scheduler.add_job(self.process_network_inbox, 'interval', seconds=5, misfire_grace_time=2) 
-        self.scheduler.add_job(self.sync_network, 'interval', seconds=30) 
+        # IMPORTANT: We must use the standalone proxy functions defined at module level 
+        # to avoid PicklingError (cannot pickle 'scheduler' attribute of 'self').
+        # The proxy functions import 'agent_service' global instance.
+        
+        # We need to import them or rely on them being available in the namespace when this runs?
+        # Actually, they are defined AFTER this class in the file.
+        # So we can't use them here directly if we run __init__ before they are defined.
+        # BUT, add_job takes a callable. If we use a string ref "app.services.agent_service:trigger_scheduled_task_proxy", it works even better for persistence!
+        
+        # Using string references for robust persistence
+        self.scheduler.add_job("app.services.agent_service:trigger_scheduled_task_proxy", 'interval', hours=12, misfire_grace_time=60) 
+        self.scheduler.add_job("app.services.agent_service:trigger_adhoc_task_proxy", 'interval', hours=12, misfire_grace_time=60, jitter=10) 
+        self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=5, misfire_grace_time=2) 
+        self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', seconds=30) 
         
         # Nightly Consolidation (2:00 AM)
-        self.scheduler.add_job(self.consolidation_service.run_daily_consolidation, 'cron', hour=2, minute=0)
+        self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0)
 
     async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None):
         try:
@@ -537,15 +597,24 @@ class AgentService:
         # Format sender as "[Channel] UserID" so frontend sees it clearly
         formatted_sender = f"[{msg.channel}] {msg.sender_id}"
         
+        # Ensure chat_id in history also carries the [Channel] prefix for merging logic
+        # But keep raw chat_id for sending the reply back
+        raw_chat_id = msg.chat_id
+        history_chat_id = raw_chat_id
+        
+        # Determine history chat_id (Prefix if not resident)
+        if msg.channel != "resident":
+             history_chat_id = f"[{msg.channel}] {raw_chat_id}"
+
         user_msg_obj = Message(
             id=str(uuid.uuid4()),
             content=msg.content,
             sender=formatted_sender,
             timestamp=datetime.now(),
-            chat_id=msg.chat_id
+            chat_id=history_chat_id
         )
         self.history.append(user_msg_obj)
-        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", chat_id=msg.chat_id)
+        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", chat_id=history_chat_id)
 
         # 2. Pipeline Execution
         response_text = await self.run_pipeline(msg)
@@ -553,7 +622,7 @@ class AgentService:
         # 3. Reply via Bus
         out_msg = OutboundMessage(
             channel=msg.channel,
-            chat_id=msg.chat_id,
+            chat_id=raw_chat_id, # Must use RAW ID for transport
             content=response_text,
             reply_to=msg.metadata.get("message_id")
         )
@@ -565,10 +634,10 @@ class AgentService:
              content=response_text,
              sender="agent",
              timestamp=datetime.now(),
-             chat_id=msg.chat_id
+             chat_id=history_chat_id # Log with Prefix so it merges
         )
         self.history.append(agent_msg_obj)
-        self.resident_memory.log_interaction("agent", response_text, msg_type="chat", chat_id=msg.chat_id)
+        self.resident_memory.log_interaction("agent", response_text, msg_type="chat", chat_id=history_chat_id)
 
     # 1. User Contact
     async def process_user_instruction(self, content: str) -> Message:
@@ -829,11 +898,16 @@ class AgentService:
         try:
             import json
             import os
-            os.makedirs("data/system", exist_ok=True)
+            
+            system_dir = self.data_dir / "system"
+            system_dir.mkdir(parents=True, exist_ok=True)
+            
             state = {
                 "processed_message_ids": list(self.processed_message_ids)
             }
-            with open("data/system/agent_state.json", 'w', encoding='utf-8') as f:
+            state_path = system_dir / "agent_state.json"
+            
+            with open(state_path, 'w', encoding='utf-8') as f:
                 json.dump(state, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save system state: {e}")
@@ -843,8 +917,9 @@ class AgentService:
         try:
             import json
             import os
-            # 1. Load De-duplication IDs
-            state_path = "data/system/agent_state.json"
+            
+            system_dir = self.data_dir / "system"
+            state_path = system_dir / "agent_state.json"
             if os.path.exists(state_path):
                 with open(state_path, 'r', encoding='utf-8') as f:
                     state = json.load(f)
@@ -862,20 +937,23 @@ class AgentService:
                 return
                 
             node_id = p2p_service.local_node.node_id
-            inbox_path = f"data/p2p/inbox_{node_id}.jsonl"
+            inbox_path = self.data_dir / "p2p" / f"inbox_{node_id}.jsonl"
             
-            if os.path.exists(inbox_path):
+            if inbox_path.exists():
                 pending_messages = []
-                with open(inbox_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        if line.strip():
-                            try:
-                                msg_data = json.loads(line)
-                                # Only add if not already processed (in case of crash between processing and clearing)
-                                m_id = msg_data.get('message_id')
-                                if not m_id or m_id not in self.processed_message_ids:
-                                    pending_messages.append(msg_data)
-                            except: continue
+                try:
+                    with open(inbox_path, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            if line.strip():
+                                try:
+                                    msg_data = json.loads(line)
+                                    # Only add if not already processed (in case of crash between processing and clearing)
+                                    m_id = msg_data.get('message_id')
+                                    if not m_id or m_id not in self.processed_message_ids:
+                                        pending_messages.append(msg_data)
+                                except: continue
+                except Exception as e:
+                    logger.warning(f"Error reading inbox: {e}")
                 
                 if pending_messages:
                     logger.info(f"Hydrated {len(pending_messages)} pending messages from disk inbox.")
@@ -1045,7 +1123,7 @@ class AgentService:
         # 2. Send Strategy
         # 2. Send Strategy
         logger.info(f"Sending P2P message to {target_id}...")
-        print(f"[DEBUG-P2P] Attempting to send message to {target_id}")
+        # print(f"[DEBUG-P2P] Attempting to send message to {target_id}")
         mode = "unknown"
         
         try:
@@ -1355,6 +1433,38 @@ class AgentService:
             timestamp=datetime.now(),
             type="thought"
         ))
+
+
+
+# -------------------------------------------------------------------------
+# Standalone Proxy Functions for Scheduler
+# These avoid pickling the 'self' (AgentService instance) which contains the unpickleable scheduler.
+# -------------------------------------------------------------------------
+
+async def trigger_scheduled_task_proxy():
+    """Proxy for agent_service.trigger_scheduled_task"""
+    if agent_service:
+        await agent_service.trigger_scheduled_task()
+
+async def trigger_adhoc_task_proxy():
+    """Proxy for agent_service.trigger_adhoc_task"""
+    if agent_service:
+        await agent_service.trigger_adhoc_task()
+
+async def process_network_inbox_proxy():
+    """Proxy for agent_service.process_network_inbox"""
+    if agent_service:
+        await agent_service.process_network_inbox()
+
+async def sync_network_proxy():
+    """Proxy for agent_service.sync_network"""
+    if agent_service:
+        await agent_service.sync_network()
+
+async def run_consolidation_proxy():
+    """Proxy for agent_service.consolidation_service.run_daily_consolidation"""
+    if agent_service and agent_service.consolidation_service:
+        await agent_service.consolidation_service.run_daily_consolidation()
 
 
 agent_service = AgentService()

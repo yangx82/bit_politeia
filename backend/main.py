@@ -64,6 +64,10 @@ async def lifespan(app: FastAPI):
         # configure_agent is async
         asyncio.create_task(agent_service.configure_agent(**env_config))
 
+    # 4. Start Scheduler
+    # Must be done after loop is running
+    agent_service.start_scheduler()
+
     yield
     
     # Shutdown
