@@ -11,13 +11,23 @@ from .message_protocol import MessageProtocol, MessageType, SignedMessage
 logger = logging.getLogger(__name__)
 
 class NetworkManager:
+    def _log_throttled(self, level: str, message: str, interval: int = 10):
+        """Log a message only if it hasn't been logged in the last 'interval' seconds."""
+        import time
+        now = time.time()
+        last_time = self._last_logs.get(message, 0)
+        if now - last_time > interval:
+            self._last_logs[message] = now
+            getattr(logger, level)(message)
+
     def __init__(self, message_protocol: MessageProtocol):
         self.groups: Dict[str, Group] = {}
         self.nodes: Dict[str, Node] = {}
+        self.local_node_id: Optional[str] = None
         self.message_protocol = message_protocol
         self.bootstrap = bootstrap_client
-        self.local_node_id = None
         self.http_client = httpx.AsyncClient(timeout=10.0)
+        self._last_logs: Dict[str, float] = {} # For deduplication: message -> last_time
 
     async def initialize(self):
         """Initialize network state from bootstrap server."""
@@ -181,7 +191,7 @@ class NetworkManager:
             # Check for system messages first
             msg_type = message_data.get("type", message_data.get("message_type"))
             if msg_type == "SYSTEM_ERROR":
-                logger.warning(f"[Network] Relay System Error: {message_data.get('content')} (Target: {message_data.get('recipient_id')})")
+                self._log_throttled("warning", f"[Network] Relay System Error: {message_data.get('content')} (Target: {message_data.get('recipient_id')})")
                 return
 
             # Basic Validation before parsing
@@ -278,19 +288,19 @@ class NetworkManager:
                 logger.warning(f"Transport error to {endpoint}: HTTP {resp.status_code}")
                 return False
         except Exception as e:
-            logger.warning(f"Failed to reach peer {endpoint}: {e}")
+            self._log_throttled("warning", f"Failed to reach peer {endpoint}: {e}")
             return False
 
     async def _send_via_relay(self, target_id: str, message: SignedMessage):
         """Fallback: Send message via Bootstrap Relay."""
         if hasattr(self, 'relay_client') and self.relay_client.websocket:
-            logger.info(f"Fallback: Sending message to {target_id} via RELAY")
+            self._log_throttled("info", f"Fallback: Sending message to {target_id} via RELAY")
             return await self.relay_client.send(message.to_dict())
         return False
 
     async def route_message(self, message: SignedMessage) -> bool:
         """Route message to local node or remote peer via HTTP, fallback to Relay."""
-        logger.info(f"[Network] Routing {message.message_type.value} message to {message.recipient_id}")
+        self._log_throttled("info", f"[Network] Routing {message.message_type.value} message to {message.recipient_id}")
 
         # Helper to route to single node with fallback
         async def send_to_node(node_id: str, msg: SignedMessage) -> bool:
