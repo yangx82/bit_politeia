@@ -16,7 +16,11 @@ class WebRTCManager:
         self.data_channels: Dict[str, Any] = {} # peer_id -> RTCDataChannel
         self.signaling_callback = signaling_callback # Function to send signaling messages via HTTP/Relay
         self.message_callback = message_callback # Function to handle received data channel messages
-        self.loop = asyncio.get_event_loop()
+        self.message_callback = message_callback # Function to handle received data channel messages
+        self.loop = None
+
+    def set_loop(self, loop):
+        self.loop = loop
 
     async def get_or_create_pc(self, peer_id: str) -> RTCPeerConnection:
         if peer_id in self.pcs:
@@ -54,11 +58,20 @@ class WebRTCManager:
             logger.info(f"[{peer_id}] Received via DataChannel: {message[:50]}...")
             # Handle received data
             if self.message_callback:
-                asyncio.run_coroutine_threadsafe(self.message_callback(peer_id, message), self.loop)
+                if self.loop:
+                    asyncio.run_coroutine_threadsafe(self.message_callback(peer_id, message), self.loop)
+                else:
+                    # Fallback: Try to get running loop (might fail if in thread)
+                    try:
+                        loop = asyncio.get_running_loop()
+                        asyncio.run_coroutine_threadsafe(self.message_callback(peer_id, message), loop)
+                    except RuntimeError:
+                         logger.error(f"[{peer_id}] WebRTC Message Error: No event loop available to schedule callback.")
 
         @channel.on("open")
         def on_open():
-            logger.info(f"[{peer_id}] Data channel {channel.label} is open")
+            logger.info(f"[{peer_id}] Data channel {channel.label} is OPEN")
+            print(f"[DEBUG-RTC] Data Channel OPEN with {peer_id}")
 
     async def initiate_connection(self, peer_id: str):
         """Start a WebRTC connection with a peer."""

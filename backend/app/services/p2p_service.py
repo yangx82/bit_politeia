@@ -32,6 +32,14 @@ class P2PService:
         if self._initialized:
             return
 
+        # Capture async loop for WebRTC callbacks
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            self.webrtc_manager.set_loop(loop)
+        except RuntimeError:
+            logger.warning("P2P initialize called without running loop?")
+
         # Initialize network manager (sync topology)
         await self.network_manager.initialize()
         

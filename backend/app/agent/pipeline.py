@@ -120,14 +120,15 @@ class PlanStage(PipelineStage):
             # 3. Use input sender_id as chat_id only if it helps UI grouping, 
             #    BUT ensuring the channel is NOT the P2P transport.
             
-            # We publish to "gateway" with the chat_id of the current context
             # so the UI can show thoughts in the relevant conversation window.
-            await agent.message_bus.publish_outbound(OutboundMessage(
+            out_msg = OutboundMessage(
                 channel="gateway", 
                 chat_id=context.input_message.sender_id,
                 content=str(response.content),
                 type="thought"
-            ))
+            )
+            print(f"[DEBUG-AG] Publishing Thought: {out_msg.content[:50]}... to {out_msg.channel}")
+            await agent.message_bus.publish_outbound(out_msg)
 
         if response.tool_calls:
             context.tool_calls = response.tool_calls
@@ -152,13 +153,15 @@ class ExecuteStage(PipelineStage):
             
             # Emit Tool Call Event
             # Emit Tool Call Event - Internal Log
-            await agent.message_bus.publish_outbound(OutboundMessage(
+            out_msg = OutboundMessage(
                 channel="gateway",
                 chat_id=context.input_message.sender_id,
                 content=f"Invoking {tool_name} with {args}",
                 type="tool_call",
                 metadata={"tool": tool_name, "args": args}
-            ))
+            )
+            print(f"[DEBUG-AG] Publishing Tool Call: {tool_name} to {out_msg.channel}")
+            await agent.message_bus.publish_outbound(out_msg)
 
             try:
                 # Actual Tool Execution

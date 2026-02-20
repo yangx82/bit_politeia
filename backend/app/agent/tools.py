@@ -16,29 +16,17 @@ async def send_p2p_message(recipient_id: str, content: str, message_type: str = 
         message_type: Type of message. Options: 'DIRECT' (one-to-one), 'GROUP' (broadcast to group), 'GOSSIP' (network wide).
     """
     try:
-        # P2P Service expects a dict content usually, but we handle text here
-        payload = {"text": content}
+        print(f"[DEBUG-TOOL] send_p2p_message invoked for {recipient_id}")
+        # Use AgentService wrapper to ensure consistent logging and WebRTC fallback logic
+        from app.services.agent_service import agent_service
         
-        # P2P Service send_message might be sync or async? 
-        # In p2p_service.py it is `async def send_message`.
-        # We need to map message_type string to what service expects.
+        result = await agent_service.send_p2p_message(recipient_id, content)
         
-        # NOTE: p2p_service.send_message might need update to handle types or we use lower level network manager
-        # But p2p_service is the high level entry.
-        
-        # Let's assume p2p_service.send_message(target_id, content, msg_type) signature based on my previous edits
-        # or we might need to use `broadcast_message` for groups.
-        
-        if message_type.upper() == "GROUP":
-             success = await p2p_service.broadcast_message(recipient_id, payload)
-             return f"Broadcasted to group {recipient_id}: {'SUCCESS' if success else 'FAILED (Network/Relay Error)'}"
-        elif message_type.upper() == "DIRECT":
-             success = await p2p_service.send_message(recipient_id, payload)
-             return f"Sent direct message to {recipient_id}: {'SUCCESS' if success else 'FAILED (Target Offline or Relay Error)'}"
+        if result.get("success"):
+             mode = result.get("mode", "unknown")
+             return f"Message sent to {recipient_id} via {mode}: SUCCESS"
         else:
-             # Default or GOSSIP
-             success = await p2p_service.send_message(recipient_id, payload) # Fallback
-             return f"Sent message to {recipient_id}: {'SUCCESS' if success else 'FAILED'}"
+             return f"Failed to send message: {result.get('error')}"
              
     except Exception as e:
         logger.error(f"Tool Error sending message: {e}")

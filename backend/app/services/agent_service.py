@@ -490,13 +490,15 @@ class AgentService:
                             messages.append(ToolMessage(tool_call_id=tool_call_id, content=str(tool_output), name=tool_name))
                             
                             # Emit Tool Result Event
-                            await self.message_bus.publish_outbound(OutboundMessage(
+                            out_msg = OutboundMessage(
                                 channel="gateway",
                                 chat_id="global",
                                 content=f"Result: {str(tool_output)[:200]}...",
                                 type="tool_result",
                                 metadata={"tool": tool_name, "result": str(tool_output)}
-                            ))
+                            )
+                            # print(f"[DEBUG-AG] Publishing Tool Result: {tool_name}")
+                            await self.message_bus.publish_outbound(out_msg)
 
                         else:
                             messages.append(ToolMessage(tool_call_id=tool_call_id, content=f"Error: Tool {tool_name} not found", name=tool_name))
@@ -1041,7 +1043,9 @@ class AgentService:
             return {"success": True, "status": "refused", "reason": reason}
              
         # 2. Send Strategy
+        # 2. Send Strategy
         logger.info(f"Sending P2P message to {target_id}...")
+        print(f"[DEBUG-P2P] Attempting to send message to {target_id}")
         mode = "unknown"
         
         try:
