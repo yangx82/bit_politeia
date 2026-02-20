@@ -478,7 +478,9 @@ class AgentService:
                 current_message=context,
                 rag_context=rag_context,
                 network_identity=network_identity,
-                source=source
+                source=source,
+                name=self.name,
+                personality=self.personality
             )
             
             # 2. ReAct Loop
@@ -784,7 +786,7 @@ class AgentService:
             try:
                 import os
                 node_id = p2p_service.local_node.node_id
-                inbox_path = f"data/p2p/inbox_{node_id}.jsonl"
+                inbox_path = self.data_dir / "p2p" / f"inbox_{node_id}.jsonl"
                 if os.path.exists(inbox_path):
                     # For safety, we could just clear it, as we've already 
                     # either processed messages OR they are now in the memory inbox.

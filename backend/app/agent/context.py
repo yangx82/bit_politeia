@@ -26,14 +26,14 @@ class ContextBuilder:
         self.memory = memory_store
         self.skill_manager = skill_manager
     
-    def build_system_prompt(self) -> str:
+    def build_system_prompt(self, name: str = "Agent", personality: str = "Professional and helpful") -> str:
         """
         Build the complete system prompt from core identity, memory, and skills.
         """
         parts = []
         
         # 1. Core Identity (From prompts.py)
-        parts.append(AGENT_SYSTEM_PROMPT)
+        parts.append(AGENT_SYSTEM_PROMPT.format(name=name, personality=personality))
         
         # 2. Skill Index (Progressive Disclosure)
         skill_index = self.skill_manager.get_skill_index()
@@ -53,7 +53,9 @@ class ContextBuilder:
         current_message: str,
         rag_context: str = None,
         network_identity: str = None,
-        source: str = "user"
+        source: str = "user",
+        name: str = "Agent",
+        personality: str = "Professional and helpful"
     ) -> List[BaseMessage]:
         """
         Build the complete message list for an LLM call.
@@ -61,7 +63,7 @@ class ContextBuilder:
         messages: List[BaseMessage] = []
 
         # 1. System Prompt
-        system_content = self.build_system_prompt()
+        system_content = self.build_system_prompt(name=name, personality=personality)
         
         # Inject dynamic context (RAG + Network Identity) into System Prompt or as separate SystemMessages
         # To keep it clean, we add them as separate SystemMessages immediately after the main prompt
