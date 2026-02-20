@@ -30,7 +30,12 @@ class WebRTCManager:
         # Configure STUN server for NAT traversal
         # This helps resolve the public IP and avoids binding errors on some local interfaces
         config = RTCConfiguration(iceServers=[
-            RTCIceServer(urls=["stun:stun.l.google.com:19302"])
+            RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
+            RTCIceServer(urls=["stun:stun1.l.google.com:19302"]),
+            RTCIceServer(urls=["stun:stun2.l.google.com:19302"]),
+            RTCIceServer(urls=["stun:stun.qq.com:3478"]),
+            RTCIceServer(urls=["stun:stun.miwifi.com:3478"]),
+            RTCIceServer(urls=["stun:stun.tuku.cn:3478"])
         ])
         
         pc = RTCPeerConnection(configuration=config)
@@ -55,9 +60,14 @@ class WebRTCManager:
         async def on_icegatheringstatechange():
             logger.info(f"[{peer_id}] ICE gathering state is {pc.iceGatheringState}")
             if pc.iceGatheringState == "complete":
-                # On Windows, gathering 'complete' often follows a bind error, 
-                # but we should check if we actually found any candidates.
                 logger.info(f"[{peer_id}] ICE gathering finished. Signaling state: {pc.signalingState}")
+
+        @pc.on("icecandidate")
+        async def on_icecandidate(candidate):
+            if candidate:
+                logger.info(f"[{peer_id}] Found ICE Candidate: {candidate.host}:{candidate.port} ({candidate.type})")
+            else:
+                logger.info(f"[{peer_id}] No more ICE candidates.")
 
         return pc
 
