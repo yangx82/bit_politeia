@@ -297,7 +297,7 @@ class AgentService:
             self.llm = raw_llm.bind_tools(all_tools)
             self.tools_map = {t.name: t for t in all_tools}
             
-            logger.info(f"Agent LLM Initialized Successfully. Tools: {len(all_tools)}")
+            logger.info(f"Agent LLM Initialized. Active Tools: {list(self.tools_map.keys())}")
             
             # Hydrate system state (inbox, de-dup IDs) after potential initialization
             self._hydrate_system_state()
@@ -512,6 +512,7 @@ class AgentService:
                 # The user on Telegram doesn't want to see thoughts.
                 
                 if response.content:
+                    logger.info(f"Agent Thought: {str(response.content)[:200]}...")
                     thought_msg = OutboundMessage(
                         channel="gateway",
                         chat_id="global", # or derived from source
@@ -568,6 +569,7 @@ class AgentService:
                 else:
                     # No tool calls, this is the final response
                     final_content = response.content
+                    logger.info(f"Agent Final Response (to {source}): {str(final_content)[:200]}...")
                     break
             
             # Fallback if loop limitation reached

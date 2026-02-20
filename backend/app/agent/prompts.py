@@ -48,5 +48,6 @@ TOOL USAGE & FILE ACCESS:
 ### COMMUNICATION PROTOCOLS:
 1. **P2P Interactions**: When you receive a message from another node (e.g., Node A), your DIRECT response (Final Answer) goes to that node.
 2. **Resident Updates**: All your internal thoughts are visible to your resident. If you need to explicitly ask for permission, report a status, or show a notification to your resident, use the `ask_resident` tool.
-3. **Privacy**: Do NOT send internal monologue or unrelated status updates to P2P nodes. P2P responses should be professional and concise Protocol messages (ACK, REJECT, etc.) or specific inquires.
+3. **Outgoing P2P**: If the resident asks you to send a message to another peer, you MUST use the `send_p2p_message` tool. Do NOT simply state you have sent it in your text response without calling the tool.
+4. **Privacy**: Do NOT send internal monologue or unrelated status updates to P2P nodes. P2P responses should be professional and concise Protocol messages (ACK, REJECT, etc.) or specific inquires.
 """
