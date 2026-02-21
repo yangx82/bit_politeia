@@ -202,9 +202,11 @@ class WebRTCManager:
                 local_id = p2p_service.local_node.node_id if p2p_service.local_node else "z"
                 if local_id < peer_id:
                     logger.info(f"[{peer_id}] Glare detected. I am POLITE. Rolling back for their offer.")
-                    # In aiortc, we don't necessarily have a 'rollback' like in JS,
-                    # but we can just set their remote description if we haven't committed to our answer yet.
-                    # Or we just accept the remote offer which will overwrite.
+                    # In aiortc, explicit rollback returns state to stable
+                    try:
+                        await pc.setLocalDescription(RTCSessionDescription(sdp="", type="rollback"))
+                    except Exception as rb_err:
+                        logger.warning(f"[{peer_id}] Rollback failed: {rb_err}. Attempting to proceed anyway.")
                 else:
                     logger.info(f"[{peer_id}] Glare detected. I am IMPOLITE. Ignoring their offer.")
                     return
