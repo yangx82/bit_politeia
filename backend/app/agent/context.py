@@ -33,7 +33,7 @@ class ContextBuilder:
         parts = []
         
         # 1. Core Identity (From prompts.py)
-        parts.append(AGENT_SYSTEM_PROMPT.format(name=name, personality=personality))
+        parts.append(AGENT_SYSTEM_PROMPT)
         
         # 2. Skill Index (Progressive Disclosure)
         skill_index = self.skill_manager.get_skill_index()
