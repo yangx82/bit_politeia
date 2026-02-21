@@ -201,12 +201,13 @@ class WebRTCManager:
                 from .p2p_service import p2p_service
                 local_id = p2p_service.local_node.node_id if p2p_service.local_node else "z"
                 if local_id < peer_id:
-                    logger.info(f"[{peer_id}] Glare detected. I am POLITE. Rolling back for their offer.")
-                    # In aiortc, explicit rollback returns state to stable
-                    try:
-                        await pc.setLocalDescription(RTCSessionDescription(sdp="", type="rollback"))
-                    except Exception as rb_err:
-                        logger.warning(f"[{peer_id}] Rollback failed: {rb_err}. Attempting to proceed anyway.")
+                    logger.info(f"[{peer_id}] Glare detected. I am POLITE. Resetting connection for their offer.")
+                    # aiortc does not support rollback in setLocalDescription.
+                    # We must close the current PC and recreate a fresh one to go back to 'stable'.
+                    await pc.close()
+                    if peer_id in self.pcs:
+                        del self.pcs[peer_id]
+                    pc = await self.get_or_create_pc(peer_id)
                 else:
                     logger.info(f"[{peer_id}] Glare detected. I am IMPOLITE. Ignoring their offer.")
                     return
