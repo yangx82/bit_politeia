@@ -28,7 +28,7 @@ async def _handle_reminder(message: str):
     _log_debug(f"Reminder FIRED: {message}")
     logger.info(f"Executing Scheduled Reminder: {message}")
     # We inject this as a user instruction so the agent "receives" the reminder and acts on it.
-    await agent_service.process_user_instruction(f"[SCHEDULED REMINDER] {message}")
+    await agent_service.process_user_instruction(f"[SCHEDULED REMINDER] {message}", broadcast=True)
 
 @tool
 async def schedule_reminder(message: str, seconds_delay: int = 0, minutes_delay: int = 0, hours_delay: int = 0) -> str:

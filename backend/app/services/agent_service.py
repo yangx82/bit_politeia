@@ -644,11 +644,13 @@ class AgentService:
         )
         self.history.append(agent_msg_obj)
         self.resident_memory.log_interaction("agent", response_text, msg_type="chat", chat_id=history_chat_id)
-    async def notify_resident(self, content: str, type: str = "agent_message", chat_id: str = "resident"):
+    async def notify_resident(self, content: str, type: str = "agent_message", chat_id: str = "resident", broadcast: bool = True):
         """
-        Proactively notify the resident across all known active bridges (Gateway, Feishu, etc.)
+        Notify the resident. 
+        If broadcast=True, sends to all known bridges (Feishu, etc.).
+        If broadcast=False, only sends to local Gateway (Web UI).
         """
-        logger.info(f"Proactively notifying resident: {content[:50]}...")
+        logger.info(f"Notifying resident (broadcast={broadcast}): {content[:50]}...")
         
         # 1. Log to history (Web UI)
         msg_id = str(uuid.uuid4())
@@ -661,11 +663,14 @@ class AgentService:
         ))
         self.resident_memory.log_interaction("agent", content, msg_type="chat", chat_id=chat_id)
         
-        # 2. Broadcast to all known bridges
-        # Always broadcast to 'gateway' for UI observability
-        bridges_to_notify = self.resident_bridges.copy()
-        if "gateway" not in bridges_to_notify:
-             bridges_to_notify["gateway"] = "global"
+        # 2. Broadcast or Targeted Send
+        if broadcast:
+            bridges_to_notify = self.resident_bridges.copy()
+            if "gateway" not in bridges_to_notify:
+                 bridges_to_notify["gateway"] = "global"
+        else:
+            # Only send to Gateway (Web UI)
+            bridges_to_notify = {"gateway": "global"}
              
         for channel, cid in bridges_to_notify.items():
             try:
@@ -681,7 +686,7 @@ class AgentService:
                 logger.error(f"Failed to send proactive notification via {channel}: {e}")
 
     # 1. User Contact
-    async def process_user_instruction(self, content: str) -> Message:
+    async def process_user_instruction(self, content: str, broadcast: bool = False) -> Message:
         # 1. Log User Message
         user_msg = Message(
             id=str(uuid.uuid4()),
@@ -702,8 +707,8 @@ class AgentService:
         )
         response_text = await self.run_pipeline(msg_obj)
         
-        # 3. Notify Resident (including external bridges)
-        await self.notify_resident(response_text, chat_id="resident")
+        # 3. Notify Resident (Targeted or Broadcast depending on caller)
+        await self.notify_resident(response_text, chat_id="resident", broadcast=broadcast)
         
         # Return the last Message object from history
         return self.history[-1] if self.history else None
