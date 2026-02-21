@@ -368,17 +368,8 @@ async def ask_resident(question: str) -> str:
         from datetime import datetime
         import uuid
         
-        # Log to agent's history so it shows in UI
-        agent_service.history.append(Message(
-            id=str(uuid.uuid4()),
-            content=question,
-            sender="agent",
-            timestamp=datetime.now(),
-            chat_id="resident"
-        ))
-        
-        # Also log to resident memory
-        agent_service.resident_memory.log_interaction("agent", question, msg_type="chat", chat_id="resident")
+        # Use proactive notification helper (Broadcasts to all bridges)
+        await agent_service.notify_resident(question)
         
         return f"Question sent to resident: {question}"
     except Exception as e:

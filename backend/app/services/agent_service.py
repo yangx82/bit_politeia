@@ -44,7 +44,7 @@ class AgentService:
         self.processed_message_ids: set[str] = set() # For de-duplication
         self.status = AgentStatus(is_online=True, reputation=10, balance=100.0)
         self.message_bus = message_bus
-        self.message_bus = message_bus
+        self.resident_bridges: Dict[str, str] = {} # Bridge Name -> Chat/OpenID
         
         # Scheduler with Persistence
         try:
@@ -607,6 +607,10 @@ class AgentService:
         # Determine history chat_id (Prefix if not resident)
         if msg.channel != "resident":
              history_chat_id = f"[{msg.channel}] {raw_chat_id}"
+             # Update Resident Bridges registry for proactive notifications
+             if msg.channel != "p2p":
+                  self.resident_bridges[msg.channel] = raw_chat_id
+                  self._save_system_state() # Persist the new bridge immediately
 
         user_msg_obj = Message(
             id=str(uuid.uuid4()),
@@ -640,9 +644,45 @@ class AgentService:
         )
         self.history.append(agent_msg_obj)
         self.resident_memory.log_interaction("agent", response_text, msg_type="chat", chat_id=history_chat_id)
+    async def notify_resident(self, content: str, type: str = "agent_message", chat_id: str = "resident"):
+        """
+        Proactively notify the resident across all known active bridges (Gateway, Feishu, etc.)
+        """
+        logger.info(f"Proactively notifying resident: {content[:50]}...")
+        
+        # 1. Log to history (Web UI)
+        msg_id = str(uuid.uuid4())
+        self.history.append(Message(
+            id=msg_id,
+            content=content,
+            sender="agent",
+            timestamp=datetime.now(),
+            chat_id=chat_id
+        ))
+        self.resident_memory.log_interaction("agent", content, msg_type="chat", chat_id=chat_id)
+        
+        # 2. Broadcast to all known bridges
+        # Always broadcast to 'gateway' for UI observability
+        bridges_to_notify = self.resident_bridges.copy()
+        if "gateway" not in bridges_to_notify:
+             bridges_to_notify["gateway"] = "global"
+             
+        for channel, cid in bridges_to_notify.items():
+            try:
+                out_msg = OutboundMessage(
+                    channel=channel,
+                    chat_id=cid,
+                    content=content,
+                    type=type
+                )
+                await self.message_bus.publish_outbound(out_msg)
+                logger.debug(f"Proactive notification sent via {channel}")
+            except Exception as e:
+                logger.error(f"Failed to send proactive notification via {channel}: {e}")
 
     # 1. User Contact
     async def process_user_instruction(self, content: str) -> Message:
+        # 1. Log User Message
         user_msg = Message(
             id=str(uuid.uuid4()),
             content=content,
@@ -653,7 +693,7 @@ class AgentService:
         self.history.append(user_msg)
         self.resident_memory.log_interaction("resident", content, msg_type="chat", chat_id="resident") # Log to private memory
         
-        # Agent response via Pipeline
+        # 2. Agent response via Pipeline
         msg_obj = InboundMessage(
             channel="resident",
             sender_id="resident",
@@ -662,19 +702,11 @@ class AgentService:
         )
         response_text = await self.run_pipeline(msg_obj)
         
-        # Sign Response
-        signature = crypto_service.sign_message(response_text)
+        # 3. Notify Resident (including external bridges)
+        await self.notify_resident(response_text, chat_id="resident")
         
-        agent_msg = Message(
-            id=str(uuid.uuid4()),
-            content=f"{response_text}", 
-            sender="agent",
-            timestamp=datetime.now(),
-            chat_id="resident"
-        )
-        self.history.append(agent_msg)
-        self.resident_memory.log_interaction("agent", response_text, msg_type="chat", chat_id="resident") # Log to private memory
-        return agent_msg
+        # Return the last Message object from history
+        return self.history[-1] if self.history else None
 
     # 2. Community Contact (P2P Listener)
     async def process_network_inbox(self, verbose: bool = False):
@@ -823,14 +855,8 @@ class AgentService:
         else:
              summary = "Agent offline."
              
-        # Push to history/frontend
-        self.history.append(Message(
-            id=str(uuid.uuid4()), 
-            content=summary, 
-            sender="agent", 
-            timestamp=datetime.now(),
-            chat_id="resident"
-        ))
+        # Push to history/frontend AND broadcast to bridges
+        await self.notify_resident(summary)
 
     # 4. Ad-hoc Task: Periodic Participation Reward
     async def trigger_adhoc_task(self):
@@ -854,14 +880,8 @@ class AgentService:
             chat_id="resident"
         )
         
-        # Push a visual notice to history
-        self.history.append(Message(
-            id=str(uuid.uuid4()),
-            content=f"💰 [Economy] Received {reward_amount} STATER Participation Reward.",
-            sender="system",
-            timestamp=datetime.now(),
-            chat_id="resident"
-        ))
+        # Push a visual notice to history AND broadcast to bridges
+        await self.notify_resident(f"💰 [Economy] Received {reward_amount} STATER Participation Reward.")
 
     async def get_history(self) -> list[Message]:
         return self.history
@@ -905,7 +925,9 @@ class AgentService:
             system_dir.mkdir(parents=True, exist_ok=True)
             
             state = {
-                "processed_message_ids": list(self.processed_message_ids)
+                "processed_message_ids": list(self.processed_message_ids),
+                "last_sync": datetime.now().isoformat(),
+                "resident_bridges": self.resident_bridges
             }
             state_path = system_dir / "agent_state.json"
             
@@ -926,6 +948,8 @@ class AgentService:
                 with open(state_path, 'r', encoding='utf-8') as f:
                     state = json.load(f)
                     self.processed_message_ids = set(state.get("processed_message_ids", []))
+                    self.resident_bridges = state.get("resident_bridges", {})
+                    logger.info(f"Hydrated {len(self.processed_message_ids)} de-dup IDs and {len(self.resident_bridges)} resident bridges.")
             
             # 2. Hydrate P2P Inbox
             # Wait for node initialization if needed? Usually called after config?
