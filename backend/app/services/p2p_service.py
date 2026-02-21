@@ -88,24 +88,30 @@ class P2PService:
 
     async def handle_webrtc_message(self, peer_id: str, message: str):
         """Callback: Handle message received via WebRTC Data Channel."""
-        # Wrap as generic message structure
+        import uuid
+        import datetime
+        
+        # Wrap as generic message structure so `agent_service` logs it to history.
         msg_data = {
+            "message_id": str(uuid.uuid4()), # Crucial for deduplication and logging
             "sender_id": peer_id,
             "recipient_id": self.local_node.node_id if self.local_node else "unknown",
-            "message_type": MessageType.DIRECT.value, # Default to DIRECT for now
-            "content": {"text": message}, # Assuming simple text for now, can be parsed if JSON
+            "message_type": MessageType.DIRECT.value, # Default to DIRECT
+            "content": {"text": message},
             "timestamp": datetime.datetime.now().isoformat()
         }
-        # Try parse JSON if message looks like it
+        
+        # Try parse JSON if message looks like standard P2P payload
         try:
             import json
-            import datetime
             content = json.loads(message)
-            # Reconstruct full object if possible
-            if "type" in content:
-                msg_data["content"] = content
+            if "text" in content or "data" in content:
+                 msg_data["content"] = content
+                 if "message_type" in content:
+                      msg_data["message_type"] = content["message_type"]
         except:
             pass
+            
             
         if self.local_node:
              # We call receive_message directly (bypassing message_handler interceptor to avoid loops? 

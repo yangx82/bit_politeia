@@ -1148,7 +1148,9 @@ class AgentService:
         
         try:
             # Try WebRTC First
-            sent_via_webrtc = await p2p_service.webrtc_manager.send_message(target_id, text_to_check)
+            import json
+            webrtc_payload = json.dumps({"text": text_to_check, "message_type": "DIRECT"})
+            sent_via_webrtc = await p2p_service.webrtc_manager.send_message(target_id, webrtc_payload)
             
             if sent_via_webrtc:
                 logger.info(f"[{target_id}] Message sent via WebRTC: {text_to_check[:100]}...")
