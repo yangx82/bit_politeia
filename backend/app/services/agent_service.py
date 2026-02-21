@@ -1095,7 +1095,9 @@ class AgentService:
 
     async def send_p2p_message(self, target_id: str, content: Any) -> dict:
         """Send a P2P message to a specific peer."""
+        print(f"\n[DEBUG] send_p2p_message called for {target_id}, content: {str(content)[:50]}...", flush=True)
         if not p2p_service._initialized:
+             logger.error(f"P2P Message attempt failed: P2PService NOT INITIALIZED (target={target_id})")
              return {"success": False, "error": "P2P not initialized"}
              
         # Normalize content to string for moderation

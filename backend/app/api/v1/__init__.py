@@ -77,6 +77,8 @@ async def send_p2p_message(payload: dict = Body(...)):
     if not target_id or not content:
         raise HTTPException(status_code=400, detail="target_id and content required")
     
+    logger.info(f"API: [POST /p2p/send] target={target_id}, content_len={len(str(content))}")
+    print(f"\n>>> [API-DEBUG] SEND P2P: {target_id} <<<\n", flush=True)
     return await agent_service.send_p2p_message(target_id, content)
 
 @router.get("/archive/chain")
