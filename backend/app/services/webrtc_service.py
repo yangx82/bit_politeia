@@ -5,8 +5,11 @@ from typing import Dict, Any, Optional, Callable
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration, RTCIceServer
 from aiortc.contrib.signaling import object_to_string, object_from_string
 # from .p2p_service import p2p_service  <-- Moved to method level to avoid circular import
-
 logger = logging.getLogger(__name__)
+file_handler = logging.FileHandler('webrtc_prod.log', mode='a', encoding='utf-8')
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(file_handler)
+logger.setLevel(logging.INFO)
 
 class WebRTCManager:
     """
