@@ -43,7 +43,7 @@ class WebRTCManager:
         
         @pc.on("datachannel")
         def on_datachannel(channel):
-            logger.info(f"[{peer_id}] Data channel received: {channel.label}")
+            logger.info(f"[{peer_id}] !!! DATA CHANNEL RECEIVED: {channel.label} (readyState: {channel.readyState}) !!!")
             self.setup_data_channel(peer_id, channel)
 
         @pc.on("connectionstatechange")
@@ -217,7 +217,9 @@ class WebRTCManager:
                     logger.info(f"[{peer_id}] Glare detected. I am IMPOLITE. Ignoring their offer.")
                     return
 
+            logger.info(f"[{peer_id}] Setting remote offer SDP...")
             await pc.setRemoteDescription(offer)
+            logger.info(f"[{peer_id}] Remote offer set successfully. State: {pc.signalingState}")
             
             # Create Answer
             answer = await pc.createAnswer()
@@ -263,7 +265,9 @@ class WebRTCManager:
             else:
                 raise ValueError("Unsupported SDP data format")
 
+            logger.info(f"[{peer_id}] Setting remote answer SDP...")
             await pc.setRemoteDescription(answer)
+            logger.info(f"[{peer_id}] Remote answer set successfully. State: {pc.signalingState}")
             logger.info(f"[{peer_id}] Remote description set (Answer). State is now stable.")
             self.negotiating.discard(peer_id)
         except Exception as e:
