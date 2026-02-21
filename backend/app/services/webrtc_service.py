@@ -107,6 +107,7 @@ class WebRTCManager:
             logger.error(f"[{peer_id}] Failed to add ICE candidate: {e}")
 
     def setup_data_channel(self, peer_id: str, channel):
+        logger.info(f"[{peer_id}] Setting up data channel '{channel.label}' (State: {channel.readyState})")
         self.data_channels[peer_id] = channel
         
         @channel.on("message")
@@ -124,10 +125,14 @@ class WebRTCManager:
                     except RuntimeError:
                          logger.error(f"[{peer_id}] WebRTC Message Error: No event loop available to schedule callback.")
 
-        @channel.on("open")
         def on_open():
             logger.info(f"[{peer_id}] !!! DATA CHANNEL '{channel.label}' IS OPEN !!!")
             print(f"\n[!!!] WebRTC DATA CHANNEL OPEN WITH {peer_id} [!!!]\n", flush=True)
+
+        if channel.readyState == "open":
+            on_open()
+        else:
+            channel.on("open", on_open)
 
     async def initiate_connection(self, peer_id: str):
         """Start a WebRTC connection with a peer."""
