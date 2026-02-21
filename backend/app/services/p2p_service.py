@@ -126,16 +126,16 @@ class P2PService:
         content = message.get("content", {})
         
         if msg_type == MessageType.SDP_OFFER.value:
-            await self.webrtc_manager.handle_offer(sender_id, content.get("sdp"))
+            await self.webrtc_manager.handle_offer(sender_id, content)
             return True
             
         elif msg_type == MessageType.SDP_ANSWER.value:
-            await self.webrtc_manager.handle_answer(sender_id, content.get("sdp"))
+            await self.webrtc_manager.handle_answer(sender_id, content)
             return True
             
         elif msg_type == MessageType.ICE_CANDIDATE.value:
-            # TODO: Handle ICE (WebRTCManager needs update to handle trickle ICE if used)
-            # await self.webrtc_manager.handle_candidate(sender_id, content)
+            # Handle ICE candidate to support NAT traversal
+            await self.webrtc_manager.handle_candidate(sender_id, content)
             return True
             
         return False

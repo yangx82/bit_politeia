@@ -1093,6 +1093,22 @@ class AgentService:
             
 
 
+    async def receive_p2p_message(self, message: P2PMessage) -> dict:
+        """Handle incoming P2P message via HTTP endpoint."""
+        if not p2p_service.local_node:
+            logger.error("Received HTTP P2P message but node not initialized")
+            return {"status": "error", "message": "Node not initialized"}
+            
+        try:
+            # Convert Pydantic model to dict for Node's receive_message
+            msg_dict = message.dict()
+            # Convert datetime string to object if needed, Node handles it.
+            await p2p_service.local_node.receive_message(msg_dict)
+            return {"status": "success", "message_id": message.message_id}
+        except Exception as e:
+            logger.error(f"Error processing incoming direct HTTP P2P message: {e}")
+            return {"status": "error", "message": str(e)}
+
     async def send_p2p_message(self, target_id: str, content: Any) -> dict:
         """Send a P2P message to a specific peer."""
         print(f"\n[DEBUG] send_p2p_message called for {target_id}, content: {str(content)[:50]}...", flush=True)
