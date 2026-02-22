@@ -138,7 +138,7 @@ class AgentService:
         
         # Using string references for robust persistence
         self.scheduler.add_job("app.services.agent_service:trigger_scheduled_task_proxy", 'interval', hours=12, misfire_grace_time=60) 
-        self.scheduler.add_job("app.services.agent_service:trigger_adhoc_task_proxy", 'interval', hours=12, misfire_grace_time=60, jitter=10) 
+        self.scheduler.add_job("app.services.agent_service:trigger_adhoc_task_proxy", 'interval', hours=24, misfire_grace_time=60, jitter=10) 
         self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=10, misfire_grace_time=5) 
         self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', seconds=60) 
         
