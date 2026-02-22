@@ -51,6 +51,12 @@ class LocalSandbox(Sandbox):
             "TMP": self.temp_dir,
         }
         
+        # Windows requires these to start subprocesses reliably
+        if os.name == 'nt':
+            for key in ["COMSPEC", "SystemRoot", "SystemDrive"]:
+                if os.environ.get(key):
+                    safe_env[key] = os.environ.get(key)
+        
         try:
             process = await asyncio.create_subprocess_shell(
                 command,

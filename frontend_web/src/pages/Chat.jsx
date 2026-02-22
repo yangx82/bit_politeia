@@ -110,7 +110,7 @@ const Chat = () => {
         if (!wsUrl.endsWith('/')) {
             wsUrl += '/';
         }
-        wsUrl += 'api/v1/chat/ws';
+        wsUrl += 'ws/gateway';
 
         let ws = null;
         let retryTimeout = null;
