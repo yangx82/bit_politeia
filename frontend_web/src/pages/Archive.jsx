@@ -6,6 +6,7 @@ const Archive = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [selectedBlock, setSelectedBlock] = useState(null);
+    const [generating, setGenerating] = useState(false);
 
     useEffect(() => {
         fetchChain();
@@ -27,14 +28,46 @@ const Archive = () => {
         }
     };
 
+    const handleGenerate = async () => {
+        setGenerating(true);
+        try {
+            await api.post('/api/v1/archive/generate');
+            await fetchChain();
+        } catch (err) {
+            console.error("Failed to generate block:", err);
+            alert("Failed to generate block manually.");
+        } finally {
+            setGenerating(false);
+        }
+    };
+
     return (
         <div className="flex flex-col h-full bg-gray-50 text-gray-900 font-sans">
             {/* Header */}
             <header className="flex items-center justify-between px-6 py-4 bg-white border-b border-gray-200 shadow-sm z-10">
-                <h2 className="text-xl font-semibold text-gray-800 tracking-tight">Local Blockchain Archive</h2>
-                <div className="text-sm text-gray-500">
-                    <span className="font-medium text-emerald-600">{chain.length}</span> Blocks
+                <div className="flex items-center gap-4">
+                    <h2 className="text-xl font-semibold text-gray-800 tracking-tight">Local Blockchain Archive</h2>
+                    <div className="text-sm text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
+                        <span className="font-medium text-emerald-600">{chain.length}</span> Blocks
+                    </div>
                 </div>
+                <button
+                    onClick={handleGenerate}
+                    disabled={generating}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white text-sm font-medium rounded-lg shadow-sm transition-colors flex items-center gap-2"
+                >
+                    {generating ? (
+                        <>
+                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                            Generating...
+                        </>
+                    ) : (
+                        <>
+                            <span>📦</span>
+                            Generate Block Now
+                        </>
+                    )}
+                </button>
             </header>
 
             {/* Content */}

@@ -86,6 +86,12 @@ async def get_archive_chain():
     """Get the local blockchain archive."""
     return await agent_service.get_archive_chain()
 
+@router.post("/archive/generate")
+async def generate_archive_block():
+    """Manually trigger generation of a new archive block."""
+    result = await agent_service.run_archiving()
+    return {"message": result}
+
 @router.get("/status", response_model=AgentStatus)
 async def get_status():
     status = await agent_service.get_status()
