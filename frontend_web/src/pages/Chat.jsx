@@ -28,6 +28,7 @@ const Chat = () => {
     const [loading, setLoading] = useState(true)
 
     const [activeSessionId, setActiveSessionId] = useState(null)
+    const [agentThought, setAgentThought] = useState(null)
 
     const [input, setInput] = useState('')
     const [sending, setSending] = useState(false)
@@ -101,6 +102,65 @@ const Chat = () => {
         const interval = setInterval(fetchData, 3000) // Poll every 3s
         return () => clearInterval(interval)
     }, [])
+
+    // --- WEBSOCKET FOR REALTIME THOUGHTS ---
+    useEffect(() => {
+        const apiUrl = localStorage.getItem('bp_api_url') || 'http://localhost:8000';
+        let wsUrl = apiUrl.replace(/^http/, 'ws');
+        if (!wsUrl.endsWith('/')) {
+            wsUrl += '/';
+        }
+        wsUrl += 'api/v1/chat/ws';
+
+        let ws = null;
+        let retryTimeout = null;
+
+        const connect = () => {
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected for realtime thoughts');
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.channel === 'gateway') {
+                        if (['thought', 'tool_call', 'tool_result'].includes(data.type)) {
+                            let formattedContent = data.content;
+                            if (data.type === 'tool_call' && data.metadata?.tool) {
+                                formattedContent = `[Invoking ${data.metadata.tool}] ${data.content}`;
+                            } else if (data.type === 'tool_result' && data.metadata?.tool) {
+                                formattedContent = `[Result from ${data.metadata.tool}]\n${data.content}`;
+                            }
+                            setAgentThought(formattedContent);
+                            scrollToBottom();
+                        } else if (data.type === 'message') {
+                            // Clear thought when a final message arrives
+                            setAgentThought(null);
+                        }
+                    }
+                } catch (e) {
+                    console.error('WS Parse error', e);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket disconnected, retrying in 3s...');
+                retryTimeout = setTimeout(connect, 3000);
+            };
+        };
+
+        connect();
+
+        return () => {
+            if (retryTimeout) clearTimeout(retryTimeout);
+            if (ws) {
+                ws.onclose = null; // Prevent reconnect on unmount
+                ws.close();
+            }
+        };
+    }, []);
 
     // --- SESSION MANAGEMENT ---
     const sessions = useMemo(() => {
@@ -223,6 +283,7 @@ const Chat = () => {
         setSending(true)
         const content = input
         setInput('')
+        setAgentThought(null)
 
         try {
             if (activeSessionId === 'resident') {
@@ -513,6 +574,25 @@ const Chat = () => {
                                     </div>
                                 )
                             })}
+                            {/* Ephemeral Thought Bubble for Resident Session */}
+                            {activeSessionId === 'resident' && agentThought && (
+                                <div className="flex w-full justify-start mb-4 group transition-opacity duration-300">
+                                    <div className="max-w-[70%] bg-slate-100 text-slate-500 rounded-2xl rounded-tl-none p-4 border border-slate-200 shadow-sm opacity-90 drop-shadow-sm">
+                                        <div className="flex items-center gap-2 mb-2">
+                                            <span className="font-semibold text-xs text-slate-500 tracking-wider uppercase">Agent is thinking</span>
+                                            <div className="flex space-x-1">
+                                                <div className="w-1 h-1 bg-slate-400 rounded-full animate-pulse"></div>
+                                                <div className="w-1 h-1 bg-slate-400 rounded-full animate-pulse" style={{ animationDelay: '150ms' }}></div>
+                                                <div className="w-1 h-1 bg-slate-400 rounded-full animate-pulse" style={{ animationDelay: '300ms' }}></div>
+                                            </div>
+                                        </div>
+                                        <div className="text-[13px] leading-relaxed break-words whitespace-pre-wrap italic font-mono bg-slate-200/50 p-3 rounded border border-slate-300/50 max-h-48 overflow-y-auto">
+                                            {agentThought}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
                             <div ref={bottomRef} className="h-1" />
                         </div>
 
