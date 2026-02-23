@@ -101,7 +101,10 @@ async def websocket_gateway(
         logger.error(f"Gateway Error: {e}")
     finally:
         sender_task.cancel()
-        await sender_task
+        try:
+            await sender_task
+        except asyncio.CancelledError:
+            pass
 
 
 async def stream_outbound_to_socket(websocket: WebSocket):
