@@ -76,10 +76,19 @@ async def lifespan(app: FastAPI):
     if feishu_channel:
         await feishu_channel.stop()
 
+# Ensure log directory exists
+os.makedirs("data/logs", exist_ok=True)
+
 # Configure logging
+file_handler = logging.FileHandler("data/logs/p2p_network.log", encoding="utf-8")
+console_handler = logging.StreamHandler()
+log_format = "%(asctime)s - %(levelname)s:    %(name)s - %(message)s"
+file_handler.setFormatter(logging.Formatter(log_format))
+console_handler.setFormatter(logging.Formatter(log_format))
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(levelname)s:    %(name)s - %(message)s"
+    handlers=[file_handler, console_handler]
 )
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
