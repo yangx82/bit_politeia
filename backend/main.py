@@ -80,15 +80,31 @@ async def lifespan(app: FastAPI):
 os.makedirs("data/logs", exist_ok=True)
 
 # Configure logging
-file_handler = logging.FileHandler("data/logs/p2p_network.log", encoding="utf-8")
 console_handler = logging.StreamHandler()
 log_format = "%(asctime)s - %(levelname)s:    %(name)s - %(message)s"
-file_handler.setFormatter(logging.Formatter(log_format))
 console_handler.setFormatter(logging.Formatter(log_format))
+handlers = [console_handler]
+
+# Feature: Conditional Debug File Logging
+ENABLE_DEBUG_LOG = os.getenv("ENABLE_DEBUG_LOGGING", "false").lower() == "true"
+if ENABLE_DEBUG_LOG:
+    file_handler = logging.FileHandler("data/logs/p2p_network.log", encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter(log_format))
+    
+    # Optional filter based on DEBUG_MODULES
+    debug_modules = os.getenv("DEBUG_MODULES", "")
+    if debug_modules:
+        allowed_modules = [m.strip() for m in debug_modules.split(",")]
+        class ModuleFilter(logging.Filter):
+            def filter(self, record):
+                return any(record.name.startswith(m) for m in allowed_modules)
+        file_handler.addFilter(ModuleFilter())
+        
+    handlers.append(file_handler)
 
 logging.basicConfig(
     level=logging.INFO,
-    handlers=[file_handler, console_handler]
+    handlers=handlers
 )
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
