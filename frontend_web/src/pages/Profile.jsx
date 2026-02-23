@@ -38,7 +38,8 @@ const Profile = () => {
         field: '',
         verboseLlm: false,
         bootstrapVerify: true,
-        p2pReplyDelay: 60
+        p2pReplyDelay: 60,
+        agentLanguage: '中文'
     })
     const [updating, setUpdating] = useState(false)
 
@@ -72,7 +73,8 @@ const Profile = () => {
             bootstrapVerify: userData.bootstrapVerify !== undefined ? userData.bootstrapVerify : true,
             name: userData.name || 'Agent',
             personality: userData.personality || 'Professional',
-            p2pReplyDelay: userData.p2pReplyDelay || 60
+            p2pReplyDelay: userData.p2pReplyDelay || 60,
+            agentLanguage: userData.agentLanguage || '中文'
         })
         fetchStatus()
     }, [])
@@ -92,7 +94,8 @@ const Profile = () => {
                 bootstrap_verify: agentConfig.bootstrapVerify,
                 name: agentConfig.name,
                 personality: agentConfig.personality,
-                p2p_reply_delay: Number(agentConfig.p2pReplyDelay)
+                p2p_reply_delay: Number(agentConfig.p2pReplyDelay),
+                agent_language: agentConfig.agentLanguage
             })
 
             const updatedStatus = response.data
@@ -109,6 +112,7 @@ const Profile = () => {
             localStorage.setItem('bp_name', agentConfig.name)
             localStorage.setItem('bp_personality', agentConfig.personality)
             localStorage.setItem('bp_p2p_reply_delay', agentConfig.p2pReplyDelay)
+            localStorage.setItem('bp_agent_language', agentConfig.agentLanguage)
 
             // Refresh local user state with new balance
             const localUser = Store.getUser()
@@ -221,6 +225,13 @@ const Profile = () => {
                                 onChange={e => setAgentConfig({ ...agentConfig, personality: e.target.value })}
                             />
                         </div>
+
+                        <Input
+                            label="Agent Output Language"
+                            placeholder="e.g. 中文, English"
+                            value={agentConfig.agentLanguage}
+                            onChange={e => setAgentConfig({ ...agentConfig, agentLanguage: e.target.value })}
+                        />
 
                         <Input
                             label="Monitoring Research Field"

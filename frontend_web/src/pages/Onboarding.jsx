@@ -26,7 +26,8 @@ const Onboarding = ({ onComplete }) => {
         model: 'gpt-4o',
         verboseLlm: false,
         bootstrapVerify: true,
-        p2pReplyDelay: 60
+        p2pReplyDelay: 60,
+        agentLanguage: '中文'
     })
     const [loading, setLoading] = useState(false)
 
@@ -54,7 +55,8 @@ const Onboarding = ({ onComplete }) => {
                 bootstrap_verify: formData.bootstrapVerify,
                 name: formData.name,
                 personality: formData.personality,
-                p2p_reply_delay: Number(formData.p2pReplyDelay)
+                p2p_reply_delay: Number(formData.p2pReplyDelay),
+                agent_language: formData.agentLanguage
             })
 
             // 4. Save Preference Locally
@@ -70,7 +72,8 @@ const Onboarding = ({ onComplete }) => {
                 formData.bootstrapVerify,
                 formData.name,
                 formData.personality,
-                formData.p2pReplyDelay
+                formData.p2pReplyDelay,
+                formData.agentLanguage
             )
 
             onComplete()
@@ -124,6 +127,13 @@ const Onboarding = ({ onComplete }) => {
                             onChange={e => setFormData({ ...formData, personality: e.target.value })}
                         />
                     </div>
+
+                    <Input
+                        label="Agent Output Language"
+                        placeholder="e.g. 中文, English, Español"
+                        value={formData.agentLanguage}
+                        onChange={e => setFormData({ ...formData, agentLanguage: e.target.value })}
+                    />
 
                     <div className="h-px bg-slate-100 my-6" />
 

@@ -55,7 +55,8 @@ class ContextBuilder:
         network_identity: str = None,
         source: str = "user",
         name: str = "Agent",
-        personality: str = "Professional and helpful"
+        personality: str = "Professional and helpful",
+        agent_language: str = "中文"
     ) -> List[BaseMessage]:
         """
         Build the complete message list for an LLM call.
@@ -68,6 +69,9 @@ class ContextBuilder:
         # Inject dynamic context (RAG + Network Identity) into System Prompt or as separate SystemMessages
         # To keep it clean, we add them as separate SystemMessages immediately after the main prompt
         messages.append(SystemMessage(content=system_content))
+        
+        # Add Language Instruction overrides
+        messages.append(SystemMessage(content=f"IMPORTANT DIRECTIVE: You MUST generate all responses and communicate exclusively in the following language: {agent_language}. (Unless strictly quoting a source in another language)."))
         
         if network_identity:
             messages.append(SystemMessage(content=f"Your Network Identity:\n{network_identity}"))

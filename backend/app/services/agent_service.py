@@ -120,6 +120,7 @@ class AgentService:
         
         self.name = json_config.get("name") or os.getenv("AGENT_NAME") or "Agent"
         self.personality = json_config.get("personality") or os.getenv("AGENT_PERSONALITY") or "Professional and helpful"
+        self.agent_language = json_config.get("agent_language") or os.getenv("AGENT_LANGUAGE") or "中文"
         try:
             self.p2p_reply_delay = int(json_config.get("p2p_reply_delay") or os.getenv("AGENT_P2P_REPLY_DELAY") or 60)
         except ValueError:
@@ -150,7 +151,7 @@ class AgentService:
         self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
 
 
-    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None, p2p_reply_delay: int = 60):
+    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None, p2p_reply_delay: int = 60, agent_language: str = "中文"):
         try:
              self.scheduler.start()
         except Exception:
@@ -162,6 +163,7 @@ class AgentService:
         self.research_field = research_field
         self.verbose_llm = verbose_llm
         self.p2p_reply_delay = p2p_reply_delay
+        self.agent_language = agent_language
         
         if name:
             self.name = name
@@ -181,7 +183,8 @@ class AgentService:
             "bootstrap_url": bootstrap_url,
             "verbose_llm": verbose_llm,
             "bootstrap_verify": bootstrap_verify,
-            "p2p_reply_delay": self.p2p_reply_delay
+            "p2p_reply_delay": self.p2p_reply_delay,
+            "agent_language": self.agent_language
         })
         
         logger.info(f"Agent Configured: Name={self.name}, Model={model}")
@@ -207,6 +210,7 @@ class AgentService:
                 set_key(env_file, "AGENT_BOOTSTRAP_URL", bootstrap_url)
             set_key(env_file, "AGENT_BOOTSTRAP_VERIFY", "true" if bootstrap_verify else "false")
             set_key(env_file, "AGENT_P2P_REPLY_DELAY", str(self.p2p_reply_delay))
+            set_key(env_file, "AGENT_LANGUAGE", self.agent_language)
             logger.info(f"Settings saved to {env_file}")
         except Exception as e:
             logger.error(f"Failed to save configuration to .env: {e}")
@@ -486,7 +490,8 @@ class AgentService:
                 network_identity=network_identity,
                 source=source,
                 name=self.name,
-                personality=self.personality
+                personality=self.personality,
+                agent_language=self.agent_language
             )
             
             # 2. ReAct Loop

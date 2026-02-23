@@ -23,6 +23,7 @@ class ConfigRequest(BaseModel):
     name: Optional[str] = "Agent"
     personality: Optional[str] = "Professional and helpful"
     p2p_reply_delay: int = 60
+    agent_language: str = "中文"
 
 class AgentStatus(BaseModel):
     is_online: bool
