@@ -734,6 +734,7 @@ class AgentService:
             msg_type = msg.get('message_type')
             
             try:
+                receive_time = datetime.now().timestamp()
                 # 1. De-duplication
                 m_id = msg.get('message_id')
                 if m_id:
@@ -803,8 +804,18 @@ class AgentService:
                 # 3. Run Pipeline to get Response
                 response_text = await self.run_pipeline(msg_obj)
                 
-                # 4. Send Reply back to Peer
-                await self.send_p2p_message(sender_id, response_text)
+                # 4. Send Reply back to Peer (delayed by 5 minutes from receive time)
+                async def delayed_send(target_id, text, rec_time):
+                    import asyncio
+                    elapsed = datetime.now().timestamp() - rec_time
+                    delay = max(0, 300 - elapsed)
+                    if delay > 0:
+                        logger.info(f"Delaying P2P response to {target_id} by {delay:.1f} seconds")
+                        await asyncio.sleep(delay)
+                    await self.send_p2p_message(target_id, text)
+
+                import asyncio
+                asyncio.create_task(delayed_send(sender_id, response_text, receive_time))
                 
                 # 5. Log Agent Response - remove redundant history.append
                 # (handled inside send_p2p_message for consistency)
