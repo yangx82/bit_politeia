@@ -18,15 +18,17 @@ async def configure_agent(request: ConfigRequest):
     rf = getattr(request, 'research_field', 'AI Governance')
     bu = getattr(request, 'bootstrap_url', 'http://localhost:8000')
     await agent_service.configure_agent(
-        request.base_url, 
-        request.api_key, 
-        request.model, 
-        rf,
-        bu,
-        request.verbose_llm,
-        request.bootstrap_verify,
-        request.name,
-        request.personality
+        base_url=request.base_url, 
+        api_key=request.api_key, 
+        model=request.model, 
+        research_field=rf,
+        bootstrap_url=bu,
+        verbose_llm=request.verbose_llm,
+        bootstrap_verify=request.bootstrap_verify,
+        name=request.name,
+        personality=request.personality,
+        p2p_reply_delay=getattr(request, 'p2p_reply_delay', 60),
+        agent_language=getattr(request, 'agent_language', '中文')
     )
     return await get_status()
 
