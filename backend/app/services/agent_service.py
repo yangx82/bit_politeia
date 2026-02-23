@@ -816,21 +816,11 @@ class AgentService:
                 # 3. Run Pipeline to get Response
                 response_text = await self.run_pipeline(msg_obj)
                 
-                # 4. Send Reply back to Peer (delayed by configurable time from receive time)
-                async def delayed_send(target_id, text, rec_time):
-                    import asyncio
-                    elapsed = datetime.now().timestamp() - rec_time
-                    delay_setting = getattr(self, 'p2p_reply_delay', 60)
-                    delay = max(0, delay_setting - elapsed)
-                    if delay > 0:
-                        logger.info(f"Delaying P2P response to {target_id} by {delay:.1f} seconds")
-                        await asyncio.sleep(delay)
-                    await self.send_p2p_message(target_id, text)
-
-                import asyncio
-                asyncio.create_task(delayed_send(sender_id, response_text, receive_time))
+                # 4. Send Reply back to Peer
+                if response_text and str(response_text).strip():
+                    await self.send_p2p_message(sender_id, response_text)
                 
-                # 5. Log Agent Response - remove redundant history.append
+                # 5. Log Agent Response (handled inside send_p2p_message for consistency)
                 # (handled inside send_p2p_message for consistency)
             except Exception as e:
                 logger.error(f"Error processing P2P message from {sender_id}: {e}")
@@ -1194,46 +1184,46 @@ class AgentService:
             
             return {"success": True, "status": "refused", "reason": reason}
              
-        # 2. Send Strategy
-        # 2. Send Strategy
-        logger.info(f"Sending P2P message to {target_id}...")
-        # print(f"[DEBUG-P2P] Attempting to send message to {target_id}")
-        mode = "unknown"
+        # 2. Log to history immediately so the resident sees the decision
+        self.history.append(Message(
+            id=str(uuid.uuid4()),
+            content=f"{text_to_check}",
+            sender="agent",
+            timestamp=datetime.now(),
+            chat_id=target_id
+        ))
+        self.resident_memory.log_interaction("agent", text_to_check, msg_type="chat", chat_id=target_id)
         
-        try:
-            # Try WebRTC First
-            import json
-            webrtc_payload = json.dumps({"text": text_to_check, "message_type": "DIRECT"})
-            sent_via_webrtc = await p2p_service.webrtc_manager.send_message(target_id, webrtc_payload)
-            
-            if sent_via_webrtc:
-                logger.info(f"[{target_id}] Message sent via WebRTC: {text_to_check[:100]}...")
-                mode = "webrtc"
-            else:
-                # Fallback to HTTP/Relay
-                msg_content = {"text": text_to_check}
-                await p2p_service.send_message(target_id, msg_content)
-                logger.info(f"[{target_id}] Message sent via HTTP/Relay: {text_to_check[:100]}...")
-                mode = "http"
+        # 3. Schedule Send Strategy
+        logger.info(f"Queuing P2P message to {target_id}...")
+        
+        async def _delayed_transmit():
+            delay = getattr(self, 'p2p_reply_delay', 60)
+            if delay > 0:
+                logger.info(f"Delaying P2P transmission to {target_id} by {delay} seconds")
+                await asyncio.sleep(delay)
                 
-                # Trigger Upgrade if simple text
-                asyncio.create_task(p2p_service.webrtc_manager.initiate_connection(target_id))
+            try:
+                # Try WebRTC First
+                import json
+                webrtc_payload = json.dumps({"text": text_to_check, "message_type": "DIRECT"})
+                sent_via_webrtc = await p2p_service.webrtc_manager.send_message(target_id, webrtc_payload)
+                
+                if sent_via_webrtc:
+                    logger.info(f"[{target_id}] Message transmitted via WebRTC: {text_to_check[:100]}...")
+                else:
+                    # Fallback to HTTP/Relay
+                    msg_content = {"text": text_to_check}
+                    await p2p_service.send_message(target_id, msg_content)
+                    logger.info(f"[{target_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
+                    # Trigger Upgrade if simple text
+                    asyncio.create_task(p2p_service.webrtc_manager.initiate_connection(target_id))
+            except Exception as e:
+                logger.error(f"Failed to transmit delayed P2P message to {target_id}: {e}")
 
-            # Log to history
-            self.history.append(Message(
-                id=str(uuid.uuid4()),
-                content=f"{text_to_check}",
-                sender="agent",
-                timestamp=datetime.now(),
-                chat_id=target_id
-            ))
-            self.resident_memory.log_interaction("agent", text_to_check, msg_type="chat", chat_id=target_id)
-            
-            return {"success": True, "mode": mode}
-            
-        except Exception as e:
-            logger.error(f"Failed to send P2P message: {e}")
-            return {"success": False, "error": str(e)}
+        asyncio.create_task(_delayed_transmit())
+
+        return {"success": True, "mode": "queued"}
 
     async def get_archive_chain(self) -> list[dict]:
         """Get local blockchain archive."""
