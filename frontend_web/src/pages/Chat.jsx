@@ -290,14 +290,18 @@ const Chat = () => {
                 // Internal Instruction
                 await api.post('/api/v1/chat/instruction', { content })
             } else {
-                // P2P Message
-                await api.post('/api/v1/p2p/send', {
+                // P2P Message (Now converted to suggestion in backend)
+                const res = await api.post('/api/v1/p2p/send', {
                     target_id: activeSessionId,
                     content: { text: content }
                 })
+                // Optional: alert the user it was forwarded, or just let them see the system message
+                console.log("Suggestion forwarded:", res.data);
             }
-            // Refresh immediately
-            fetchData()
+            // Give backend a moment to log the instruction before fetching
+            setTimeout(() => {
+                fetchData()
+            }, 500)
         } catch (err) {
             console.error("Send failed", err)
             alert("Failed to send message")

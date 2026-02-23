@@ -71,15 +71,23 @@ async def get_groups():
 
 @router.post("/p2p/send")
 async def send_p2p_message(payload: dict = Body(...)):
-    """Send a direct P2P message."""
+    """Send a suggestion to the agent to send a P2P message."""
     target_id = payload.get("target_id")
     content = payload.get("content")
     if not target_id or not content:
         raise HTTPException(status_code=400, detail="target_id and content required")
     
-    logger.info(f"API: [POST /p2p/send] target={target_id}, content_len={len(str(content))}")
-    print(f"\n>>> [API-DEBUG] SEND P2P: {target_id} <<<\n", flush=True)
-    return await agent_service.send_p2p_message(target_id, content)
+    text_content = content.get("text") if isinstance(content, dict) else str(content)
+    
+    instruction = (
+        f"【RESIDENT SUGGESTION】 I suggest you send the following message to '{target_id}':\n"
+        f"\"{text_content}\"\n"
+        f"Please evaluate this, and if you agree, use the 'send_p2p_message' tool to send it."
+    )
+    
+    import asyncio
+    asyncio.create_task(agent_service.process_user_instruction(instruction))
+    return {"status": "suggestion_forwarded", "message": "Suggestion forwarded to your agent. Please check the Chat for their decision."}
 
 @router.get("/archive/chain")
 async def get_archive_chain():
