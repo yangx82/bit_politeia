@@ -40,12 +40,13 @@ const Governance = () => {
     const handleCreateProposal = async () => {
         if (!newProposalContent || !selectedGroup) return;
         try {
-            await createProposal(selectedGroup, newProposalContent, duration);
+            const res = await createProposal(selectedGroup, newProposalContent, duration);
             setShowCreateModal(false);
             setNewProposalContent('');
-            setRefreshTrigger(prev => prev + 1);
+            alert(res.message || "Suggestion forwarded to your agent!");
+            // No immediate refresh since agent needs time to think
         } catch (error) {
-            alert("Failed to create proposal: " + error.message);
+            alert("Failed to send suggestion: " + error.message);
         }
     };
 
@@ -56,11 +57,11 @@ const Governance = () => {
             return;
         }
         try {
-            await castVote(electionId, approval, reason || "No reason provided");
-            alert("Vote cast successfully!");
-            setRefreshTrigger(prev => prev + 1);
+            const res = await castVote(electionId, approval, reason || "No reason provided");
+            alert(res.message || "Suggestion forwarded to your agent!");
+            // No immediate refresh since agent needs time to think
         } catch (error) {
-            alert("Failed to cast vote: " + error.message);
+            alert("Failed to send suggestion: " + error.message);
         }
     };
 

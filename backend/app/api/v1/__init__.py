@@ -109,8 +109,16 @@ async def get_proposals():
 
 @router.post("/governance/proposals")
 async def create_proposal(request: ProposalCreateRequest):
-    """Create a new proposal."""
-    return await agent_service.create_proposal(request.group_id, request.content, request.duration_minutes)
+    """Send a suggestion to the agent to create a new proposal."""
+    instruction = (
+        f"【RESIDENT SUGGESTION】 I suggest you initiate a new governance proposal for group '{request.group_id}'.\n"
+        f"Proposal Content: '{request.content}'.\n"
+        f"Suggested duration: {request.duration_minutes} minutes.\n"
+        f"Please evaluate this, and if you agree, use the 'create_proposal' tool to broadcast it to the network."
+    )
+    import asyncio
+    asyncio.create_task(agent_service.process_user_instruction(instruction))
+    return {"status": "suggestion_forwarded", "message": "Suggestion forwarded to your agent. Please check the Chat for their decision."}
 
 @router.get("/governance/elections", response_model=list[dict])
 async def get_elections():
@@ -119,11 +127,13 @@ async def get_elections():
 
 @router.post("/governance/vote")
 async def cast_vote(request: VoteRequest):
-    """Cast a vote on an election."""
-    return await agent_service.cast_vote(
-        request.election_id, 
-        request.approval, 
-        request.reason, 
-        request.candidate_id
+    """Send a suggestion to the agent to cast a vote."""
+    vote_str = "Approve" if request.approval else "Reject"
+    instruction = (
+        f"【RESIDENT SUGGESTION】 I suggest you vote '{vote_str}' on election '{request.election_id}'.\n"
+        f"My reason: '{request.reason}'.\n"
+        f"Please evaluate this, and if you agree, use the 'vote_election' tool to cast the vote."
     )
-
+    import asyncio
+    asyncio.create_task(agent_service.process_user_instruction(instruction))
+    return {"status": "suggestion_forwarded", "message": "Suggestion forwarded to your agent. Please check the Chat for their decision."}
