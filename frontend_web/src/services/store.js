@@ -1,5 +1,5 @@
 export const Store = {
-    saveUser: (email, field, apiKey, model = 'gpt-4o', llmBaseUrl = '', bootstrapUrl = 'http://localhost:8000', verboseLlm = false, bootstrapVerify = true, name = 'Agent', personality = 'Professional') => {
+    saveUser: (email, field, apiKey, model = 'gpt-4o', llmBaseUrl = '', bootstrapUrl = 'http://localhost:8000', verboseLlm = false, bootstrapVerify = true, name = 'Agent', personality = 'Professional', p2pReplyDelay = 60) => {
         localStorage.setItem('bp_email', email)
         localStorage.setItem('bp_field', field)
         if (apiKey) localStorage.setItem('bp_api_key', apiKey)
@@ -10,6 +10,7 @@ export const Store = {
         localStorage.setItem('bp_bootstrap_verify', bootstrapVerify)
         localStorage.setItem('bp_name', name)
         localStorage.setItem('bp_personality', personality)
+        localStorage.setItem('bp_p2p_reply_delay', p2pReplyDelay)
         localStorage.setItem('bp_onboarded', 'true')
     },
 
@@ -24,7 +25,8 @@ export const Store = {
         verboseLlm: localStorage.getItem('bp_verbose_llm') === 'true',
         bootstrapVerify: localStorage.getItem('bp_bootstrap_verify') !== 'false',
         name: localStorage.getItem('bp_name') || 'Agent',
-        personality: localStorage.getItem('bp_personality') || 'Professional'
+        personality: localStorage.getItem('bp_personality') || 'Professional',
+        p2pReplyDelay: parseInt(localStorage.getItem('bp_p2p_reply_delay') || '60', 10)
     }),
 
     clear: () => {

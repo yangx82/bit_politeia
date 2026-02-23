@@ -22,6 +22,7 @@ class ConfigRequest(BaseModel):
     bootstrap_verify: bool = True
     name: Optional[str] = "Agent"
     personality: Optional[str] = "Professional and helpful"
+    p2p_reply_delay: int = 60
 
 class AgentStatus(BaseModel):
     is_online: bool

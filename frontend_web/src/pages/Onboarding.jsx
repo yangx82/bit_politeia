@@ -25,7 +25,8 @@ const Onboarding = ({ onComplete }) => {
         apiKey: '',
         model: 'gpt-4o',
         verboseLlm: false,
-        bootstrapVerify: true
+        bootstrapVerify: true,
+        p2pReplyDelay: 60
     })
     const [loading, setLoading] = useState(false)
 
@@ -52,7 +53,8 @@ const Onboarding = ({ onComplete }) => {
                 verbose_llm: formData.verboseLlm,
                 bootstrap_verify: formData.bootstrapVerify,
                 name: formData.name,
-                personality: formData.personality
+                personality: formData.personality,
+                p2p_reply_delay: Number(formData.p2pReplyDelay)
             })
 
             // 4. Save Preference Locally
@@ -67,7 +69,8 @@ const Onboarding = ({ onComplete }) => {
                 formData.verboseLlm,
                 formData.bootstrapVerify,
                 formData.name,
-                formData.personality
+                formData.personality,
+                formData.p2pReplyDelay
             )
 
             onComplete()
@@ -169,6 +172,16 @@ const Onboarding = ({ onComplete }) => {
                         />
                         <label htmlFor="verboseLlm" className="ml-2 text-sm text-slate-600">Enable Verbose LLM Output</label>
                     </div>
+
+                    <Input
+                        label="P2P Reply Delay (seconds)"
+                        type="number"
+                        min="0"
+                        placeholder="e.g. 60"
+                        value={formData.p2pReplyDelay}
+                        onChange={e => setFormData({ ...formData, p2pReplyDelay: e.target.value })}
+                        title="How many seconds the Agent should wait before broadcasting a P2P reply to the network."
+                    />
 
                     <div className="flex items-center mb-6">
                         <input

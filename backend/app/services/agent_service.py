@@ -120,6 +120,10 @@ class AgentService:
         
         self.name = json_config.get("name") or os.getenv("AGENT_NAME") or "Agent"
         self.personality = json_config.get("personality") or os.getenv("AGENT_PERSONALITY") or "Professional and helpful"
+        try:
+            self.p2p_reply_delay = int(json_config.get("p2p_reply_delay") or os.getenv("AGENT_P2P_REPLY_DELAY") or 60)
+        except ValueError:
+            self.p2p_reply_delay = 60
         
         # Hydrate History and System State from Disk
         self._hydrate_history()
@@ -146,7 +150,7 @@ class AgentService:
         self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
 
 
-    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None):
+    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None, p2p_reply_delay: int = 60):
         try:
              self.scheduler.start()
         except Exception:
@@ -157,6 +161,7 @@ class AgentService:
         self.model = model
         self.research_field = research_field
         self.verbose_llm = verbose_llm
+        self.p2p_reply_delay = p2p_reply_delay
         
         if name:
             self.name = name
@@ -175,7 +180,8 @@ class AgentService:
             "research_field": research_field,
             "bootstrap_url": bootstrap_url,
             "verbose_llm": verbose_llm,
-            "bootstrap_verify": bootstrap_verify
+            "bootstrap_verify": bootstrap_verify,
+            "p2p_reply_delay": self.p2p_reply_delay
         })
         
         logger.info(f"Agent Configured: Name={self.name}, Model={model}")
@@ -200,6 +206,7 @@ class AgentService:
             if bootstrap_url:
                 set_key(env_file, "AGENT_BOOTSTRAP_URL", bootstrap_url)
             set_key(env_file, "AGENT_BOOTSTRAP_VERIFY", "true" if bootstrap_verify else "false")
+            set_key(env_file, "AGENT_P2P_REPLY_DELAY", str(self.p2p_reply_delay))
             logger.info(f"Settings saved to {env_file}")
         except Exception as e:
             logger.error(f"Failed to save configuration to .env: {e}")
@@ -804,11 +811,12 @@ class AgentService:
                 # 3. Run Pipeline to get Response
                 response_text = await self.run_pipeline(msg_obj)
                 
-                # 4. Send Reply back to Peer (delayed by 5 minutes from receive time)
+                # 4. Send Reply back to Peer (delayed by configurable time from receive time)
                 async def delayed_send(target_id, text, rec_time):
                     import asyncio
                     elapsed = datetime.now().timestamp() - rec_time
-                    delay = max(0, 300 - elapsed)
+                    delay_setting = getattr(self, 'p2p_reply_delay', 60)
+                    delay = max(0, delay_setting - elapsed)
                     if delay > 0:
                         logger.info(f"Delaying P2P response to {target_id} by {delay:.1f} seconds")
                         await asyncio.sleep(delay)
