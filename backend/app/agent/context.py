@@ -35,6 +35,13 @@ class ContextBuilder:
         # 1. Core Identity (From prompts.py)
         parts.append(AGENT_SYSTEM_PROMPT)
         
+        # 1.5 Resident-defined Identity
+        identity_block = f"""# Your Resident-Defined Identity
+You are currently identified as: **{name}**.
+Your designated personality and tone: **{personality}**.
+Please strictly adhere to this personality in your interactions."""
+        parts.append(identity_block)
+        
         # 2. Skill Index (Progressive Disclosure)
         skill_index = self.skill_manager.get_skill_index()
         if skill_index:
