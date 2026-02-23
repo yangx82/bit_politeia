@@ -137,13 +137,14 @@ class AgentService:
         # BUT, add_job takes a callable. If we use a string ref "app.services.agent_service:trigger_scheduled_task_proxy", it works even better for persistence!
         
         # Using string references for robust persistence
-        self.scheduler.add_job("app.services.agent_service:trigger_scheduled_task_proxy", 'interval', hours=12, misfire_grace_time=60) 
-        self.scheduler.add_job("app.services.agent_service:trigger_adhoc_task_proxy", 'interval', hours=24, misfire_grace_time=60, jitter=10) 
-        self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=10, misfire_grace_time=5) 
-        self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', seconds=60) 
+        self.scheduler.add_job("app.services.agent_service:trigger_scheduled_task_proxy", 'interval', hours=12, misfire_grace_time=60, id="periodic_brief_job", replace_existing=True) 
+        self.scheduler.add_job("app.services.agent_service:trigger_adhoc_task_proxy", 'interval', hours=24, misfire_grace_time=60, jitter=10, id="periodic_reward_job", replace_existing=True) 
+        self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=10, misfire_grace_time=5, id="network_inbox_job", replace_existing=True) 
+        self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', seconds=60, id="sync_network_job", replace_existing=True) 
         
         # Nightly Consolidation (2:00 AM)
-        self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0)
+        self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
+
 
     async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None):
         try:
@@ -1372,10 +1373,13 @@ class AgentService:
         # Getting all votes from all elections
         all_votes = []
         if self.governance_manager:
-            for election in self.governance_manager.elections.values():
+            for election in self.governance_manager.active_elections.values():
                 for vote in election.votes.values():
-                    if vote.voter_id == self.governance_manager.node_id:
-                        all_votes.append(vote)
+                    # Handle both list of votes and single vote based on ballot structure
+                    # election.votes is a Dict[str, List[Vote]]
+                    for v in vote:
+                        if v.voter_id == self.governance_manager.node_id:
+                            all_votes.append(v)
         
         # Getting transactions (Ledger doesn't expose per-node tx list easily in this mock, using empty for now or implementing)
         # Assuming Ledger has get_transactions_for_node
