@@ -135,7 +135,8 @@ class ArchiveManager:
     def snapshot_local_state(self, 
                              votes: List[Dict], 
                              transactions: List[Dict], 
-                             research: List[Dict]) -> Dict[str, Any]:
+                             research: List[Dict],
+                             messages: List[Dict]) -> Dict[str, Any]:
         """
         Snapshot local state for archiving.
         Generates hashes of activity lists rather than storing full raw data in block (for efficiency).
@@ -144,6 +145,7 @@ class ArchiveManager:
         votes_hash = self._hash_list(votes)
         tx_hash = self._hash_list(transactions)
         research_hash = self._hash_list(research)
+        messages_hash = self._hash_list(messages)
         
         # Summary report
         summary = {
@@ -151,9 +153,11 @@ class ArchiveManager:
             "vote_count": len(votes),
             "tx_count": len(transactions),
             "research_count": len(research),
+            "message_count": len(messages),
             "votes_hash": votes_hash,
             "tx_hash": tx_hash,
             "research_hash": research_hash,
+            "messages_hash": messages_hash,
             "period_end": datetime.now().isoformat()
         }
         return summary
@@ -164,8 +168,10 @@ class ArchiveManager:
         s = json.dumps(items, sort_keys=True, default=str)
         return hashlib.sha256(s.encode()).hexdigest()
 
-    def create_daily_archive(self, votes: List, txs: List, research: List, signature: str = "") -> Block:
-        data = self.snapshot_local_state(votes, txs, research)
+    def create_daily_archive(self, votes: List, txs: List, research: List, messages: List = None, signature: str = "") -> Block:
+        if messages is None:
+            messages = []
+        data = self.snapshot_local_state(votes, txs, research, messages)
         return self.chain.add_block(data, signature)
 
     def generate_report(self) -> Dict[str, Any]:

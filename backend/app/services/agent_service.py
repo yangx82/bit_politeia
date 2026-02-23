@@ -1386,11 +1386,19 @@ class AgentService:
         my_txs = []
         # if self.ledger... 
         
+        # Gathering P2P messages exclusively
+        p2p_messages = []
+        for msg in self.history:
+            # Exclude resident-agent chat and system notifications
+            if msg.chat_id != "resident" and msg.sender != "system":
+                p2p_messages.append(msg.dict())
+
         # Create Block
         block = self.archive_manager.create_daily_archive(
             votes=[str(v) for v in all_votes],  # Serialize
             txs=[str(t) for t in my_txs],
-            research=[]
+            research=[],
+            messages=p2p_messages
         )
         
         return f"Archived Block #{block.index} Hash: {block.hash}"
