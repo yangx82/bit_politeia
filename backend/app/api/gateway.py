@@ -32,8 +32,8 @@ async def websocket_gateway(
         # Allow if no config set yet, or if token matches
         current_key = None
         try:
-            if agent_service.config:
-                current_key = agent_service.config.api_key
+            if hasattr(agent_service, 'api_key'):
+                current_key = agent_service.api_key
         except Exception as e:
             logger.warning(f"Gateway: Failed to access agent config: {e}")
         
