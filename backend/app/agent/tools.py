@@ -65,25 +65,14 @@ async def send_file(recipient_id: str, file_path: str, description: str = "File"
         # Ideally p2p_service.send_message should support 'file' string mapping to MessageType.FILE
         # Since we modified MessageType enum, we can pass "file" or MessageType.FILE.value
         
-        success = await p2p_service.send_message(recipient_id, payload, msg_type="file")
+        from app.services.agent_service import agent_service
+        result = await agent_service.send_p2p_message(recipient_id, payload)
+        success = result.get('success', False)
         
         if success:
-             # Log the action (handled by send_message return usually, but we want implicit history log of action)
-             # sending a big base64 string to history is bad. We logged the text part in payload?
-             # send_message logic in models.py doesn't automatically log to history for the sender?
-             # Wait, previous fix added logging to `send_p2p_message` (the tool helper/service method).
-             # accessing p2p_service directly bypasses `AgentService.send_p2p_message`.
-             # So we should log manually here or use `AgentService` wrapper if available.
-             # Tools access `p2p_service` directly. 
-             # Let's log a summary to resident memory.
-            from app.services.agent_service import agent_service
-            agent_service.resident_memory.log_interaction(
-                "agent", 
-                f"Sent file '{file_name}' to {recipient_id}", 
-                msg_type="chat", 
-                chat_id=recipient_id
-            )
-            return f"Successfully sent file {file_name} to {recipient_id}"
+            # We still keep additional specific logging if needed, 
+            # though send_p2p_message already logs to history.
+            return f"Successfully queued file {file_name} for {recipient_id}"
         else:
             return "Failed to send file (Network Error)"
             
@@ -343,7 +332,8 @@ async def delegate_task(recipient_id: str, task: str, context: Optional[str] = N
             "inputs": inputs
         }
         
-        await p2p_service.send_message(recipient_id, payload)
+        from app.services.agent_service import agent_service
+        await agent_service.send_p2p_message(recipient_id, payload)
         return f"Task delegated to {recipient_id}. Handoff ID: {handoff_id}. Awaiting result..."
         
     except Exception as e:

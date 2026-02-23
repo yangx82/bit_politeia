@@ -1459,12 +1459,12 @@ class AgentService:
                 "handoff_id": handoff_id,
                 "output": result_content
             }
-            await p2p_service.send_message(sender_id, result_payload)
+            await self.send_p2p_message(sender_id, result_payload)
             logger.info(f"Sent Task Result for {handoff_id} back to {sender_id}")
 
         except Exception as e:
             logger.error(f"Error executing handoff {handoff_id}: {e}")
-            await p2p_service.send_message(sender_id, {
+            await self.send_p2p_message(sender_id, {
                 "type": "task_result",
                 "handoff_id": handoff_id,
                 "error": str(e)
