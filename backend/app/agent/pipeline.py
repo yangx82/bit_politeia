@@ -91,7 +91,8 @@ class SenseStage(PipelineStage):
             source=f"{context.input_message.channel} user {context.input_message.sender_id}",
             name=agent.name,
             personality=agent.personality,
-            agent_language=getattr(agent, 'agent_language', '中文')
+            agent_language=getattr(agent, 'agent_language', '中文'),
+            channel=context.input_message.channel
         )
 
 class PlanStage(PipelineStage):

@@ -26,7 +26,7 @@ class ContextBuilder:
         self.memory = memory_store
         self.skill_manager = skill_manager
     
-    def build_system_prompt(self, name: str = "Agent", personality: str = "Professional and helpful") -> str:
+    def build_system_prompt(self, name: str = "Agent", personality: str = "Professional and helpful", channel: str = "resident") -> str:
         """
         Build the complete system prompt from core identity, memory, and skills.
         """
@@ -41,6 +41,21 @@ You are currently identified as: **{name}**.
 Your designated personality and tone: **{personality}**.
 Please strictly adhere to this personality in your interactions."""
         parts.append(identity_block)
+        
+        # 1.55 Role & Channel Awareness
+        if channel == "p2p":
+            role_block = f"""# CURRENT DOMAIN: Autonomous Peer-to-Peer Network
+[URGENT ROLE AWARENESS] You are communicating directly with another machine Node in the network.
+- Do NOT report to your human owner (resident).
+- Do NOT use a subservient reporting tone (e.g. "I have sent the message").
+- Communicate strictly logically, efficiently, and directly to the node on the other side."""
+            parts.append(role_block)
+        elif channel in ["resident", "gateway"]:
+            role_block = f"""# CURRENT DOMAIN: Private User Interface
+[ROLE AWARENESS] You are communicating directly with your human Resident/Owner inside their private UI.
+- Explain your thoughts naturally.
+- Confirm actions you take on their behalf."""
+            parts.append(role_block)
         
         # 1.6 Current Real-World Time
         from datetime import datetime
@@ -71,7 +86,8 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
         source: str = "user",
         name: str = "Agent",
         personality: str = "Professional and helpful",
-        agent_language: str = "中文"
+        agent_language: str = "中文",
+        channel: str = "resident"
     ) -> List[BaseMessage]:
         """
         Build the complete message list for an LLM call.
@@ -79,7 +95,7 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
         messages: List[BaseMessage] = []
 
         # 1. System Prompt
-        system_content = self.build_system_prompt(name=name, personality=personality)
+        system_content = self.build_system_prompt(name=name, personality=personality, channel=channel)
         
         # Inject dynamic context (RAG + Network Identity) into System Prompt or as separate SystemMessages
         # To keep it clean, we add them as separate SystemMessages immediately after the main prompt

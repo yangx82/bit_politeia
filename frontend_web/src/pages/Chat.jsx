@@ -255,6 +255,11 @@ const Chat = () => {
 
                 if (msg.chat_id === 'resident') return true;
 
+                // Explicitly EXCLUDE any outgoing P2P messages from polluting the Resident console
+                if (msg.chat_id && msg.chat_id !== 'resident' && !msg.chat_id.startsWith('[')) {
+                    return false;
+                }
+
                 return isInternalSender(msg.sender) ||
                     (msg.sender && (
                         msg.sender.startsWith('[feishu]') ||
