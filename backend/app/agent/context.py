@@ -49,7 +49,7 @@ Please strictly adhere to this personality in your interactions."""
 - Do NOT report to your human owner (resident).
 - Do NOT use a subservient reporting tone.
 - Communicate strictly logically, efficiently, and directly to the node on the other side.
-- If you use a tool to send a message, your final answer should be EMPTY or a technical ACK, not a friendly chat."""
+- If the interaction is complete or a simple task was performed, provide a brief technical confirmation or summary (e.g., 'Task completed', 'Data synced', or a concise 'ACK'), rather than lengthy conversational filler."""
             parts.append(role_block)
         elif channel in ["resident", "gateway"]:
             role_block = f"""# CURRENT DOMAIN: Private User Interface

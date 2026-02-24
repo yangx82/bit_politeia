@@ -415,6 +415,18 @@ class AgentService:
         # 0. Get or Create Session
         session = session_manager.get_session(msg.sender_id, msg.channel)
         
+        # Refactored P2P Delay: Move delay to cognitive layer (Pipeline Start)
+        if msg.channel == "p2p" and hasattr(self, 'p2p_reply_delay') and self.p2p_reply_delay > 0:
+            logger.info(f"Simulating human response delay: {self.p2p_reply_delay}s for P2P pipeline")
+            # 1. Notify Gateway that we are thinking (so UI shows status)
+            await self.message_bus.publish_outbound(OutboundMessage(
+                channel="gateway",
+                chat_id=msg.sender_id,
+                content=f"... (Simulating {self.p2p_reply_delay}s human-like research delay) ...",
+                type="thought"
+            ))
+            await asyncio.sleep(self.p2p_reply_delay)
+
         context = PipelineContext(session=session, input_message=msg)
         
         stages = [
@@ -453,11 +465,6 @@ class AgentService:
         """Core Agent Logic: Perceive -> Think -> Act (ReAct Loop)"""
         if not self.llm:
             return "LLM not configured."
-            
-        # Refactored P2P Delay: Move delay to cognitive layer
-        if source == "p2p" and hasattr(self, 'p2p_reply_delay') and self.p2p_reply_delay > 0:
-            logger.info(f"Simulating human response delay: {self.p2p_reply_delay}s for P2P source")
-            await asyncio.sleep(self.p2p_reply_delay)
             
         try:
             # 1. Prepare Messages using ContextBuilder
