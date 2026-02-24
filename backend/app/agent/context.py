@@ -42,6 +42,14 @@ Your designated personality and tone: **{personality}**.
 Please strictly adhere to this personality in your interactions."""
         parts.append(identity_block)
         
+        # 1.6 Current Real-World Time
+        from datetime import datetime
+        current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        time_block = f"""# Current System Time
+The current real-world local server time is: **{current_time_str}**.
+Use this absolute time for any date calculations or temporal awareness. Do not rely on time information mentioned casually in user chats unless explicitly requested."""
+        parts.append(time_block)
+        
         # 2. Skill Index (Progressive Disclosure)
         skill_index = self.skill_manager.get_skill_index()
         if skill_index:
