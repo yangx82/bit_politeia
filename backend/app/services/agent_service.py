@@ -87,6 +87,13 @@ class AgentService:
         self.api_key = None
         self.llm = None
         
+        # P2P Reply Delay Default
+        from dotenv import load_dotenv
+        import os
+        load_dotenv()
+        self.p2p_reply_delay = 60 #int(os.getenv("AGENT_P2P_REPLY_DELAY") or 60)
+        p2p_logger.info(f"AgentService [__init__]: P2P Reply Delay initialized to {self.p2p_reply_delay}s from ENV or Default")
+        
     def start_scheduler(self):
         """Start the scheduler if not running."""
         try:
@@ -123,10 +130,10 @@ class AgentService:
         self.personality = json_config.get("personality") or os.getenv("AGENT_PERSONALITY") or "Professional and helpful"
         self.agent_language = json_config.get("agent_language") or os.getenv("AGENT_LANGUAGE") or "中文"
         try:
-            self.p2p_reply_delay = int(json_config.get("p2p_reply_delay") or os.getenv("AGENT_P2P_REPLY_DELAY") or 60)
+            self.p2p_reply_delay = int(json_config.get("p2p_reply_delay") or os.getenv("AGENT_P2P_REPLY_DELAY") or self.p2p_reply_delay)
         except ValueError:
-            self.p2p_reply_delay = 60
-        p2p_logger.info(f"Agent Service Initialized. P2P Reply Delay: {self.p2p_reply_delay}s")
+            pass # Keep default or ENV value
+        p2p_logger.info(f"Agent Service [start_scheduler]: Final P2P Reply Delay: {self.p2p_reply_delay}s")
         
         # Hydrate History and System State from Disk
         self._hydrate_history()
@@ -163,28 +170,29 @@ class AgentService:
         self.api_key = api_key
         self.model = model
         self.research_field = research_field
+        self.bootstrap_url = bootstrap_url
         self.verbose_llm = verbose_llm
-        self.p2p_reply_delay = p2p_reply_delay
-        self.agent_language = agent_language
-        
+        self.bootstrap_verify = bootstrap_verify
         if name:
             self.name = name
             self.status.name = name
         if personality:
             self.personality = personality
             self.status.personality = personality
+        self.p2p_reply_delay = p2p_reply_delay
+        self.agent_language = agent_language       
         
         # Save to JSON
         self._save_config({
             "name": self.name,
             "personality": self.personality,
-            "base_url": base_url,
-            "api_key": api_key,
-            "model": model,
-            "research_field": research_field,
-            "bootstrap_url": bootstrap_url,
-            "verbose_llm": verbose_llm,
-            "bootstrap_verify": bootstrap_verify,
+            "base_url": self.base_url,
+            "api_key": self.api_key,
+            "model": self.model,
+            "research_field": self.research_field,
+            "bootstrap_url": self.bootstrap_url,
+            "verbose_llm": self.verbose_llm,
+            "bootstrap_verify": self.bootstrap_verify,
             "p2p_reply_delay": self.p2p_reply_delay,
             "agent_language": self.agent_language
         })
@@ -204,13 +212,16 @@ class AgentService:
                 if not os.path.exists(env_file):
                      open(env_file, 'a').close()
             
-            set_key(env_file, "AGENT_BASE_URL", base_url)
-            set_key(env_file, "AGENT_API_KEY", api_key)
-            set_key(env_file, "AGENT_MODEL", model)
-            set_key(env_file, "AGENT_RESEARCH_FIELD", research_field)
-            if bootstrap_url:
-                set_key(env_file, "AGENT_BOOTSTRAP_URL", bootstrap_url)
-            set_key(env_file, "AGENT_BOOTSTRAP_VERIFY", "true" if bootstrap_verify else "false")
+            set_key(env_file, "AGENT_BASE_URL", self.base_url)
+            set_key(env_file, "AGENT_API_KEY", self.api_key)
+            set_key(env_file, "AGENT_MODEL", self.model)
+            set_key(env_file, "AGENT_RESEARCH_FIELD", self.research_field)
+            # if bootstrap_url:
+            set_key(env_file, "AGENT_BOOTSTRAP_URL", self.bootstrap_url)
+            set_key(env_file, "AGENT_VERBOSE_LLM", "true" if self.verbose_llm else "false")
+            set_key(env_file, "AGENT_BOOTSTRAP_VERIFY", "true" if self.bootstrap_verify else "false")
+            set_key(env_file, "AGENT_NAME",self.name)
+            set_key(env_file, "AGENT_PERSONALITY",self.personality)
             set_key(env_file, "AGENT_P2P_REPLY_DELAY", str(self.p2p_reply_delay))
             set_key(env_file, "AGENT_LANGUAGE", self.agent_language)
             logger.info(f"Settings saved to {env_file}")
@@ -325,14 +336,35 @@ class AgentService:
     
     def load_config_from_env(self):
         """Load configuration from environment variables."""
+        from dotenv import load_dotenv
+        load_dotenv()
         import os
         base_url = os.getenv("AGENT_BASE_URL")
         api_key = os.getenv("AGENT_API_KEY")
         model = os.getenv("AGENT_MODEL", "gpt-4o")
         research_field = os.getenv("AGENT_RESEARCH_FIELD", "AI Governance")
-        bootstrap_url = os.getenv("AGENT_BOOTSTRAP_URL")
+        bootstrap_url = os.getenv("AGENT_BOOTSTRAP_URL", "https://bootstrap.bitpoliteia.com")
+        verbose_llm = os.getenv("AGENT_VERBOSE_LLM", "true").lower() == "true"
         bootstrap_verify = os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true"
+        name = os.getenv("AGENT_NAME", "Anonym")
+        personality = os.getenv("AGENT_PERSONALITY", "Professional, helfpful, and humorous")
+        p2p_reply_delay = int(os.getenv("AGENT_P2P_REPLY_DELAY", "60"))
+        agent_language = os.getenv("AGENT_LANGUAGE", "中文")
         
+        # from dotenv import get_key, find_dotenv
+        # env_file = find_dotenv()
+        # base_url = get_key(env_file, "AGENT_BASE_URL")
+        # api_key = get_key(env_file, "AGENT_API_KEY")
+        # model = get_key(env_file, "AGENT_MODEL")
+        # research_field = get_key(env_file, "AGENT_RESEARCH_FIELD")
+        # bootstrap_url = get_key(env_file, "AGENT_BOOTSTRAP_URL")
+        # verbose_llm = True if get_key(env_file, "AGENT_VERBOSE_LLM").lower() == "true" else False
+        # bootstrap_verify = True if get_key(env_file, "AGENT_BOOTSTRAP_VERIFY").lower() == "true" else False
+        # name = get_key(env_file, "AGENT_NAME")
+        # personality = get_key(env_file, "AGENT_PERSONALITY")
+        # p2p_reply_delay = int(get_key(env_file, "AGENT_P2P_REPLY_DELAY"))
+        # agent_language = get_key(env_file, "AGENT_LANGUAGE")
+            
         if base_url and api_key:
             return {
                 "base_url": base_url,
@@ -340,7 +372,12 @@ class AgentService:
                 "model": model,
                 "research_field": research_field,
                 "bootstrap_url": bootstrap_url,
-                "bootstrap_verify": bootstrap_verify
+                "verbose_llm": verbose_llm,
+                "bootstrap_verify": bootstrap_verify,
+                "name": name,
+                "personality": personality,
+                "p2p_reply_delay": p2p_reply_delay,
+                "agent_language": agent_language
             }
         return None
 
@@ -418,7 +455,9 @@ class AgentService:
         session = session_manager.get_session(msg.sender_id, msg.channel)
         
         # Refactored P2P Delay: Move delay to cognitive layer (Pipeline Start)
-        delay_val = getattr(self, 'p2p_reply_delay', 0)
+        delay_val = getattr(self, 'p2p_reply_delay', 60)
+        p2p_logger.info(f"DEBUG: run_pipeline START. Channel={msg.channel}, Sender={msg.sender_id}, DelayVal={delay_val} (Type: {type(delay_val)})")
+        
         if msg.channel == "p2p" and delay_val > 0:
             p2p_logger.info(f"Simulating human response delay: {delay_val}s for P2P pipeline (Source: {msg.sender_id})")
             # 1. Notify Gateway that we are thinking (so UI shows status)
@@ -429,8 +468,11 @@ class AgentService:
                 type="thought"
             ))
             await asyncio.sleep(delay_val)
+            p2p_logger.info(f"DEBUG: Delay FINISHED for {msg.sender_id}")
         elif msg.channel == "p2p":
-            p2p_logger.info(f"P2P Delay SKIPPED (Active Delay: {delay_val}s)")
+            p2p_logger.info(f"DEBUG: P2P Delay SKIPPED. Reason: msg.channel={msg.channel}, delay_val={delay_val}")
+        else:
+            p2p_logger.info(f"DEBUG: Pipeline delay NOT APPLICABLE for channel={msg.channel}")
 
         context = PipelineContext(session=session, input_message=msg)
         
@@ -653,6 +695,7 @@ class AgentService:
         self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", chat_id=history_chat_id)
 
         # 2. Pipeline Execution
+        p2p_logger.info(f"DEBUG: process_bus_message calling run_pipeline. Channel={msg.channel}, Sender={msg.sender_id}")
         response_text = await self.run_pipeline(msg)
 
         # 3. Reply via Bus
@@ -831,6 +874,7 @@ class AgentService:
                 self.resident_memory.log_interaction(sender_id, text_content, msg_type="chat", chat_id=effective_chat_id)
                 
                 # 3. Run Pipeline to get Response
+                p2p_logger.info(f"DEBUG: process_network_inbox calling run_pipeline. Channel={msg_obj.channel}, Sender={msg_obj.sender_id}")
                 response_text = await self.run_pipeline(msg_obj)
                 
                 # 4. Send Reply back to Peer
