@@ -202,8 +202,15 @@ const Chat = () => {
                     // It's a Peer
                     displayName = peersMap[sessionId]
                 } else {
-                    // Fallback
-                    displayName = sessionId.substring(0, 8)
+                    // Try case-insensitive lookup for UUIDs
+                    const lowerId = sessionId.toLowerCase()
+                    const peerKey = Object.keys(peersMap).find(k => k.toLowerCase() === lowerId)
+                    if (peerKey) {
+                        displayName = peersMap[peerKey]
+                    } else {
+                        // Fallback to first 8 chars of ID
+                        displayName = sessionId.substring(0, 8)
+                    }
                 }
 
                 sessMap[sessionId] = {
@@ -253,12 +260,13 @@ const Chat = () => {
                 // 3. Bridge Message (ChatID starts with [feishu] etc)
                 // 4. Explicit ChatID == 'resident'
 
-                if (msg.chat_id === 'resident') return true;
-
-                // Explicitly EXCLUDE any outgoing P2P messages from polluting the Resident console
+                // 1. Explicitly EXCLUDE any outgoing P2P messages from polluting the Resident console
+                // This MUST happen before isInternalSender(msg.sender) check because agent is an internal sender.
                 if (msg.chat_id && msg.chat_id !== 'resident' && !msg.chat_id.startsWith('[')) {
                     return false;
                 }
+
+                if (msg.chat_id === 'resident') return true;
 
                 return isInternalSender(msg.sender) ||
                     (msg.sender && (

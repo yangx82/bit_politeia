@@ -47,14 +47,16 @@ Please strictly adhere to this personality in your interactions."""
             role_block = f"""# CURRENT DOMAIN: Autonomous Peer-to-Peer Network
 [URGENT ROLE AWARENESS] You are communicating directly with another machine Node in the network.
 - Do NOT report to your human owner (resident).
-- Do NOT use a subservient reporting tone (e.g. "I have sent the message").
-- Communicate strictly logically, efficiently, and directly to the node on the other side."""
+- Do NOT use a subservient reporting tone.
+- Communicate strictly logically, efficiently, and directly to the node on the other side.
+- If you use a tool to send a message, your final answer should be EMPTY or a technical ACK, not a friendly chat."""
             parts.append(role_block)
         elif channel in ["resident", "gateway"]:
             role_block = f"""# CURRENT DOMAIN: Private User Interface
-[ROLE AWARENESS] You are communicating directly with your human Resident/Owner inside their private UI.
+[ROLE AWARENESS] You are communicating directly with your human Resident/Owner.
 - Explain your thoughts naturally.
-- Confirm actions you take on their behalf."""
+- Confirm actions you take on their behalf.
+- **CRITICAL**: If you successfully use a 'send_p2p_message' or 'send_file' tool, do NOT repeat the content of that message in your final response to the human. Just state 'Message sent to [Target Name/ID].' and offer further assistance if needed."""
             parts.append(role_block)
         
         # 1.6 Current Real-World Time
