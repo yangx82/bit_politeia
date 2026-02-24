@@ -17,6 +17,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # from langchain.llms import OpenAI 
 
 logger = logging.getLogger(__name__)
+p2p_logger = logging.getLogger("p2p_network")
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -125,6 +126,7 @@ class AgentService:
             self.p2p_reply_delay = int(json_config.get("p2p_reply_delay") or os.getenv("AGENT_P2P_REPLY_DELAY") or 60)
         except ValueError:
             self.p2p_reply_delay = 60
+        p2p_logger.info(f"Agent Service Initialized. P2P Reply Delay: {self.p2p_reply_delay}s")
         
         # Hydrate History and System State from Disk
         self._hydrate_history()
@@ -416,16 +418,19 @@ class AgentService:
         session = session_manager.get_session(msg.sender_id, msg.channel)
         
         # Refactored P2P Delay: Move delay to cognitive layer (Pipeline Start)
-        if msg.channel == "p2p" and hasattr(self, 'p2p_reply_delay') and self.p2p_reply_delay > 0:
-            logger.info(f"Simulating human response delay: {self.p2p_reply_delay}s for P2P pipeline")
+        delay_val = getattr(self, 'p2p_reply_delay', 0)
+        if msg.channel == "p2p" and delay_val > 0:
+            p2p_logger.info(f"Simulating human response delay: {delay_val}s for P2P pipeline (Source: {msg.sender_id})")
             # 1. Notify Gateway that we are thinking (so UI shows status)
             await self.message_bus.publish_outbound(OutboundMessage(
                 channel="gateway",
                 chat_id=msg.sender_id,
-                content=f"... (Simulating {self.p2p_reply_delay}s human-like research delay) ...",
+                content=f"... (Simulating {delay_val}s human-like research delay) ...",
                 type="thought"
             ))
-            await asyncio.sleep(self.p2p_reply_delay)
+            await asyncio.sleep(delay_val)
+        elif msg.channel == "p2p":
+            p2p_logger.info(f"P2P Delay SKIPPED (Active Delay: {delay_val}s)")
 
         context = PipelineContext(session=session, input_message=msg)
         

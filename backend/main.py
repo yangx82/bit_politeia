@@ -95,6 +95,7 @@ if ENABLE_DEBUG_LOG:
     debug_modules = os.getenv("DEBUG_MODULES", "")
     if debug_modules:
         allowed_modules = [m.strip() for m in debug_modules.split(",")]
+        allowed_modules.append("p2p_network") # Always allow P2P Network logs to this file
         class ModuleFilter(logging.Filter):
             def filter(self, record):
                 return any(record.name.startswith(m) for m in allowed_modules)

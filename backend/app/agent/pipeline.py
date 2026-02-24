@@ -83,12 +83,14 @@ class SenseStage(PipelineStage):
         context.session.history_slice = lc_history
         
         # Build initial messages for Plan stage
+        source_label = f"Resident (Human User)" if context.input_message.channel == "resident" else f"P2P Peer (Node ID: {context.input_message.sender_id})"
+        
         context.metadata["messages"] = agent.context_builder.build_messages(
             history=lc_history, 
             current_message=agent_query,
             rag_context=rag_context,
             network_identity=network_identity,
-            source=f"{context.input_message.channel} user {context.input_message.sender_id}",
+            source=source_label,
             name=agent.name,
             personality=agent.personality,
             agent_language=getattr(agent, 'agent_language', '中文'),
