@@ -86,7 +86,7 @@ console_handler.setFormatter(logging.Formatter(log_format))
 handlers = [console_handler]
 
 # Feature: Conditional Debug File Logging
-ENABLE_DEBUG_LOG = os.getenv("ENABLE_DEBUG_LOGGING", "false").lower() == "true"
+ENABLE_DEBUG_LOG = os.getenv("ENABLE_DEBUG_LOGGING", "true").lower() == "true"
 if ENABLE_DEBUG_LOG:
     file_handler = logging.FileHandler("data/logs/p2p_network.log", encoding="utf-8")
     file_handler.setFormatter(logging.Formatter(log_format))

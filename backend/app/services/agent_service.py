@@ -151,7 +151,7 @@ class AgentService:
         self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
 
 
-    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None, p2p_reply_delay: int = 60, agent_language: str = "中文"):
+    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None, p2p_reply_delay: int = 5, agent_language: str = "中文"):
         try:
              self.scheduler.start()
         except Exception:
@@ -452,7 +452,12 @@ class AgentService:
     async def _think_and_act(self, context: str, source: str) -> str:
         """Core Agent Logic: Perceive -> Think -> Act (ReAct Loop)"""
         if not self.llm:
-            return f"Agent not configured. Received from {source}: {context[:20]}..."
+            return "LLM not configured."
+            
+        # Refactored P2P Delay: Move delay to cognitive layer
+        if source == "p2p" and hasattr(self, 'p2p_reply_delay') and self.p2p_reply_delay > 0:
+            logger.info(f"Simulating human response delay: {self.p2p_reply_delay}s for P2P source")
+            await asyncio.sleep(self.p2p_reply_delay)
             
         try:
             # 1. Prepare Messages using ContextBuilder
@@ -1154,7 +1159,10 @@ class AgentService:
             return {"status": "error", "message": str(e)}
 
     async def send_p2p_message(self, target_id: str, content: Any) -> dict:
-        """Send a P2P message to a specific peer."""
+        """
+        Send a P2P message to a specific peer.
+        This method handles both WebRTC data channel (fast) and HTTP/Relay (reliable) paths.
+        """
         print(f"\n[DEBUG] send_p2p_message called for {target_id}, content: {str(content)[:50]}...", flush=True)
         if not p2p_service._initialized:
              logger.error(f"P2P Message attempt failed: P2PService NOT INITIALIZED (target={target_id})")
@@ -1184,7 +1192,7 @@ class AgentService:
             
             return {"success": True, "status": "refused", "reason": reason}
              
-        # 2. Log to history immediately so the resident sees the decision
+        # 2. Log Outbound Message (History)
         self.history.append(Message(
             id=str(uuid.uuid4()),
             content=f"{text_to_check}",
@@ -1194,53 +1202,47 @@ class AgentService:
         ))
         self.resident_memory.log_interaction("agent", text_to_check, msg_type="chat", chat_id=target_id)
         
-        # 3. Schedule Send Strategy
-        logger.info(f"Queuing P2P message to {target_id}...")
+        # 3. Direct Transmission
+        logger.info(f"Transmitting P2P message to {target_id}...")
         
-        async def _delayed_transmit():
-            delay = getattr(self, 'p2p_reply_delay', 60)
-            if delay > 0:
-                logger.info(f"Delaying P2P transmission to {target_id} by {delay} seconds")
-                await asyncio.sleep(delay)
-                
-            try:
-                # Differentiate simple string vs complex dictionary payload
-                if isinstance(content, dict):
-                    msg_content = content
-                    # WebRTC expects message_type to be top-level, HTTP handles it inside models.py
-                    webrtc_payload_dict = content.copy()
-                    if "message_type" not in webrtc_payload_dict:
-                        webrtc_payload_dict["message_type"] = "DIRECT"
-                    import json
-                    webrtc_payload = json.dumps(webrtc_payload_dict)
-                else:
-                    msg_content = {"text": text_to_check}
-                    import json
-                    webrtc_payload = json.dumps({"text": text_to_check, "message_type": "DIRECT"})
+        try:
+            # Differentiate simple string vs complex dictionary payload
+            if isinstance(content, dict):
+                msg_content = content
+                webrtc_payload_dict = content.copy()
+                if "message_type" not in webrtc_payload_dict:
+                    webrtc_payload_dict["message_type"] = "DIRECT"
+                import json
+                webrtc_payload = json.dumps(webrtc_payload_dict)
+            else:
+                msg_content = {"text": text_to_check}
+                import json
+                webrtc_payload = json.dumps({"text": text_to_check, "message_type": "DIRECT"})
 
-                # Try WebRTC First
-                sent_via_webrtc = await p2p_service.webrtc_manager.send_message(target_id, webrtc_payload)
+            # Try WebRTC First
+            sent_via_webrtc = await p2p_service.webrtc_manager.send_message(target_id, webrtc_payload)
+            
+            if sent_via_webrtc:
+                logger.info(f"[{target_id}] Message transmitted via WebRTC: {text_to_check[:100]}...")
+                return {"success": True, "mode": "webrtc"}
+            else:
+                # Fallback to HTTP/Relay
+                custom_type = content.get("type", "DIRECT") if isinstance(content, dict) else "DIRECT"
                 
-                if sent_via_webrtc:
-                    logger.info(f"[{target_id}] Message transmitted via WebRTC: {text_to_check[:100]}...")
-                else:
-                    # Fallback to HTTP/Relay
-                    # if original content was a dict with a specific msg_type, we might need to pass it
-                    # p2p_service.send_message accepts msg_type param, defaulting to DIRECT
-                    # However, msg_content holds the full dict payload
-                    custom_type = content.get("type", "DIRECT") if isinstance(content, dict) else "DIRECT"
-                    
-                    await p2p_service.send_message(target_id, msg_content, msg_type="file" if custom_type == "file" else "DIRECT")
+                success = await p2p_service.send_message(target_id, msg_content, msg_type="file" if custom_type == "file" else "DIRECT")
+                if success:
                     logger.info(f"[{target_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
-                    # Trigger Upgrade if simple text
+                    # Trigger Upgrade if simple text and not already connected
                     if not isinstance(content, dict):
                         asyncio.create_task(p2p_service.webrtc_manager.initiate_connection(target_id))
-            except Exception as e:
-                logger.error(f"Failed to transmit delayed P2P message to {target_id}: {e}")
+                    return {"success": True, "mode": "http_relay"}
+                else:
+                    logger.error(f"[{target_id}] FINAL FAILURE: Failed to transmit P2P message via ANY path (target={target_id})")
+                    return {"success": False, "error": "All transport paths failed"}
 
-        asyncio.create_task(_delayed_transmit())
-
-        return {"success": True, "mode": "queued"}
+        except Exception as e:
+            logger.error(f"Failed to transmit P2P message to {target_id}: {e}")
+            return {"success": False, "error": str(e)}
 
     async def get_archive_chain(self) -> list[dict]:
         """Get local blockchain archive."""

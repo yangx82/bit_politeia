@@ -27,8 +27,10 @@ class WebRTCManager:
         self.loop = loop
 
     async def get_or_create_pc(self, peer_id: str) -> RTCPeerConnection:
-        if peer_id in self.pcs:
-            return self.pcs[peer_id]
+        # Use case-insensitive lookup
+        peer_id_lower = peer_id.lower() if hasattr(peer_id, 'lower') else str(peer_id).lower()
+        if peer_id_lower in self.pcs:
+            return self.pcs[peer_id_lower]
         
         # Configure STUN server for NAT traversal
         # This helps resolve the public IP and avoids binding errors on some local interfaces
@@ -42,7 +44,7 @@ class WebRTCManager:
         ])
         
         pc = RTCPeerConnection(configuration=config)
-        self.pcs[peer_id] = pc
+        self.pcs[peer_id.lower()] = pc
         
         @pc.on("datachannel")
         def on_datachannel(channel):
@@ -111,7 +113,7 @@ class WebRTCManager:
 
     def setup_data_channel(self, peer_id: str, channel):
         logger.info(f"[{peer_id}] Setting up data channel '{channel.label}' (State: {channel.readyState})")
-        self.data_channels[peer_id] = channel
+        self.data_channels[peer_id.lower()] = channel
         
         @channel.on("message")
         def on_message(message):
@@ -213,8 +215,11 @@ class WebRTCManager:
                     # aiortc does not support rollback in setLocalDescription.
                     # We must close the current PC and recreate a fresh one to go back to 'stable'.
                     await pc.close()
-                    if peer_id in self.pcs:
-                        del self.pcs[peer_id]
+                    peer_id_lower = peer_id.lower()
+                    if peer_id_lower in self.pcs:
+                        del self.pcs[peer_id_lower]
+                    if peer_id_lower in self.data_channels:
+                        del self.data_channels[peer_id_lower]
                     pc = await self.get_or_create_pc(peer_id)
                 else:
                     logger.info(f"[{peer_id}] Glare detected. I am IMPOLITE. Ignoring their offer.")
@@ -239,15 +244,16 @@ class WebRTCManager:
 
     async def handle_answer(self, peer_id: str, sdp_data: Any):
         """Handle incoming SDP Answer."""
-        if peer_id not in self.pcs:
+        peer_id_lower = peer_id.lower()
+        if peer_id_lower not in self.pcs:
             logger.warning(f"[{peer_id}] Received answer from unknown peer")
             return
             
-        pc = self.pcs[peer_id]
+        pc = self.pcs[peer_id_lower]
         logger.info(f"[{peer_id}] Received SDP Answer. State: signaling={pc.signalingState}, connection={pc.connectionState}")
         
         if pc.signalingState == "stable":
-            logger.info(f"[{peer_id}] Already stable. Ignoring redundant answer.")
+            logger.debug(f"[{peer_id}] Already stable. Ignoring redundant answer.")
             self.negotiating.discard(peer_id)
             return
 
@@ -279,9 +285,10 @@ class WebRTCManager:
 
     async def send_message(self, peer_id: str, message: str) -> bool:
         """Send message via Data Channel if available."""
-        if peer_id in self.data_channels and self.data_channels[peer_id].readyState == "open":
+        peer_id_lower = peer_id.lower()
+        if peer_id_lower in self.data_channels and self.data_channels[peer_id_lower].readyState == "open":
             try:
-                self.data_channels[peer_id].send(message)
+                self.data_channels[peer_id_lower].send(message)
                 return True
             except Exception as e:
                 logger.error(f"Failed to send via DataChannel: {e}")
