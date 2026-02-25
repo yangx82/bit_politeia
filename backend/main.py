@@ -30,6 +30,9 @@ async def lifespan(app: FastAPI):
     # Startup
     global telegram_channel, feishu_channel
     
+    # 0. Start Message Bus dispatcher
+    await message_bus.start()
+    
     # 1. Telegram
     token = os.getenv("TELEGRAM_TOKEN")
     if token:

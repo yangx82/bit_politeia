@@ -28,7 +28,7 @@ const Chat = () => {
     const [loading, setLoading] = useState(true)
 
     const [activeSessionId, setActiveSessionId] = useState(null)
-    const [agentThought, setAgentThought] = useState(null)
+    const [agentLogs, setAgentLogs] = useState([]) // Accumulated thoughts and tool logs
 
     const [input, setInput] = useState('')
     const [sending, setSending] = useState(false)
@@ -125,19 +125,31 @@ const Chat = () => {
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
-                    if (data.channel === 'gateway') {
-                        if (['thought', 'tool_call', 'tool_result'].includes(data.type)) {
-                            let formattedContent = data.content;
-                            if (data.type === 'tool_call' && data.metadata?.tool) {
-                                formattedContent = `[Invoking ${data.metadata.tool}] ${data.content}`;
-                            } else if (data.type === 'tool_result' && data.metadata?.tool) {
-                                formattedContent = `[Result from ${data.metadata.tool}]\n${data.content}`;
+                    // Handle GatewayEvent protocol (type='event', event_type='agent_xxx')
+                    if (data.type === 'event') {
+                        const eventType = data.event_type;
+                        const payload = data.payload || {};
+
+                        if (['agent_thought', 'agent_tool_call', 'agent_tool_result'].includes(eventType)) {
+                            let formattedContent = payload.content;
+                            const msgType = eventType.replace('agent_', '');
+
+                            if (msgType === 'tool_call' && payload.metadata?.tool) {
+                                formattedContent = `[🤔 Invoking ${payload.metadata.tool}] ${payload.content || ''}`;
+                            } else if (msgType === 'tool_result' && payload.metadata?.tool) {
+                                formattedContent = `[✅ Result from ${payload.metadata.tool}]`;
                             }
-                            setAgentThought(formattedContent);
+
+                            setAgentLogs(prev => [...prev, {
+                                id: Date.now() + Math.random(),
+                                type: msgType,
+                                content: formattedContent,
+                                timestamp: new Date()
+                            }]);
                             scrollToBottom();
-                        } else if (data.type === 'message') {
-                            // Clear thought when a final message arrives
-                            setAgentThought(null);
+                        } else if (eventType === 'agent_message') {
+                            // Clear logs when a final message arrives
+                            setAgentLogs([]);
                         }
                     }
                 } catch (e) {
@@ -296,7 +308,7 @@ const Chat = () => {
         setSending(true)
         const content = input
         setInput('')
-        setAgentThought(null)
+        setAgentLogs([])
 
         try {
             if (activeSessionId === 'resident') {
@@ -591,20 +603,30 @@ const Chat = () => {
                                     </div>
                                 )
                             })}
-                            {/* Ephemeral Thought Bubble for Resident Session */}
-                            {activeSessionId === 'resident' && agentThought && (
+                            {/* Ephemeral Thought logs for Resident Session */}
+                            {activeSessionId === 'resident' && agentLogs.length > 0 && (
                                 <div className="flex w-full justify-start mb-4 group transition-opacity duration-300">
-                                    <div className="max-w-[70%] bg-slate-100 text-slate-500 rounded-2xl rounded-tl-none p-4 border border-slate-200 shadow-sm opacity-90 drop-shadow-sm">
-                                        <div className="flex items-center gap-2 mb-2">
-                                            <span className="font-semibold text-xs text-slate-500 tracking-wider uppercase">Agent is thinking</span>
+                                    <div className="max-w-[75%] bg-slate-50 text-slate-600 rounded-2xl rounded-tl-none p-4 border border-slate-200 shadow-sm opacity-95">
+                                        <div className="flex items-center gap-2 mb-3 pb-2 border-b border-slate-100">
+                                            <span className="font-semibold text-xs text-slate-400 tracking-wider uppercase">Agent's Thought & Action Log</span>
                                             <div className="flex space-x-1">
-                                                <div className="w-1 h-1 bg-slate-400 rounded-full animate-pulse"></div>
-                                                <div className="w-1 h-1 bg-slate-400 rounded-full animate-pulse" style={{ animationDelay: '150ms' }}></div>
-                                                <div className="w-1 h-1 bg-slate-400 rounded-full animate-pulse" style={{ animationDelay: '300ms' }}></div>
+                                                <div className="w-1 h-1 bg-slate-300 rounded-full animate-pulse"></div>
+                                                <div className="w-1 h-1 bg-slate-300 rounded-full animate-pulse" style={{ animationDelay: '150ms' }}></div>
+                                                <div className="w-1 h-1 bg-slate-300 rounded-full animate-pulse" style={{ animationDelay: '300ms' }}></div>
                                             </div>
                                         </div>
-                                        <div className="text-[13px] leading-relaxed break-words whitespace-pre-wrap italic font-mono bg-slate-200/50 p-3 rounded border border-slate-300/50 max-h-48 overflow-y-auto">
-                                            {agentThought}
+                                        <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
+                                            {agentLogs.map((log) => (
+                                                <div
+                                                    key={log.id}
+                                                    className={`text-[12px] leading-relaxed p-2 rounded border ${log.type === 'thought'
+                                                        ? 'italic bg-white/50 border-slate-100 text-slate-500'
+                                                        : 'font-mono bg-slate-100 border-slate-200 text-slate-700'
+                                                        }`}
+                                                >
+                                                    {log.content}
+                                                </div>
+                                            ))}
                                         </div>
                                     </div>
                                 </div>

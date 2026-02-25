@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any
+from typing import Any, Dict
 import uuid
 import logging
 from datetime import datetime
@@ -92,7 +92,7 @@ class AgentService:
         import os
         load_dotenv()
         self.p2p_reply_delay = 60 #int(os.getenv("AGENT_P2P_REPLY_DELAY") or 60)
-        p2p_logger.info(f"AgentService [__init__]: P2P Reply Delay initialized to {self.p2p_reply_delay}s from ENV or Default")
+        # p2p_logger.info(f"AgentService [__init__]: P2P Reply Delay initialized to {self.p2p_reply_delay}s from ENV or Default")
         
     def start_scheduler(self):
         """Start the scheduler if not running."""
@@ -133,12 +133,38 @@ class AgentService:
             self.p2p_reply_delay = int(json_config.get("p2p_reply_delay") or os.getenv("AGENT_P2P_REPLY_DELAY") or self.p2p_reply_delay)
         except ValueError:
             pass # Keep default or ENV value
-        p2p_logger.info(f"Agent Service [start_scheduler]: Final P2P Reply Delay: {self.p2p_reply_delay}s")
+        # p2p_logger.info(f"Agent Service [start_scheduler]: Final P2P Reply Delay: {self.p2p_reply_delay}s")
         
         # Hydrate History and System State from Disk
         self._hydrate_history()
         self._hydrate_system_state()
         self.verbose_llm = False # Control flag for console output
+
+    def _get_host_info(self) -> str:
+        """Detect current host environment (OS, Shell, CWD) for the agent."""
+        import platform
+        import os
+        
+        system = platform.system()
+        release = platform.release()
+        machine = platform.machine()
+        cwd = os.getcwd()
+        
+        shell = "cmd.exe" if system == "Windows" else os.getenv("SHELL", "bash/sh")
+        
+        info = "\n### HOST ENVIRONMENT (DYNAMICALLY DETECTED)\n"
+        info += f"- **Operating System**: {system} {release} ({machine})\n"
+        info += f"- **Primary Shell**: {shell}\n"
+        info += f"- **Current Working Directory**: {cwd}\n"
+        
+        if system == "Windows":
+            info += "- **File System**: Windows-style paths (e.g., C:\\Users\\...)\n"
+            info += "- **Constraint**: Use Windows-compatible commands (e.g., `dir` instead of `ls`).\n"
+        else:
+            info += "- **File System**: POSIX-style paths (e.g., /home/user/...)\n"
+            info += "- **Constraint**: Use POSIX-compatible commands (e.g., `ls` instead of `dir`).\n"
+            
+        return info
         
         # Start Scheduler with robustness
         # IMPORTANT: We must use the standalone proxy functions defined at module level 
@@ -317,7 +343,10 @@ class AgentService:
             # INJECT IDENTITY INTO PROMPT
             identity_section = f"\n\nYOUR IDENTITY CONFIGURATION:\nName: {self.name}\nPersonality Guidelines: {self.personality}\n"
             
-            self.current_system_prompt = AGENT_SYSTEM_PROMPT + identity_section + "\n" + skill_index_prompt
+            # INJECT DYNAMIC HOST INFO
+            host_info = self._get_host_info()
+            
+            self.current_system_prompt = AGENT_SYSTEM_PROMPT + identity_section + host_info + "\n" + skill_index_prompt
             
             self.llm = raw_llm.bind_tools(all_tools)
             self.tools_map = {t.name: t for t in all_tools}
@@ -348,7 +377,7 @@ class AgentService:
         bootstrap_verify = os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true"
         name = os.getenv("AGENT_NAME", "Anonym")
         personality = os.getenv("AGENT_PERSONALITY", "Professional, helfpful, and humorous")
-        p2p_reply_delay = int(os.getenv("AGENT_P2P_REPLY_DELAY", "60"))
+        p2p_reply_delay = int(os.getenv("AGENT_P2P_REPLY_DELAY", "360"))
         agent_language = os.getenv("AGENT_LANGUAGE", "中文")
         
         # from dotenv import get_key, find_dotenv
@@ -456,10 +485,10 @@ class AgentService:
         
         # Refactored P2P Delay: Move delay to cognitive layer (Pipeline Start)
         delay_val = getattr(self, 'p2p_reply_delay', 60)
-        p2p_logger.info(f"DEBUG: run_pipeline START. Channel={msg.channel}, Sender={msg.sender_id}, DelayVal={delay_val} (Type: {type(delay_val)})")
+        # p2p_logger.info(f"DEBUG: run_pipeline START. Channel={msg.channel}, Sender={msg.sender_id}, DelayVal={delay_val} (Type: {type(delay_val)})")
         
         if msg.channel == "p2p" and delay_val > 0:
-            p2p_logger.info(f"Simulating human response delay: {delay_val}s for P2P pipeline (Source: {msg.sender_id})")
+            # p2p_logger.info(f"Simulating human response delay: {delay_val}s for P2P pipeline (Source: {msg.sender_id})")
             # 1. Notify Gateway that we are thinking (so UI shows status)
             await self.message_bus.publish_outbound(OutboundMessage(
                 channel="gateway",
@@ -468,11 +497,11 @@ class AgentService:
                 type="thought"
             ))
             await asyncio.sleep(delay_val)
-            p2p_logger.info(f"DEBUG: Delay FINISHED for {msg.sender_id}")
-        elif msg.channel == "p2p":
-            p2p_logger.info(f"DEBUG: P2P Delay SKIPPED. Reason: msg.channel={msg.channel}, delay_val={delay_val}")
-        else:
-            p2p_logger.info(f"DEBUG: Pipeline delay NOT APPLICABLE for channel={msg.channel}")
+        #     p2p_logger.info(f"DEBUG: Delay FINISHED for {msg.sender_id}")
+        # elif msg.channel == "p2p":
+        #     p2p_logger.info(f"DEBUG: P2P Delay SKIPPED. Reason: msg.channel={msg.channel}, delay_val={delay_val}")
+        # else:
+        #     p2p_logger.info(f"DEBUG: Pipeline delay NOT APPLICABLE for channel={msg.channel}")
 
         context = PipelineContext(session=session, input_message=msg)
         
@@ -564,31 +593,29 @@ class AgentService:
                 # Invoke LLM
                 response = await self.llm.ainvoke(messages)
                 
-                if self.verbose_llm:
-                    print(f"\n[AGENTS] Iteration {iteration} Response:\n{response.content}\n" + "-"*50)
+                # Extract Reasoning
+                thought_content = ""
+                if "reasoning_content" in response.additional_kwargs:
+                    thought_content = response.additional_kwargs["reasoning_content"]
+                elif hasattr(response, "reasoning_content") and response.reasoning_content:
+                    thought_content = response.reasoning_content
+                elif response.tool_calls and response.content:
+                    thought_content = response.content
 
-                # Emit Thought to Bus (if content exists and it's not final answer yet or it's mixed)
-                # Simple heuristic: if it has tool calls, the content is likely a "thought" explaining why.
-                # If it has no tool calls, it might be the final answer, OR a chain-of-thought leading to it.
-                # We'll emit everything as a thought first, except the final return.
-                
-                # We need the channel/chat_id context here. 
-                # _think_and_act signature is (context, source). 'source' is a string description.
-                # We need to pass the actual message metadata to _think_and_act to reply to the correct channel.
-                # For now, we'll blast thoughts to 'gateway' channel specifically, or try to infer.
-                # Actually, best to update _think_and_act signature or use a contextvar.
-                # Let's extract channel/chat_id from 'source' string if possible or use a default 'debug' channel.
-                # source format: "{msg.channel} user {msg.sender_id}" or "User (My Resident)"
-                
-                # BETTER: Just emit to 'gateway' channel for thoughts. The Gateway UI listens to 'gateway'.
-                # The user on Telegram doesn't want to see thoughts.
-                
-                if response.content:
-                    logger.info(f"Agent Thought: {str(response.content)[:200]}...")
+                if self.verbose_llm:
+                    logger.info(f"\n[AGENTS] Iteration {iteration} Response Content:\n{response.content}")
+                    if thought_content:
+                        logger.info(f"[AGENTS] Iteration {iteration} Reasoning:\n{thought_content}")
+                    logger.info("-" * 50)
+
+                # Emit Thought to Bus
+                if thought_content or response.content:
+                    display_thought = thought_content or response.content
+                    logger.info(f"Agent Thought: {str(display_thought)[:200]}...")
                     thought_msg = OutboundMessage(
                         channel="gateway",
-                        chat_id="global", # or derived from source
-                        content=str(response.content),
+                        chat_id="global", 
+                        content=str(display_thought),
                         type="thought"
                     )
                     await self.message_bus.publish_outbound(thought_msg)
@@ -695,7 +722,7 @@ class AgentService:
         self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", chat_id=history_chat_id)
 
         # 2. Pipeline Execution
-        p2p_logger.info(f"DEBUG: process_bus_message calling run_pipeline. Channel={msg.channel}, Sender={msg.sender_id}")
+        # p2p_logger.info(f"DEBUG: process_bus_message calling run_pipeline. Channel={msg.channel}, Sender={msg.sender_id}")
         response_text = await self.run_pipeline(msg)
 
         # 3. Reply via Bus
@@ -874,7 +901,7 @@ class AgentService:
                 self.resident_memory.log_interaction(sender_id, text_content, msg_type="chat", chat_id=effective_chat_id)
                 
                 # 3. Run Pipeline to get Response
-                p2p_logger.info(f"DEBUG: process_network_inbox calling run_pipeline. Channel={msg_obj.channel}, Sender={msg_obj.sender_id}")
+                # p2p_logger.info(f"DEBUG: process_network_inbox calling run_pipeline. Channel={msg_obj.channel}, Sender={msg_obj.sender_id}")
                 response_text = await self.run_pipeline(msg_obj)
                 
                 # 4. Send Reply back to Peer

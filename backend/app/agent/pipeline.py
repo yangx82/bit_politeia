@@ -83,7 +83,7 @@ class SenseStage(PipelineStage):
         context.session.history_slice = lc_history
         
         # Build initial messages for Plan stage
-        source_label = f"Resident (Human User)" if context.input_message.channel == "resident" else f"P2P Peer (Node ID: {context.input_message.sender_id})"
+        source_label = f"P2P Peer (Node ID: {context.input_message.sender_id})" if context.input_message.channel == "p2p" else "Resident (Human User)"
         
         context.metadata["messages"] = agent.context_builder.build_messages(
             history=lc_history, 
@@ -107,33 +107,45 @@ class PlanStage(PipelineStage):
             return
 
         messages = context.metadata["messages"]
-        
+        # from ..services.agent_service import p2p_logger
+        # p2p_logger.info(f"\n[PIPELINE] Sense Messages:\n{messages}\n" + "-"*50)
         # One turn of the ReAct loop
         response = await agent.llm.ainvoke(messages)
         context.metadata["last_response"] = response
         
-        if agent.verbose_llm:
-            print(f"\n[PIPELINE] Planning Response:\n{response.content}\n" + "-"*50)
+        # Extract Reasoning/Thought Content
+        thought_content = ""
+        if "reasoning_content" in response.additional_kwargs:
+            thought_content = response.additional_kwargs["reasoning_content"]
+        elif hasattr(response, "reasoning_content") and response.reasoning_content:
+            thought_content = response.reasoning_content
+        elif "thought" in response.additional_kwargs:
+             thought_content = response.additional_kwargs["thought"]
+             
+        # If explicitly missing reasoning field, use content as thought if tool_calls are present
+        if not thought_content and response.tool_calls and response.content:
+            thought_content = response.content
 
         # Emit Thought
-        if response.content:
-            context.thoughts.append(response.content)
+        display_thought = thought_content or response.content
+        
+        # # DEBUG: User suggested to set a default if still empty to verify UI
+        # if not display_thought:
+        #     display_thought = "No thought content (Debug)!"
+
+        if display_thought:
+            context.thoughts.append(str(display_thought))
             context.session.message_count += 1
             
             # CRITICAL FIX: Thoughts are internal monologue.
             # 1. ALWAYS send to "gateway" for UI observability.
-            # 2. NEVER send to P2P channels.
-            # 3. Use input sender_id as chat_id only if it helps UI grouping, 
-            #    BUT ensuring the channel is NOT the P2P transport.
-            
-            # so the UI can show thoughts in the relevant conversation window.
+            logger.info(f"Pipeline: Publishing thought to gateway: {str(display_thought)[:50]}...")
             out_msg = OutboundMessage(
                 channel="gateway", 
                 chat_id=context.input_message.sender_id,
-                content=str(response.content),
+                content=str(display_thought),
                 type="thought"
             )
-            # print(f"[DEBUG-AG] Publishing Thought: {out_msg.content[:50]}... to {out_msg.channel}")
             await agent.message_bus.publish_outbound(out_msg)
 
         if response.tool_calls:

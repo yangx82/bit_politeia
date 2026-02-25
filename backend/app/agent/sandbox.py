@@ -94,8 +94,8 @@ class LocalSandbox(Sandbox):
                 return ("", "Error: Command timed out", 124)
                 
         except Exception as e:
-            logger.error(f"Sandbox execution error: {e}")
-            return ("", f"Sandbox Error: {str(e)}", -1)
+            logger.error(f"Sandbox execution error: {repr(e)}", exc_info=True)
+            return ("", f"Sandbox Error ({type(e).__name__}): {str(e)}", -1)
 
     def cleanup(self):
         try:

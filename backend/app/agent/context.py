@@ -53,7 +53,8 @@ Please strictly adhere to this personality in your interactions."""
 - **CRITICAL**: Do NOT address your resident/user in the final answer. If you need to inform or ask the resident something, you MUST use the `ask_resident` tool first, but keep your final answer strictly for the peer node.
 - If the interaction is complete or a simple task was performed, provide a brief technical confirmation or summary (e.g., 'Task completed', 'Data synced', or a concise 'ACK'), rather than lengthy conversational filler."""
             parts.append(role_block)
-        elif channel in ["resident", "gateway"]:
+        else:
+            # Everything else (resident, feishu, telegram, cli, gateway) is a Resident-facing interface
             role_block = f"""# CURRENT DOMAIN: Private User Interface
 [ROLE AWARENESS] You are communicating directly with your human Resident/Owner.
 - Explain your thoughts naturally.
