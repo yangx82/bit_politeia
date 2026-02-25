@@ -726,13 +726,16 @@ class AgentService:
         response_text = await self.run_pipeline(msg)
 
         # 3. Reply via Bus
-        out_msg = OutboundMessage(
-            channel=msg.channel,
-            chat_id=raw_chat_id, # Must use RAW ID for transport
-            content=response_text,
-            reply_to=msg.metadata.get("message_id")
-        )
-        await self.message_bus.publish_outbound(out_msg)
+        if response_text and "[NO_RESPONSE_NEEDED]" in response_text:
+            logger.info(f"P2P Logic: Conversation terminated by agent via [NO_RESPONSE_NEEDED] for chat_id={raw_chat_id}")
+        else:
+            out_msg = OutboundMessage(
+                channel=msg.channel,
+                chat_id=raw_chat_id, # Must use RAW ID for transport
+                content=response_text,
+                reply_to=msg.metadata.get("message_id")
+            )
+            await self.message_bus.publish_outbound(out_msg)
 
         # 4. Log Reply to history
         agent_msg_obj = Message(

@@ -51,7 +51,8 @@ Please strictly adhere to this personality in your interactions."""
 - Communicate strictly logically, efficiently, and directly to the node on the other side.
 - **FINAL ANSWER DESTINATION**: Your 'Final Answer' in this mode is delivered DIRECTLY to the other machine node via the P2P transport. 
 - **CRITICAL**: Do NOT address your resident/user in the final answer. If you need to inform or ask the resident something, you MUST use the `ask_resident` tool first, but keep your final answer strictly for the peer node.
-- If the interaction is complete or a simple task was performed, provide a brief technical confirmation or summary (e.g., 'Task completed', 'Data synced', or a concise 'ACK'), rather than lengthy conversational filler."""
+- **TERMINATION PROTOCOL**: If the interaction is complete, a task is confirmed, or no further information is needed from the other node (e.g., both parties have acknowledged a plan), you MUST output exactly `[NO_RESPONSE_NEEDED]` as your final answer. This signals the system to stop the loop and avoid redundant 'ACK' messages.
+- If you still need a response, provide a brief technical confirmation (e.g., 'Task completed', 'Data synced')."""
             parts.append(role_block)
         else:
             # Everything else (resident, feishu, telegram, cli, gateway) is a Resident-facing interface

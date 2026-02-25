@@ -34,6 +34,10 @@ const Chat = () => {
     const [sending, setSending] = useState(false)
     const [searchQuery, setSearchQuery] = useState('')
 
+    // New: Date Filtering states (Session-specific)
+    const [startDate, setStartDate] = useState('')
+    const [endDate, setEndDate] = useState('')
+
     // Agent Identity for display
     const [agentName, setAgentName] = useState('Agent')
 
@@ -177,13 +181,13 @@ const Chat = () => {
     // --- SESSION MANAGEMENT ---
     const sessions = useMemo(() => {
         const sessMap = {}
+        const query = searchQuery.toLowerCase().trim()
 
         messages.forEach(msg => {
             // Use chat_id if available (new backend), fallback to sender (old logic)
             let sessionId = msg.chat_id || (isInternalSender(msg.sender) ? 'resident' : msg.sender)
 
             // Merge Bridge messages into resident session
-            // Check both sender (incoming) and chat_id (outgoing/target)
             if (
                 (msg.sender && (
                     msg.sender.startsWith('[feishu]') ||
@@ -202,25 +206,20 @@ const Chat = () => {
             if (sessionId.startsWith('[p2p] ')) sessionId = sessionId.replace('[p2p] ', '')
 
             if (!sessMap[sessionId]) {
-                // Determine Name for Session
                 let displayName = sessionId
 
                 if (sessionId === 'resident') {
                     displayName = `${agentName} (My Agent)`
                 } else if (groupsMap[sessionId]) {
-                    // It's a Group
                     displayName = groupsMap[sessionId]
                 } else if (peersMap[sessionId]) {
-                    // It's a Peer
                     displayName = peersMap[sessionId]
                 } else {
-                    // Try case-insensitive lookup for UUIDs
                     const lowerId = sessionId.toLowerCase()
                     const peerKey = Object.keys(peersMap).find(k => k.toLowerCase() === lowerId)
                     if (peerKey) {
                         displayName = peersMap[peerKey]
                     } else {
-                        // Fallback to first 8 chars of ID
                         displayName = sessionId.substring(0, 8)
                     }
                 }
@@ -231,7 +230,8 @@ const Chat = () => {
                     name: displayName,
                     lastMessage: msg,
                     unread: 0,
-                    avatar: sessionId === 'resident' ? '🤖' : (groupsMap[sessionId] ? '👥' : '👤')
+                    avatar: sessionId === 'resident' ? '🤖' : (groupsMap[sessionId] ? '👥' : '👤'),
+                    allMessagesContent: '' // To store accumulated content for search
                 }
             }
 
@@ -239,12 +239,25 @@ const Chat = () => {
             if (new Date(msg.timestamp) > new Date(sessMap[sessionId].lastMessage.timestamp)) {
                 sessMap[sessionId].lastMessage = msg
             }
+
+            // Accumulate message content for deep search
+            sessMap[sessionId].allMessagesContent += ' ' + (msg.content || '').toLowerCase()
         })
 
-        return Object.values(sessMap).sort((a, b) =>
+        let result = Object.values(sessMap)
+
+        // Apply Global Deep Search
+        if (query) {
+            result = result.filter(s =>
+                s.name.toLowerCase().includes(query) ||
+                s.allMessagesContent.includes(query)
+            )
+        }
+
+        return result.sort((a, b) =>
             new Date(b.lastMessage.timestamp) - new Date(a.lastMessage.timestamp)
         )
-    }, [messages, peersMap, groupsMap, agentName])
+    }, [messages, peersMap, groupsMap, agentName, searchQuery])
 
     // --- NAVIGATION & SELECTION ---
 
@@ -298,6 +311,19 @@ const Chat = () => {
                 return msg.chat_id === activeSessionId
             }
             return msg.sender === activeSessionId
+        }).filter(msg => {
+            // Apply Date Filter if set
+            if (startDate) {
+                const sDate = new Date(startDate)
+                sDate.setHours(0, 0, 0, 0)
+                if (new Date(msg.timestamp) < sDate) return false
+            }
+            if (endDate) {
+                const eDate = new Date(endDate)
+                eDate.setHours(23, 59, 59, 999)
+                if (new Date(msg.timestamp) > eDate) return false
+            }
+            return true
         })
     }
 
@@ -478,7 +504,35 @@ const Chat = () => {
                                     </p>
                                 </div>
                             </div>
-                            <div className="flex gap-2">
+                            <div className="flex items-center gap-2">
+                                {/* Date Range Filter */}
+                                <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 mr-2">
+                                    <input
+                                        type="date"
+                                        className="bg-transparent text-[11px] text-slate-600 focus:outline-none"
+                                        value={startDate}
+                                        onChange={e => setStartDate(e.target.value)}
+                                        title="Start Date"
+                                    />
+                                    <span className="text-slate-300">-</span>
+                                    <input
+                                        type="date"
+                                        className="bg-transparent text-[11px] text-slate-600 focus:outline-none"
+                                        value={endDate}
+                                        onChange={e => setEndDate(e.target.value)}
+                                        title="End Date"
+                                    />
+                                    {(startDate || endDate) && (
+                                        <button
+                                            onClick={() => { setStartDate(''); setEndDate(''); }}
+                                            className="ml-1 text-slate-400 hover:text-red-500 text-[10px]"
+                                            title="Clear Filter"
+                                        >
+                                            ✕
+                                        </button>
+                                    )}
+                                </div>
+
                                 {/* Refresh/History Manual Button */}
                                 <button
                                     onClick={handleManualRefresh}
