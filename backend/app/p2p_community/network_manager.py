@@ -354,6 +354,6 @@ class NetworkManager:
             "total_nodes": len(self.nodes),
             "total_groups": len(self.groups),
             "groups": {g_id: g.to_dict() for g_id, g in self.groups.items()},
-            "nodes": {n_id: {"public_key": n.public_key[:16] + "..."} for n_id, n in self.nodes.items()},
+            "nodes": {n_id: {"name": n.name, "public_key": n.public_key[:16] + "..."} for n_id, n in self.nodes.items()},
             "relay_connected": getattr(self, 'relay_client', None) and self.relay_client.websocket is not None
         }

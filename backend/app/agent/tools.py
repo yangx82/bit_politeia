@@ -86,13 +86,15 @@ async def get_my_status() -> str:
     and the full network topology (groups and nodes).
     """
     # 1. Local Identity
-    my_id = p2p_service.local_node.node_id if p2p_service.local_node else "Not Initialized"
-    my_groups = list(p2p_service.local_node.group_ids) if p2p_service.local_node else []
+    local_node = p2p_service.local_node
+    my_id = local_node.node_id if local_node else "Not Initialized"
+    my_name = local_node.name if local_node else "Unknown"
+    my_groups = list(local_node.group_ids) if local_node else []
     
     # 2. Network Topology
     info = p2p_service.get_network_status()
     
-    status_report = f"--- My Status ---\nNode ID: {my_id}\nGroups: {my_groups}\n\n--- Network Topology ---\n{json.dumps(info, indent=2)}"
+    status_report = f"--- My Status ---\nName: {my_name}\nNode ID: {my_id}\nGroups: {my_groups}\n\n--- Network Topology ---\n{json.dumps(info, indent=2)}"
     return status_report
 
 import json

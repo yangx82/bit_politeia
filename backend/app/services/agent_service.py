@@ -726,9 +726,9 @@ class AgentService:
         response_text = await self.run_pipeline(msg)
 
         # 3. Reply via Bus
-        if response_text and "[NO_RESPONSE_NEEDED]" in response_text:
+        if response_text and "[NO_RESPONSE_NEEDED]" in str(response_text):
             logger.info(f"P2P Logic: Conversation terminated by agent via [NO_RESPONSE_NEEDED] for chat_id={raw_chat_id}")
-        else:
+        elif response_text and str(response_text).strip() and response_text != "No response generated.":
             out_msg = OutboundMessage(
                 channel=msg.channel,
                 chat_id=raw_chat_id, # Must use RAW ID for transport
@@ -908,7 +908,9 @@ class AgentService:
                 response_text = await self.run_pipeline(msg_obj)
                 
                 # 4. Send Reply back to Peer
-                if response_text and str(response_text).strip():
+                if response_text and "[NO_RESPONSE_NEEDED]" in str(response_text):
+                    logger.info(f"P2P Logic: Conversation terminated by agent via [NO_RESPONSE_NEEDED] for peer {sender_id}")
+                elif response_text and str(response_text).strip() and response_text != "No response generated.":
                     await self.send_p2p_message(sender_id, response_text)
                 
                 # 5. Log Agent Response (handled inside send_p2p_message for consistency)
