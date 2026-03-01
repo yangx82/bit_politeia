@@ -58,40 +58,37 @@ class LocalSandbox(Sandbox):
                     safe_env[key] = os.environ.get(key)
         
         try:
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=safe_env
-            )
+            import subprocess
             
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=timeout
-                )
-                exit_code = process.returncode or 0
-                return (
-                    stdout.decode("utf-8", errors="replace"),
-                    stderr.decode("utf-8", errors="replace"),
-                    exit_code
-                )
-            except asyncio.TimeoutError:
-                # Robust kill for Windows (kills process tree)
+            def run_sync() -> Tuple[str, str, int]:
+                # On Windows, we need to hide the console window when creating subprocess
+                startupinfo = None
                 if os.name == 'nt':
-                    try:
-                        import subprocess
-                        subprocess.run(['taskkill', '/F', '/T', '/PID', str(process.pid)], 
-                                     capture_output=True, check=False)
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        process.kill()
-                    except Exception:
-                        pass
-                return ("", "Error: Command timed out", 124)
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                
+                try:
+                    result = subprocess.run(
+                        command,
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        cwd=cwd,
+                        env=safe_env,
+                        text=True,
+                        timeout=timeout,
+                        startupinfo=startupinfo,
+                        errors="replace"
+                    )
+                    return result.stdout, result.stderr, result.returncode
+                except subprocess.TimeoutExpired as e:
+                    stdout_str = e.stdout.decode('utf-8', errors='replace') if isinstance(e.stdout, bytes) else e.stdout or ""
+                    stderr_str = e.stderr.decode('utf-8', errors='replace') if isinstance(e.stderr, bytes) else e.stderr or ""
+                    return stdout_str, f"{stderr_str}\nError: Command timed out", 124
+
+            # Run the synchronous subprocess call in a background thread
+            stdout, stderr, exit_code = await asyncio.to_thread(run_sync)
+            return stdout, stderr, exit_code
                 
         except Exception as e:
             logger.error(f"Sandbox execution error: {repr(e)}", exc_info=True)
