@@ -89,6 +89,7 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
         current_message: str,
         rag_context: str = None,
         network_identity: str = None,
+        recent_global_events: str = None,
         source: str = "user",
         name: str = "Agent",
         personality: str = "Professional and helpful",
@@ -112,6 +113,9 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
         
         if network_identity:
             messages.append(SystemMessage(content=f"Your Network Identity:\n{network_identity}"))
+            
+        if recent_global_events:
+            messages.append(SystemMessage(content=f"Recent Global Events (Background Context outside this session):\n{recent_global_events}"))
             
         if rag_context:
             messages.append(SystemMessage(content=f"Relevant Knowledge Context:\n{rag_context}"))

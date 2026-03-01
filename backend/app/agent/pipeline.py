@@ -67,21 +67,37 @@ class SenseStage(PipelineStage):
         network_identity = f"- Node ID: {my_id}\n- My Groups: {my_groups}\n- My Monitoring Research Focus: {agent.research_field}"
         context.metadata["network_identity"] = network_identity
 
-        # 3. Build History Slice
+        # 3. Build Hybrid History Splice (Session Core + Global Periphery)
         effective_history = agent.history[:]
         while effective_history and effective_history[-1].content == agent_query:
             effective_history.pop()
+            
+        # a) Extract Session-Specific History (The Core Dialogue)
+        session_history = [msg for msg in effective_history if msg.chat_id == context.input_message.chat_id]
+        recent_session_history = session_history[-8:] if session_history else []
         
-        recent_history = effective_history[-10:] if effective_history else []
         lc_history = []
-        for msg in recent_history:
+        for msg in recent_session_history:
             if msg.sender == "agent":
                 lc_history.append(AIMessage(content=msg.content))
             else:
                 lc_history.append(HumanMessage(content=f"[{msg.sender}] {msg.content}"))
-        
+                
         context.session.history_slice = lc_history
         
+        # b) Extract Global Recent Events (The Periphery / Awareness)
+        # Get the most recent events that DO NOT belong to this session
+        global_events_raw = [msg for msg in effective_history if msg.chat_id != context.input_message.chat_id][-5:]
+        recent_global_events = ""
+        if global_events_raw:
+            events_formatted = []
+            for msg in global_events_raw:
+                sender_label = "Me" if msg.sender == "agent" else msg.sender
+                timestamp_str = msg.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                # Format: [2024-xx-xx] Me in chat_xyz: Hello
+                events_formatted.append(f"[{timestamp_str}] {sender_label} in {msg.chat_id}: {msg.content}")
+            recent_global_events = "\n".join(events_formatted)
+
         # Build initial messages for Plan stage
         source_label = f"P2P Peer (Node ID: {context.input_message.sender_id})" if context.input_message.channel == "p2p" else "Resident (Human User)"
         
@@ -90,6 +106,7 @@ class SenseStage(PipelineStage):
             current_message=agent_query,
             rag_context=rag_context,
             network_identity=network_identity,
+            recent_global_events=recent_global_events,
             source=source_label,
             name=agent.name,
             personality=agent.personality,
