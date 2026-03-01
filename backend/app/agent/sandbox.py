@@ -36,7 +36,7 @@ class LocalSandbox(Sandbox):
         self.temp_dir = tempfile.mkdtemp(prefix="agent_sandbox_", dir=base_dir)
         logger.info(f"Initialized LocalSandbox at {self.temp_dir}")
         
-    async def execute(self, command: str, working_dir: Optional[str] = None, timeout: int = 60) -> Tuple[str, str, int]:
+    def execute_sync(self, command: str, working_dir: Optional[str] = None, timeout: int = 60) -> Tuple[str, str, int]:
         cwd = working_dir or self.temp_dir
         
         # Ensure working_dir is within temp_dir or base_dir (security check)
@@ -59,40 +59,40 @@ class LocalSandbox(Sandbox):
         
         try:
             import subprocess
+            from concurrent.futures import TimeoutError as FuturesTimeoutError
             
-            def run_sync() -> Tuple[str, str, int]:
-                # On Windows, we need to hide the console window when creating subprocess
-                startupinfo = None
-                if os.name == 'nt':
-                    startupinfo = subprocess.STARTUPINFO()
-                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                
-                try:
-                    result = subprocess.run(
-                        command,
-                        shell=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        cwd=cwd,
-                        env=safe_env,
-                        text=True,
-                        timeout=timeout,
-                        startupinfo=startupinfo,
-                        errors="replace"
-                    )
-                    return result.stdout, result.stderr, result.returncode
-                except subprocess.TimeoutExpired as e:
-                    stdout_str = e.stdout.decode('utf-8', errors='replace') if isinstance(e.stdout, bytes) else e.stdout or ""
-                    stderr_str = e.stderr.decode('utf-8', errors='replace') if isinstance(e.stderr, bytes) else e.stderr or ""
-                    return stdout_str, f"{stderr_str}\nError: Command timed out", 124
-
-            # Run the synchronous subprocess call in a background thread
-            stdout, stderr, exit_code = await asyncio.to_thread(run_sync)
-            return stdout, stderr, exit_code
+            # On Windows, we need to hide the console window when creating subprocess
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+            try:
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=cwd,
+                    env=safe_env,
+                    text=True,
+                    timeout=timeout,
+                    startupinfo=startupinfo,
+                    errors="replace"
+                )
+                return result.stdout, result.stderr, result.returncode
+            except subprocess.TimeoutExpired as e:
+                stdout_str = e.stdout.decode('utf-8', errors='replace') if isinstance(e.stdout, bytes) else e.stdout or ""
+                stderr_str = e.stderr.decode('utf-8', errors='replace') if isinstance(e.stderr, bytes) else e.stderr or ""
+                return stdout_str, f"{stderr_str}\nError: Command timed out", 124
                 
         except Exception as e:
             logger.error(f"Sandbox execution error: {repr(e)}", exc_info=True)
             return ("", f"Sandbox Error ({type(e).__name__}): {str(e)}", -1)
+
+    async def execute(self, command: str, working_dir: Optional[str] = None, timeout: int = 60) -> Tuple[str, str, int]:
+        # Keep async interface for backwards compatibility if needed elsewhere
+        return await asyncio.to_thread(self.execute_sync, command, working_dir, timeout)
 
     def cleanup(self):
         try:
