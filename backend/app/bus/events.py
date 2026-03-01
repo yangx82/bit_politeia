@@ -13,7 +13,7 @@ class InboundMessage(BaseModel):
     chat_id: str  # Chat/channel identifier
     content: str  # Message text
     timestamp: datetime = Field(default_factory=datetime.now)
-    media: List[str] = Field(default_factory=list)  # Media URLs
+    media: List[Dict[str, Any]] = Field(default_factory=list)  # Media metadata e.g. {"type": "file", "path": "/path"}
     metadata: Dict[str, Any] = Field(default_factory=dict)  # Channel-specific data
     
     @property
@@ -30,5 +30,5 @@ class OutboundMessage(BaseModel):
     content: str
     type: str = "message"  # 'message', 'thought', 'tool_call', 'tool_result'
     reply_to: Optional[str] = None
-    media: List[str] = Field(default_factory=list)
+    media: List[Dict[str, Any]] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)

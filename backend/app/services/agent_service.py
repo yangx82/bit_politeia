@@ -520,7 +520,7 @@ class AgentService:
         await stages[0].run(context, self)
         
         # 2. Main Loop: Plan & Execute (ReAct)
-        max_iterations = 20
+        max_iterations = 50
         iteration = 0
         while not context.stop_execution and iteration < max_iterations:
             iteration += 1
@@ -747,7 +747,7 @@ class AgentService:
         )
         self.history.append(agent_msg_obj)
         self.resident_memory.log_interaction("agent", response_text, msg_type="chat", chat_id=history_chat_id)
-    async def notify_resident(self, content: str, type: str = "agent_message", chat_id: str = "resident", broadcast: bool = True):
+    async def notify_resident(self, content: str, type: str = "agent_message", chat_id: str = "resident", broadcast: bool = True, media: list = None):
         """
         Notify the resident. 
         If broadcast=True, sends to all known bridges (Feishu, etc.).
@@ -781,7 +781,8 @@ class AgentService:
                     channel=channel,
                     chat_id=cid,
                     content=content,
-                    type=type
+                    type=type,
+                    media=media or []
                 )
                 await self.message_bus.publish_outbound(out_msg)
                 logger.debug(f"Proactive notification sent via {channel}")

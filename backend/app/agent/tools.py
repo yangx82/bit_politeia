@@ -367,9 +367,45 @@ async def ask_resident(question: str) -> str:
     except Exception as e:
         return f"Error asking resident: {str(e)}"
 
+@tool
+async def send_file_to_resident(file_path: str, description: str = "") -> str:
+    """
+    Send a local file (document, image, etc.) to the local resident (human user) via their connected channels (Feishu/Telegram/Web).
+    Args:
+        file_path: The absolute or relative path to the local file you want to send.
+        description: Optional text message to accompany the file.
+    """
+    try:
+        import os
+        from app.services.agent_service import agent_service
+        
+        if not os.path.exists(file_path):
+            return f"Error: File not found at {file_path}"
+            
+        file_name = os.path.basename(file_path)
+        ext = file_name.lower().split('.')[-1]
+        
+        # Simple type inference
+        file_type = "image" if ext in ["jpg", "jpeg", "png", "gif"] else "file"
+        
+        media_payload = [{
+            "type": file_type,
+            "path": os.path.abspath(file_path),
+            "name": file_name
+        }]
+        
+        msg_text = description if description else f"Here is the file: {file_name}"
+        
+        # Pass media as kwargs to notify_resident
+        await agent_service.notify_resident(content=msg_text, media=media_payload)
+        
+        return f"Successfully sent {file_name} to the resident."
+    except Exception as e:
+        return f"Error sending file to resident: {str(e)}"
+
 # List of Tools to bind to the agent
 AGENT_TOOLS = [
-    send_p2p_message, send_file, ask_resident, get_my_status, read_community_rules, update_system_parameter, 
+    send_p2p_message, send_file, ask_resident, send_file_to_resident, get_my_status, read_community_rules, update_system_parameter, 
     propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, 
     pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, 
     read_skill_guide, execute_shell_command,
