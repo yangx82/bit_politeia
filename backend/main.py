@@ -8,6 +8,9 @@ import os
 import asyncio
 from contextlib import asynccontextmanager
 
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 # Critical for China: Set HuggingFace Mirror before any imports that might use it
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
