@@ -403,9 +403,43 @@ async def send_file_to_resident(file_path: str, description: str = "") -> str:
     except Exception as e:
         return f"Error sending file to resident: {str(e)}"
 
+@tool
+async def update_core_memory(content: str) -> str:
+    """
+    Update or append to the agent's core long-term memory (MEMORY.md).
+    Use this to save critical rules, user preferences, or "thought stamps" that you must never forget.
+    This memory is loaded into your system prompt on every interaction.
+    """
+    try:
+        from app.services.memory_store import memory_store
+        # Read existing
+        existing = memory_store.read_long_term()
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+            
+        new_content = existing + content if existing else content
+        memory_store.write_long_term(new_content)
+        return "Successfully appended to core long-term memory."
+    except Exception as e:
+        return f"Error updating core memory: {str(e)}"
+
+@tool
+async def append_daily_note(content: str) -> str:
+    """
+    Append a note or summary to today's daily diary (YYYY-MM-DD.md).
+    Use this to journal important events, findings, or daily progress.
+    """
+    try:
+        from app.services.memory_store import memory_store
+        memory_store.append_today(content)
+        return "Successfully appended to today's daily note."
+    except Exception as e:
+        return f"Error appending to daily note: {str(e)}"
+
 # List of Tools to bind to the agent
 AGENT_TOOLS = [
     send_p2p_message, send_file, ask_resident, send_file_to_resident, get_my_status, read_community_rules, update_system_parameter, 
+    update_core_memory, append_daily_note,
     propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, 
     pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, 
     read_skill_guide, execute_shell_command,
