@@ -111,7 +111,8 @@ class SenseStage(PipelineStage):
             name=agent.name,
             personality=agent.personality,
             agent_language=getattr(agent, 'agent_language', '中文'),
-            channel=context.input_message.channel
+            channel=context.input_message.channel,
+            host_info=agent._get_host_info()
         )
 
 class PlanStage(PipelineStage):

@@ -26,7 +26,7 @@ class ContextBuilder:
         self.memory = memory_store
         self.skill_manager = skill_manager
     
-    def build_system_prompt(self, name: str = "Agent", personality: str = "Professional and helpful", channel: str = "resident") -> str:
+    def build_system_prompt(self, name: str = "Agent", personality: str = "Professional and helpful", channel: str = "resident", host_info: str = None) -> str:
         """
         Build the complete system prompt from core identity, memory, and skills.
         """
@@ -70,6 +70,10 @@ Please strictly adhere to this personality in your interactions."""
 The current real-world local server time is: **{current_time_str}**.
 Use this absolute time for any date calculations or temporal awareness. Do not rely on time information mentioned casually in user chats unless explicitly requested."""
         parts.append(time_block)
+
+        # 1.7 Host Information
+        if host_info:
+            parts.append(host_info)
         
         # 2. Skill Index (Progressive Disclosure)
         skill_index = self.skill_manager.get_skill_index()
@@ -94,7 +98,8 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
         name: str = "Agent",
         personality: str = "Professional and helpful",
         agent_language: str = "中文",
-        channel: str = "resident"
+        channel: str = "resident",
+        host_info: str = None
     ) -> List[BaseMessage]:
         """
         Build the complete message list for an LLM call.
@@ -102,7 +107,7 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
         messages: List[BaseMessage] = []
 
         # 1. System Prompt
-        system_content = self.build_system_prompt(name=name, personality=personality, channel=channel)
+        system_content = self.build_system_prompt(name=name, personality=personality, channel=channel, host_info=host_info)
         
         # Inject dynamic context (RAG + Network Identity) into System Prompt or as separate SystemMessages
         # To keep it clean, we add them as separate SystemMessages immediately after the main prompt
