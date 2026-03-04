@@ -129,6 +129,7 @@ class AgentService:
         self.name = json_config.get("name") or os.getenv("AGENT_NAME") or "Agent"
         self.personality = json_config.get("personality") or os.getenv("AGENT_PERSONALITY") or "Professional and helpful"
         self.agent_language = json_config.get("agent_language") or os.getenv("AGENT_LANGUAGE") or "中文"
+        self.ralph_wiggum_mode = json_config.get("ralph_wiggum_mode", False)
         try:
             self.p2p_reply_delay = int(json_config.get("p2p_reply_delay") or os.getenv("AGENT_P2P_REPLY_DELAY") or self.p2p_reply_delay)
         except ValueError:
@@ -186,7 +187,7 @@ class AgentService:
         self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
 
 
-    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None, p2p_reply_delay: int = 5, agent_language: str = "中文"):
+    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None, p2p_reply_delay: int = 5, agent_language: str = "中文", ralph_wiggum_mode: bool = False):
         try:
              self.scheduler.start()
         except Exception:
@@ -206,7 +207,8 @@ class AgentService:
             self.personality = personality
             self.status.personality = personality
         self.p2p_reply_delay = p2p_reply_delay
-        self.agent_language = agent_language       
+        self.agent_language = agent_language
+        self.ralph_wiggum_mode = ralph_wiggum_mode
         
         # Save to JSON
         self._save_config({
@@ -220,7 +222,8 @@ class AgentService:
             "verbose_llm": self.verbose_llm,
             "bootstrap_verify": self.bootstrap_verify,
             "p2p_reply_delay": self.p2p_reply_delay,
-            "agent_language": self.agent_language
+            "agent_language": self.agent_language,
+            "ralph_wiggum_mode": self.ralph_wiggum_mode
         })
         
         logger.info(f"Agent Configured: Name={self.name}, Model={model}")
@@ -250,6 +253,7 @@ class AgentService:
             set_key(env_file, "AGENT_PERSONALITY",self.personality)
             set_key(env_file, "AGENT_P2P_REPLY_DELAY", str(self.p2p_reply_delay))
             set_key(env_file, "AGENT_LANGUAGE", self.agent_language)
+            set_key(env_file, "AGENT_RALPH_WIGGUM_MODE", "true" if self.ralph_wiggum_mode else "false")
             logger.info(f"Settings saved to {env_file}")
         except Exception as e:
             logger.error(f"Failed to save configuration to .env: {e}")
@@ -379,20 +383,15 @@ class AgentService:
         personality = os.getenv("AGENT_PERSONALITY", "Professional, helfpful, and humorous")
         p2p_reply_delay = int(os.getenv("AGENT_P2P_REPLY_DELAY", "360"))
         agent_language = os.getenv("AGENT_LANGUAGE", "中文")
+        ralph_wiggum_mode = os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true"
         
-        # from dotenv import get_key, find_dotenv
-        # env_file = find_dotenv()
-        # base_url = get_key(env_file, "AGENT_BASE_URL")
-        # api_key = get_key(env_file, "AGENT_API_KEY")
-        # model = get_key(env_file, "AGENT_MODEL")
-        # research_field = get_key(env_file, "AGENT_RESEARCH_FIELD")
-        # bootstrap_url = get_key(env_file, "AGENT_BOOTSTRAP_URL")
-        # verbose_llm = True if get_key(env_file, "AGENT_VERBOSE_LLM").lower() == "true" else False
-        # bootstrap_verify = True if get_key(env_file, "AGENT_BOOTSTRAP_VERIFY").lower() == "true" else False
-        # name = get_key(env_file, "AGENT_NAME")
-        # personality = get_key(env_file, "AGENT_PERSONALITY")
-        # p2p_reply_delay = int(get_key(env_file, "AGENT_P2P_REPLY_DELAY"))
-        # agent_language = get_key(env_file, "AGENT_LANGUAGE")
+        # Load identity from JSON config explicitly to override ENV
+        json_config = self._load_config()
+        name = json_config.get("name", name)
+        personality = json_config.get("personality", personality)
+        p2p_reply_delay = json_config.get("p2p_reply_delay", p2p_reply_delay)
+        agent_language = json_config.get("agent_language", agent_language)
+        ralph_wiggum_mode = json_config.get("ralph_wiggum_mode", ralph_wiggum_mode)
             
         if base_url and api_key:
             return {
@@ -406,7 +405,8 @@ class AgentService:
                 "name": name,
                 "personality": personality,
                 "p2p_reply_delay": p2p_reply_delay,
-                "agent_language": agent_language
+                "agent_language": agent_language,
+                "ralph_wiggum_mode": ralph_wiggum_mode
             }
         return None
 
@@ -475,7 +475,7 @@ class AgentService:
         return 0.0
 
 
-    async def run_pipeline(self, msg: InboundMessage) -> str:
+    async def run_pipeline(self, msg: InboundMessage) -> tuple[str, bool, str]:
         """Execute the 6-stage pipeline for an inbound message."""
         from ..agent.pipeline import PipelineContext, SenseStage, PlanStage, ExecuteStage, ConsolidateStage, NotifyStage, ArchiveStage
         from ..services.session_service import session_manager
@@ -537,9 +537,54 @@ class AgentService:
         
         if iteration >= max_iterations:
             logger.warning(f"Pipeline hit max iterations ({max_iterations}) for session {context.session.session_id}")
-            return context.final_answer or f"ReAct Loop Timeout: The agent reached its maximum reasoning limit ({max_iterations} steps) without concluding a final answer. Please break down your request."
+            return (context.final_answer or f"ReAct Loop Timeout: The agent reached its maximum reasoning limit ({max_iterations} steps) without concluding a final answer. Please break down your request."), True, "MAX_ITERATIONS"
             
-        return context.final_answer or "No response generated. (LLM returned an empty message)"
+        return (context.final_answer or "No response generated. (LLM returned an empty message)"), context.continuation_req, context.continuation_reason
+        
+    async def _run_ralph_wiggum_loop(self, msg: InboundMessage) -> tuple[str, bool, str]:
+        current_msg = msg
+        max_epochs = 5
+        epoch = 0
+        final_response = ""
+        last_cont_req = False
+        last_cont_reason = ""
+        
+        while epoch < max_epochs:
+            epoch += 1
+            response_text, cont_req, cont_reason = await self.run_pipeline(current_msg)
+            final_response = response_text
+            last_cont_req = cont_req
+            last_cont_reason = cont_reason
+            
+            if not getattr(self, 'ralph_wiggum_mode', False) or not cont_req:
+                return response_text, cont_req, cont_reason
+                
+            logger.warning(f"Ralph Wiggum Mode: Triggering Epoch {epoch+1}/{max_epochs} for {msg.chat_id} due to {cont_reason}")
+            
+            # Send status update to Gateway so user sees it's auto-recovering
+            await self.message_bus.publish_outbound(OutboundMessage(
+                channel="gateway",
+                chat_id=msg.sender_id,
+                content=f"[Ralph Wiggum Auto-Heal Activated] Re-initiating loop {epoch+1}/{max_epochs} due to: {cont_reason}",
+                type="thought"
+            ))
+            
+            # Compress context or inject error message to heal
+            if cont_reason == "MAX_ITERATIONS":
+                prompt = f"System Control: You hit the {max_iterations}-step execution limit. Summarize your current progress over the last 50 steps, clarify what is missing, and state your next tool call to continue."
+            else:
+                prompt = f"System Control: Execution interrupted by API Error: {cont_reason}. Diagnose the issue, drop redundant context if it was a token length error, and adjust your strategy before continuing."
+                
+            # Create a synthetic inbound message to re-trigger the loop
+            current_msg = InboundMessage(
+                channel=msg.channel,
+                sender_id="system", 
+                chat_id=msg.chat_id,
+                content=prompt,
+                metadata={"epoch": epoch}
+            )
+            
+        return final_response, last_cont_req, "MAX_EPOCHS_REACHED"
 
     async def _think_and_act(self, context: str, source: str) -> str:
         """Core Agent Logic: Perceive -> Think -> Act (ReAct Loop)"""
@@ -727,7 +772,7 @@ class AgentService:
 
         # 2. Pipeline Execution
         # p2p_logger.info(f"DEBUG: process_bus_message calling run_pipeline. Channel={msg.channel}, Sender={msg.sender_id}")
-        response_text = await self.run_pipeline(msg)
+        response_text, cont_req, cont_reason = await self._run_ralph_wiggum_loop(msg)
 
         # 3. Reply via Bus
         if response_text and "[NO_RESPONSE_NEEDED]" in str(response_text):
@@ -813,7 +858,8 @@ class AgentService:
             content=content,
             chat_id="resident"
         )
-        response_text = await self.run_pipeline(msg_obj)
+        # Pass through the pipeline with Ralph Wiggum loop wrapping
+        response_text, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
         
         # 3. Notify Resident (Targeted or Broadcast depending on caller)
         await self.notify_resident(response_text, chat_id="resident", broadcast=broadcast)
@@ -969,7 +1015,7 @@ class AgentService:
                 content="Generate a brief daily summary for the resident.",
                 chat_id="system"
              )
-             summary = await self.run_pipeline(msg_obj)
+             summary, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
         else:
              summary = "Agent offline."
              

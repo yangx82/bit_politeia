@@ -25,6 +25,8 @@ class PipelineContext(BaseModel):
     # Control flags
     stop_execution: bool = False
     requires_approval: bool = False
+    continuation_req: bool = False
+    continuation_reason: Optional[str] = None
     
     # Execution Environment
     _sandbox: Optional[Any] = None # Lazy initialized sandbox
@@ -133,7 +135,9 @@ class PlanStage(PipelineStage):
             context.metadata["last_response"] = response
         except Exception as e:
             logger.error(f"LLM API Error during pipeline plan stage: {e}")
-            context.final_answer = f"Error communicating with LLM logic core: {str(e)}"
+            context.final_answer = f"Error communicating with LLM. (Triggered Ralph Wiggum auto-heal if enabled: {str(e)})"
+            context.continuation_req = True
+            context.continuation_reason = f"API_ERROR: {str(e)}"
             context.stop_execution = True
             return
         

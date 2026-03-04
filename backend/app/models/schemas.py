@@ -24,6 +24,7 @@ class ConfigRequest(BaseModel):
     personality: Optional[str] = "Professional and helpful"
     p2p_reply_delay: int = 60
     agent_language: str = "中文"
+    ralph_wiggum_mode: bool = False
 
 class AgentStatus(BaseModel):
     is_online: bool
@@ -35,6 +36,7 @@ class AgentStatus(BaseModel):
     public_key: Optional[str] = None
     node_id: Optional[str] = None
     relay_connected: bool = False
+    ralph_wiggum_mode: bool = False
 
 class P2PMessage(BaseModel):
     message_id: str

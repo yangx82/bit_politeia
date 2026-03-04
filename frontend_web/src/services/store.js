@@ -1,5 +1,5 @@
 export const Store = {
-    saveUser: (email, field, apiKey, model = 'gpt-4o', llmBaseUrl = '', bootstrapUrl = 'http://localhost:8000', verboseLlm = false, bootstrapVerify = true, name = 'Agent', personality = 'Professional', p2pReplyDelay = 60, agentLanguage = '中文') => {
+    saveUser: (email, field, apiKey, model = 'gpt-4o', llmBaseUrl = '', bootstrapUrl = 'http://localhost:8000', verboseLlm = false, bootstrapVerify = true, name = 'Agent', personality = 'Professional', p2pReplyDelay = 60, agentLanguage = '中文', ralphWiggumMode = false) => {
         localStorage.setItem('bp_email', email)
         localStorage.setItem('bp_field', field)
         if (apiKey) localStorage.setItem('bp_api_key', apiKey)
@@ -12,6 +12,7 @@ export const Store = {
         localStorage.setItem('bp_personality', personality)
         localStorage.setItem('bp_p2p_reply_delay', p2pReplyDelay)
         localStorage.setItem('bp_agent_language', agentLanguage)
+        localStorage.setItem('bp_ralph_wiggum_mode', ralphWiggumMode)
         localStorage.setItem('bp_onboarded', 'true')
     },
 
@@ -28,7 +29,8 @@ export const Store = {
         name: localStorage.getItem('bp_name') || 'Agent',
         personality: localStorage.getItem('bp_personality') || 'Professional',
         p2pReplyDelay: parseInt(localStorage.getItem('bp_p2p_reply_delay') || '60', 10),
-        agentLanguage: localStorage.getItem('bp_agent_language') || '中文'
+        agentLanguage: localStorage.getItem('bp_agent_language') || '中文',
+        ralphWiggumMode: localStorage.getItem('bp_ralph_wiggum_mode') === 'true'
     }),
 
     clear: () => {
