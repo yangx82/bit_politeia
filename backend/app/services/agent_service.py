@@ -87,6 +87,9 @@ class AgentService:
         self.api_key = None
         self.llm = None
         
+        # Identity Config Path
+        self.config_path = "agent_config.json"
+        
         # P2P Reply Delay Default
         from dotenv import load_dotenv
         import os
@@ -114,9 +117,6 @@ class AgentService:
         self.research_field = "AI Governance"
         self.context_builder = ContextBuilder()
         self.consolidation_service = ConsolidationService(self)
-        
-        # Identity
-        self.config_path = "agent_config.json"
         
         # 1. Load from JSON (Identity)
         json_config = self._load_config()
@@ -571,7 +571,7 @@ class AgentService:
             
             # Compress context or inject error message to heal
             if cont_reason == "MAX_ITERATIONS":
-                prompt = f"System Control: You hit the {max_iterations}-step execution limit. Summarize your current progress over the last 50 steps, clarify what is missing, and state your next tool call to continue."
+                prompt = "System Control: You hit the 50-step execution limit. Summarize your current progress over the last 50 steps, clarify what is missing, and state your next tool call to continue."
             else:
                 prompt = f"System Control: Execution interrupted by API Error: {cont_reason}. Diagnose the issue, drop redundant context if it was a token length error, and adjust your strategy before continuing."
                 
