@@ -128,8 +128,14 @@ class PlanStage(PipelineStage):
         # from ..services.agent_service import p2p_logger
         # p2p_logger.info(f"\n[PIPELINE] Sense Messages:\n{messages}\n" + "-"*50)
         # One turn of the ReAct loop
-        response = await agent.llm.ainvoke(messages)
-        context.metadata["last_response"] = response
+        try:
+            response = await agent.llm.ainvoke(messages)
+            context.metadata["last_response"] = response
+        except Exception as e:
+            logger.error(f"LLM API Error during pipeline plan stage: {e}")
+            context.final_answer = f"Error communicating with LLM logic core: {str(e)}"
+            context.stop_execution = True
+            return
         
         # Extract Reasoning/Thought Content
         thought_content = ""

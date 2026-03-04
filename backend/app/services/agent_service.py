@@ -178,7 +178,7 @@ class AgentService:
         
         # Using string references for robust persistence
         self.scheduler.add_job("app.services.agent_service:trigger_scheduled_task_proxy", 'interval', hours=12, misfire_grace_time=60, id="periodic_brief_job", replace_existing=True) 
-        self.scheduler.add_job("app.services.agent_service:trigger_adhoc_task_proxy", 'interval', hours=24, misfire_grace_time=60, jitter=10, id="periodic_reward_job", replace_existing=True) 
+        # self.scheduler.add_job("app.services.agent_service:trigger_adhoc_task_proxy", 'interval', hours=24, misfire_grace_time=60, jitter=10, id="periodic_reward_job", replace_existing=True) 
         self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=10, misfire_grace_time=5, id="network_inbox_job", replace_existing=True) 
         self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', seconds=60, id="sync_network_job", replace_existing=True) 
         
@@ -535,7 +535,11 @@ class AgentService:
         await stages[5].run(context, self) # Archive
         session_manager.save_session(context.session) # Final save
         
-        return context.final_answer or "No response generated."
+        if iteration >= max_iterations:
+            logger.warning(f"Pipeline hit max iterations ({max_iterations}) for session {context.session.session_id}")
+            return context.final_answer or f"ReAct Loop Timeout: The agent reached its maximum reasoning limit ({max_iterations} steps) without concluding a final answer. Please break down your request."
+            
+        return context.final_answer or "No response generated. (LLM returned an empty message)"
 
     async def _think_and_act(self, context: str, source: str) -> str:
         """Core Agent Logic: Perceive -> Think -> Act (ReAct Loop)"""
