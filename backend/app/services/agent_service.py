@@ -953,10 +953,17 @@ class AgentService:
                     chat_id=effective_chat_id
                 ))
                 self.resident_memory.log_interaction(sender_id, text_content, msg_type="chat", chat_id=effective_chat_id)
+                await self.message_bus.publish_outbound(OutboundMessage(
+                    channel="p2p",
+                    chat_id=effective_chat_id,
+                    content=text_content,
+                    type="chat",
+                    sender=sender_id
+                ))
                 
                 # 3. Run Pipeline to get Response
                 # p2p_logger.info(f"DEBUG: process_network_inbox calling run_pipeline. Channel={msg_obj.channel}, Sender={msg_obj.sender_id}")
-                response_text = await self.run_pipeline(msg_obj)
+                response_text, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
                 
                 # 4. Send Reply back to Peer
                 if response_text and "[NO_RESPONSE_NEEDED]" in str(response_text):
@@ -1340,6 +1347,13 @@ class AgentService:
             chat_id=target_id
         ))
         self.resident_memory.log_interaction("agent", text_to_check, msg_type="chat", chat_id=target_id)
+        await self.message_bus.publish_outbound(OutboundMessage(
+            channel="p2p",
+            chat_id=target_id,
+            content=f"{text_to_check}",
+            type="chat",
+            sender="agent"
+        ))
         
         # 3. Direct Transmission
         logger.info(f"Transmitting P2P message to {target_id}...")
