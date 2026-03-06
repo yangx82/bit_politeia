@@ -1314,7 +1314,7 @@ class AgentService:
             logger.error(f"Error processing incoming direct HTTP P2P message: {e}")
             return {"status": "error", "message": str(e)}
 
-    async def send_p2p_message(self, target_id: str, content: Any) -> dict:
+    async def send_p2p_message(self, target_id: str, content: Any, **kwargs) -> dict:
         """
         Send a P2P message to a specific peer.
         This method handles both WebRTC data channel (fast) and HTTP/Relay (reliable) paths.
@@ -1390,9 +1390,15 @@ class AgentService:
                 return {"success": True, "mode": "webrtc"}
             else:
                 # Fallback to HTTP/Relay
-                custom_type = content.get("type", "DIRECT") if isinstance(content, dict) else "DIRECT"
+                explicit_type = kwargs.get("message_type")
+                if explicit_type:
+                    custom_type = explicit_type
+                else:
+                    custom_type = content.get("type", "DIRECT") if isinstance(content, dict) else "DIRECT"
                 
-                success = await p2p_service.send_message(target_id, msg_content, msg_type="file" if custom_type == "file" else "DIRECT")
+                # Check for explicit 'file' type mappings
+                out_type = "file" if custom_type == "file" else "DIRECT"
+                success = await p2p_service.send_message(target_id, msg_content, msg_type=out_type)
                 if success:
                     logger.info(f"[{target_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
                     # Trigger Upgrade if simple text and not already connected

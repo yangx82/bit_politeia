@@ -66,12 +66,12 @@ async def send_file(recipient_id: str, file_path: str, description: str = "File"
         # Since we modified MessageType enum, we can pass "file" or MessageType.FILE.value
         
         from app.services.agent_service import agent_service
-        result = await agent_service.send_p2p_message(recipient_id, payload)
+        # Note: we pass 'file' as the message_type parameter to agent_service.send_p2p_message
+        result = await agent_service.send_p2p_message(recipient_id, payload, message_type='file')
         success = result.get('success', False)
         
         if success:
-            # We still keep additional specific logging if needed, 
-            # though send_p2p_message already logs to history.
+            # Tell the agent exactly where it was sent from or how it was sent
             return f"Successfully queued file {file_name} for {recipient_id}"
         else:
             return "Failed to send file (Network Error)"
