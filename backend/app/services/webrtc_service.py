@@ -1,15 +1,25 @@
 import logging
 import json
 import asyncio
+import os
 from typing import Dict, Any, Optional, Callable
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration, RTCIceServer
 from aiortc.contrib.signaling import object_to_string, object_from_string
-# from .p2p_service import p2p_service  <-- Moved to method level to avoid circular import
+
 logger = logging.getLogger(__name__)
-file_handler = logging.FileHandler('webrtc_prod.log', mode='a', encoding='utf-8')
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-logger.addHandler(file_handler)
-logger.setLevel(logging.INFO)
+
+# Feature: Conditional Debug File Logging
+ENABLE_DEBUG_LOG = os.getenv("ENABLE_DEBUG_LOGGING", "true").lower() == "true"
+if ENABLE_DEBUG_LOG:
+    log_dir = "data/logs"
+    os.makedirs(log_dir, exist_ok=True)
+    file_handler = logging.FileHandler(os.path.join(log_dir, 'webrtc_prod.log'), mode='a', encoding='utf-8')
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+    logger.setLevel(logging.INFO)
+else:
+    # If file logging is disabled, ensure we still have a basic level set for console (handled by main.py usually)
+    logger.setLevel(logging.INFO)
 
 class WebRTCManager:
     """
@@ -21,6 +31,7 @@ class WebRTCManager:
         self.signaling_callback = signaling_callback # Function to send signaling messages via HTTP/Relay
         self.message_callback = message_callback # Function to handle received data channel messages
         self.negotiating: set[str] = set() # peer_ids currently in handshake
+        self.last_init_times: Dict[str, float] = {} # peer_id -> timestamp of last initiation
         self.loop = None
 
     def set_loop(self, loop):
@@ -141,8 +152,17 @@ class WebRTCManager:
 
     async def initiate_connection(self, peer_id: str):
         """Start a WebRTC connection with a peer."""
-        pc = await self.get_or_create_pc(peer_id)
+        import time
+        peer_id_lower = peer_id.lower()
+        pc = await self.get_or_create_pc(peer_id_lower)
         
+        # Rate Limit Gap: 10 seconds between active initiation attempts
+        now = time.time()
+        last_init = self.last_init_times.get(peer_id_lower, 0)
+        if now - last_init < 10.0:
+            logger.debug(f"[{peer_id}] Connection initiation rate-limited (last attempt {now-last_init:.1f}s ago)")
+            return
+
         # Guard: Don't initiate if already connecting or connected
         if pc.signalingState != "stable":
             logger.info(f"[{peer_id}] Connection initiation skipped: signalingState is {pc.signalingState}")
@@ -152,11 +172,12 @@ class WebRTCManager:
             return
             
         # Synchronization Guard: Prevent multiple concurrent initiations
-        if peer_id in self.negotiating:
+        if peer_id_lower in self.negotiating:
             logger.info(f"[{peer_id}] Connection initiation skipped: already negotiating.")
             return
             
-        self.negotiating.add(peer_id)
+        self.last_init_times[peer_id_lower] = now
+        self.negotiating.add(peer_id_lower)
         logger.info(f"[{peer_id}] Initiating WebRTC connection...")
         
         try:

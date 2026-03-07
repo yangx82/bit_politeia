@@ -21,6 +21,7 @@ class P2PService:
         self.message_protocol = MessageProtocol(crypto_service)
         self.network_manager = NetworkManager(self.message_protocol)
         self.local_node: Optional[Node] = None
+        self.processed_signaling_ids: set[str] = set() # Store message_ids of sdp/ice messages
         self._initialized = False
         
         # Initialize WebRTC Manager
@@ -130,7 +131,21 @@ class P2PService:
         msg_type = message.get("message_type")
         sender_id = message.get("sender_id")
         content = message.get("content", {})
+        message_id = message.get("message_id")
         
+        # Deduplication for signaling messages
+        if message_id:
+            if message_id in self.processed_signaling_ids:
+                logger.debug(f"P2P Signaling: Ignoring duplicate message {message_id}")
+                return True # Already handled
+            
+            # Only track signaling types in this specific set
+            if msg_type in [MessageType.SDP_OFFER.value, MessageType.SDP_ANSWER.value, MessageType.ICE_CANDIDATE.value]:
+                self.processed_signaling_ids.add(message_id)
+                # Keep set size manageable
+                if len(self.processed_signaling_ids) > 1000:
+                     self.processed_signaling_ids.clear() 
+
         if msg_type == MessageType.SDP_OFFER.value:
             await self.webrtc_manager.handle_offer(sender_id, content)
             return True

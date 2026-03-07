@@ -1425,9 +1425,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 success = await p2p_service.send_message(target_id, msg_content, msg_type=out_type)
                 if success:
                     logger.info(f"[{target_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
-                    # Trigger Upgrade if simple text and not already connected
+                    # Trigger Upgrade if simple text and not already connected/connecting
                     if not isinstance(content, dict):
-                        asyncio.create_task(p2p_service.webrtc_manager.initiate_connection(target_id))
+                        pc = p2p_service.webrtc_manager.pcs.get(target_id.lower())
+                        if not pc or (pc.signalingState == "stable" and pc.connectionState not in ["connecting", "connected"]):
+                            asyncio.create_task(p2p_service.webrtc_manager.initiate_connection(target_id))
                     return {"success": True, "mode": "http_relay"}
                 else:
                     logger.error(f"[{target_id}] FINAL FAILURE: Failed to transmit P2P message via ANY path (target={target_id})")
