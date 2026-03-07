@@ -696,15 +696,39 @@ class AgentService:
                             except Exception as te:
                                 tool_output = f"Error: {te}"
                                 
-                            messages.append(ToolMessage(tool_call_id=tool_call_id, content=str(tool_output), name=tool_name))
+                            # Self-Improvement Error Detector Hook
+                            error_patterns = [
+                                "error:", "Error:", "ERROR:", "failed", "FAILED",
+                                "command not found", "No such file", "Permission denied",
+                                "fatal:", "Exception", "Traceback", "npm ERR!",
+                                "ModuleNotFoundError", "SyntaxError", "TypeError",
+                                "exit code", "non-zero"
+                            ]
+                            
+                            output_str = str(tool_output)
+                            contains_error = any(pattern in output_str for pattern in error_patterns)
+                            if contains_error:
+                                error_hook = """
+<error-detected>
+A command error was detected. Consider logging this to .learnings/ERRORS.md if:
+- The error was unexpected or non-obvious
+- It required investigation to resolve
+- It might recur in similar contexts
+- The solution could benefit future sessions
+
+Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
+</error-detected>"""
+                                output_str += error_hook
+                                
+                            messages.append(ToolMessage(tool_call_id=tool_call_id, content=output_str, name=tool_name))
                             
                             # Emit Tool Result Event
                             out_msg = OutboundMessage(
                                 channel="gateway",
                                 chat_id="global",
-                                content=f"Result: {str(tool_output)[:200]}...",
+                                content=f"Result: {output_str[:200]}...",
                                 type="tool_result",
-                                metadata={"tool": tool_name, "result": str(tool_output)}
+                                metadata={"tool": tool_name, "result": output_str}
                             )
                             # print(f"[DEBUG-AG] Publishing Tool Result: {tool_name}")
                             await self.message_bus.publish_outbound(out_msg)

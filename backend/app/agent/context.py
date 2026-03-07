@@ -144,4 +144,17 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
         # 3. Current User Message
         messages.append(HumanMessage(content=f"Message from {source}: {current_message}"))
 
+        # 4. Self-Improvement Activator Hook
+        activator_prompt = """<self-improvement-reminder>
+After completing this task, evaluate if extractable knowledge emerged:
+- Non-obvious solution discovered through investigation?
+- Workaround for unexpected behavior?
+- Project-specific pattern learned?
+- Error required debugging to resolve?
+
+If yes: Log to .learnings/ using the self-improvement skill format.
+If high-value (recurring, broadly applicable): Consider skill extraction.
+</self-improvement-reminder>"""
+        messages.append(SystemMessage(content=activator_prompt))
+
         return messages

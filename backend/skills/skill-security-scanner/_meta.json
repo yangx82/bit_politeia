@@ -1,0 +1,11 @@
+{
+  "owner": "cookiemikeliu",
+  "slug": "skill-security-scanner-clean",
+  "displayName": "skill-security-scanner-clean",
+  "latest": {
+    "version": "1.0.0",
+    "publishedAt": 1772200652159,
+    "commit": "https://github.com/openclaw/skills/commit/fe13faa2c5229d987d3dfaae7fe7fdf707024b85"
+  },
+  "history": []
+}
