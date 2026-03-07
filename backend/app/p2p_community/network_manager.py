@@ -26,7 +26,7 @@ class NetworkManager:
         self.local_node_id: Optional[str] = None
         self.message_protocol = message_protocol
         self.bootstrap = bootstrap_client
-        self.http_client = httpx.AsyncClient(timeout=10.0)
+        self.http_client = httpx.AsyncClient(timeout=3.0)
         self._last_logs: Dict[str, float] = {} # For deduplication: message -> last_time
 
     async def initialize(self):

@@ -84,9 +84,6 @@ class WebRTCManager:
                 logger.info(f"[{peer_id}] Found ICE Candidate: {candidate.host}:{candidate.port} ({candidate.type})")
                 # Send candidate to remote peer via signaling
                 await self.signaling_callback(peer_id, "ice_candidate", {
-                    "candidate": candidate.foundation, # Simplified placeholder or full candidate?
-                    # aiortc doesn't have a simple .to_dict() for ICECandidate, 
-                    # but we can send the attributes manually or use candidate_to_sdp
                     "sdpMid": candidate.sdpMid,
                     "sdpMLineIndex": candidate.sdpMLineIndex,
                     "candidate": f"candidate:{candidate.foundation} {candidate.component} {candidate.protocol} {candidate.priority} {candidate.host} {candidate.port} typ {candidate.type} " + \

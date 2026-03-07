@@ -381,7 +381,7 @@ class AgentService:
         bootstrap_verify = os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true"
         name = os.getenv("AGENT_NAME", "Anonym")
         personality = os.getenv("AGENT_PERSONALITY", "Professional, helfpful, and humorous")
-        p2p_reply_delay = int(os.getenv("AGENT_P2P_REPLY_DELAY", "360"))
+        p2p_reply_delay = int(os.getenv("AGENT_P2P_REPLY_DELAY", "5"))
         agent_language = os.getenv("AGENT_LANGUAGE", "中文")
         ralph_wiggum_mode = os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true"
         
