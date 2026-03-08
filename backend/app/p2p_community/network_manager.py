@@ -206,7 +206,7 @@ class NetworkManager:
             logger.info(f"[Network] Received RELAYED message {message.message_id} from {message.sender_id}")
             
             # Route locally
-            await self.route_message(message)
+            await self.route_message(message, from_relay=True)
         except Exception as e:
             import traceback
             logger.error(f"Failed to handle relayed message: {e}\n{traceback.format_exc()}")
@@ -298,9 +298,9 @@ class NetworkManager:
             return await self.relay_client.send(message.to_dict())
         return False
 
-    async def route_message(self, message: SignedMessage) -> bool:
+    async def route_message(self, message: SignedMessage, from_relay: bool = False) -> bool:
         """Route message to local node or remote peer via HTTP, fallback to Relay."""
-        self._log_throttled("info", f"[Network] Routing {message.message_type.value} message to {message.recipient_id}")
+        self._log_throttled("info", f"[Network] Routing {message.message_type.value} message to {message.recipient_id} (From Relay: {from_relay})")
 
         # Helper to route to single node with fallback
         async def send_to_node(node_id: str, msg: SignedMessage) -> bool:
@@ -316,11 +316,19 @@ class NetworkManager:
                     success = await self._send_http_message(target.endpoint, msg)
                 
                 if not success:
+                    # BLOCK RE-RELAY: If it came from relay, don't send back to relay
+                    if from_relay:
+                        self._log_throttled("warning", f"[Network] Dropping message to {node_id} to prevent Relay Loop.")
+                        return False
+                    
                     # Fallback to Relay
                     return await self._send_via_relay(node_id, msg)
                 return True
             else:
                  # Try Relay even if unknown (maybe new node)
+                 if from_relay:
+                     self._log_throttled("warning", f"[Network] Unknown recipient {node_id} for relayed message. Dropping to prevent loop.")
+                     return False
                  return await self._send_via_relay(node_id, msg)
 
         # Handle routing based on message type

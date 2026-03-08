@@ -48,14 +48,13 @@ class P2PService:
         # Create and register local node
         public_key = crypto_service.get_public_key_string()
         
-        # User Request: Node ID should be a UUID.
-        # We generate a deterministic UUID based on the public key so identity persists.
-        import uuid
-        node_id_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, public_key))
+        # Consistent Node ID should be the Hex ID (SHA256 of Public Key)
+        # We avoid UUID5 for Node ID to maintain consistency with message protocol and file system.
+        hex_node_id = crypto_service.get_node_id()
         
-        # Override node_id with the UUID if not explicitly provided
-        if not node_id or len(node_id) > 64: # If it's the pubkey string, use UUID
-             node_id = node_id_uuid
+        # Use provided node_id if it looks like a valid Hex ID, else default to hex_node_id
+        if not node_id or len(node_id) != 64:
+             node_id = hex_node_id
 
         self.local_node = Node(
             node_id=node_id, 

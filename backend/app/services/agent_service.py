@@ -43,6 +43,7 @@ class AgentService:
     def __init__(self):
         self.history: list[Message] = []
         self.processed_message_ids: set[str] = set() # For de-duplication
+        self._is_processing_inbox = False # Concurrency Guard
         self.status = AgentStatus(is_online=True, reputation=10, balance=100.0)
         self.message_bus = message_bus
         self.resident_bridges: Dict[str, str] = {} # Bridge Name -> Chat/OpenID
@@ -873,143 +874,137 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         if not p2p_service.local_node:
             return
             
-        # Robust Hydration: If memory inbox is empty, check if we need to load from disk
-        if not p2p_service.local_node.inbox:
-            self._hydrate_system_state()
+        if self._is_processing_inbox:
+            logger.debug("process_network_inbox already running, skipping overlapping poll.")
+            return
             
-        inbox = p2p_service.local_node.inbox
-        while inbox:
-            msg = inbox.pop(0)
-            sender_id = msg.get('sender_id')
-            content = msg.get('content')
-            msg_type = msg.get('message_type')
+        self._is_processing_inbox = True
+        try:
+            # Robust Hydration: If memory inbox is empty, check if we need to load from disk
+            if not p2p_service.local_node.inbox:
+                self._hydrate_system_state()
             
-            try:
-                receive_time = datetime.now().timestamp()
-                # 1. De-duplication
-                m_id = msg.get('message_id')
-                if m_id:
-                    if m_id in self.processed_message_ids:
-                        continue
-                    self.processed_message_ids.add(m_id)
-                    self._save_system_state() # Persist de-dup IDs
-                    # Keep set size reasonable (last 1000 IDs)
-                    if len(self.processed_message_ids) > 1000:
-                        # Convert to list to pop first element (simple FIFO)
-                        l = list(self.processed_message_ids)
-                        self.processed_message_ids = set(l[100:])
-                        
-                # Process based on type
-                logger.info(f"Processing P2P message type {msg_type} from {sender_id[:8]}...")
+            inbox = p2p_service.local_node.inbox
+            while inbox:
+                msg = inbox.pop(0)
+                sender_id = msg.get('sender_id')
+                content = msg.get('content')
+                msg_type = msg.get('message_type')
                 
-                recipient_id = msg.get('recipient_id')
-                
-                # Determine chat_id: Group ID if group message, else Sender ID
-                effective_chat_id = sender_id
-                if msg_type == "GROUP" and recipient_id:
-                    effective_chat_id = recipient_id
-
-                # Use 'content' text if available
-                text_content = str(content)
-                if isinstance(content, dict) and 'text' in content:
-                    text_content = content['text']
-                
-                # Special Handling for FILE type
-                if msg_type == "file" and isinstance(content, dict) and "data" in content:
-                    try:
-                        file_name = content.get("info", "downloaded_file")
-                        file_data = base64.b64decode(content["data"])
-                        
-                        download_dir = "data/downloads"
-                        os.makedirs(download_dir, exist_ok=True)
-                        file_path = os.path.join(download_dir, f"{sender_id[:8]}_{file_name}")
-                        
-                        with open(file_path, "wb") as f:
-                            f.write(file_data)
+                try:
+                    receive_time = datetime.now().timestamp()
+                    # 1. De-duplication
+                    m_id = msg.get('message_id')
+                    if m_id:
+                        if m_id in self.processed_message_ids:
+                            continue
+                        self.processed_message_ids.add(m_id)
+                        self._save_system_state() # Persist de-dup IDs
+                        # Keep set size reasonable (last 1000 IDs)
+                        if len(self.processed_message_ids) > 1000:
+                            # Convert to list to pop first element (simple FIFO)
+                            l = list(self.processed_message_ids)
+                            self.processed_message_ids = set(l[100:])
                             
-                        text_content = f"Received file: {file_name} (Saved to {file_path})"
-                        # Update content for history log
-                    except Exception as e:
-                        text_content = f"Failed to receive file: {e}"
-                        logger.error(text_content)
-                
-                # Use Pipeline
-                msg_obj = InboundMessage(
-                    channel="p2p",
-                    sender_id=sender_id,
-                    content=text_content,
-                    chat_id=effective_chat_id,
-                    metadata={"message_id": m_id, "message_type": msg_type}
-                )
-                
-                # 2. Log Inbound Message to history
-                self.history.append(Message(
-                    id=str(uuid.uuid4()), 
-                    content=text_content, 
-                    sender=sender_id, 
-                    timestamp=datetime.now(),
-                    chat_id=effective_chat_id
-                ))
-                self.resident_memory.log_interaction(sender_id, text_content, msg_type="chat", chat_id=effective_chat_id)
-                await self.message_bus.publish_outbound(OutboundMessage(
-                    channel="p2p",
-                    chat_id=effective_chat_id,
-                    content=text_content,
-                    type="chat",
-                    sender=sender_id
-                ))
-                
-                # 3. Run Pipeline to get Response
-                # p2p_logger.info(f"DEBUG: process_network_inbox calling run_pipeline. Channel={msg_obj.channel}, Sender={msg_obj.sender_id}")
-                response_text, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
-                
-                # 4. Agent's Final Answer is for internal record, NOT sent over P2P.
-                # All outbound P2P communication must be done explicitly by the LLM via `send_p2p_message` tool.
-                if response_text and "[NO_RESPONSE_NEEDED]" not in str(response_text) and response_text != "No response generated.":
-                    # Log the agent's final conclusion of this P2P interaction to local history so the resident sees it
+                    # Process based on type
+                    logger.info(f"Processing P2P message type {msg_type} from {sender_id[:8]}...")
+                    
+                    recipient_id = msg.get('recipient_id')
+                    
+                    # Determine chat_id: Group ID if group message, else Sender ID
+                    effective_chat_id = sender_id
+                    if msg_type == "GROUP" and recipient_id:
+                        effective_chat_id = recipient_id
+
+                    # Use 'content' text if available
+                    text_content = str(content)
+                    if isinstance(content, dict) and 'text' in content:
+                        text_content = content['text']
+                    
+                    # Special Handling for FILE type
+                    if msg_type == "file" and isinstance(content, dict) and "data" in content:
+                        try:
+                            file_name = content.get("info", "downloaded_file")
+                            file_data = base64.b64decode(content["data"])
+                            
+                            download_dir = "data/downloads"
+                            os.makedirs(download_dir, exist_ok=True)
+                            file_path = os.path.join(download_dir, f"{sender_id[:8]}_{file_name}")
+                            
+                            with open(file_path, "wb") as f:
+                                f.write(file_data)
+                                
+                            text_content = f"Received file: {file_name} (Saved to {file_path})"
+                            # Update content for history log
+                        except Exception as e:
+                            text_content = f"Failed to receive file: {e}"
+                            logger.error(text_content)
+                    
+                    # Use Pipeline
+                    msg_obj = InboundMessage(
+                        channel="p2p",
+                        sender_id=sender_id,
+                        content=text_content,
+                        chat_id=effective_chat_id,
+                        metadata={"message_id": m_id, "message_type": msg_type}
+                    )
+                    
+                    # 2. Log Inbound Message to history
                     self.history.append(Message(
-                        id=str(uuid.uuid4()),
-                        content=f"[Agent completed P2P task]: {response_text}",
-                        sender="agent",
+                        id=str(uuid.uuid4()), 
+                        content=text_content, 
+                        sender=sender_id, 
                         timestamp=datetime.now(),
                         chat_id=effective_chat_id
                     ))
-                    # Also notify the UI safely
+                    self.resident_memory.log_interaction(sender_id, text_content, msg_type="chat", chat_id=effective_chat_id)
                     await self.message_bus.publish_outbound(OutboundMessage(
-                        channel="gateway",
+                        channel="p2p",
                         chat_id=effective_chat_id,
-                        content=f"Agent processed P2P message from {sender_id[:8]}",
-                        type="thought"
+                        content=text_content,
+                        type="chat",
+                        sender=sender_id
                     ))
-            except Exception as e:
-                logger.error(f"Error processing P2P message from {sender_id}: {e}")
-                # Optional: Push back to inbox or Dead Letter Queue?
-                # For now, just log to history so user sees something failed
-                self.history.append(Message(
-                    id=str(uuid.uuid4()),
-                    content=f"Error processing P2P message: {e}",
-                    sender="system",
-                    timestamp=datetime.now()
-                ))
+                    
+                    # 3. Run Pipeline to get Response
+                    # p2p_logger.info(f"DEBUG: process_network_inbox calling run_pipeline. Channel={msg_obj.channel}, Sender={msg_obj.sender_id}")
+                    response_text, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
+                    
+                    # 4. Agent's Final Answer is for internal record, NOT sent over P2P.
+                    # All outbound P2P communication must be done explicitly by the LLM via `send_p2p_message` tool.
+                    if response_text and "[NO_RESPONSE_NEEDED]" not in str(response_text) and response_text != "No response generated.":
+                        # Log the agent's final conclusion of this P2P interaction to local history so the resident sees it
+                        self.history.append(Message(
+                            id=str(uuid.uuid4()),
+                            content=f"[Agent completed P2P task]: {response_text}",
+                            sender="agent",
+                            timestamp=datetime.now(),
+                            chat_id=effective_chat_id
+                        ))
+                        # Also notify the UI safely
+                        await self.message_bus.publish_outbound(OutboundMessage(
+                            channel="gateway",
+                            chat_id=effective_chat_id,
+                            content=f"Agent processed P2P message from {sender_id[:8]}",
+                            type="thought"
+                        ))
+                except Exception as e:
+                    logger.error(f"Error processing P2P message from {sender_id}: {e}")
+                    # Optional: Push back to inbox or Dead Letter Queue?
+                    # For now, just log to history so user sees something failed
+                    self.history.append(Message(
+                        id=str(uuid.uuid4()),
+                        content=f"Error processing P2P message: {e}",
+                        sender="system",
+                        timestamp=datetime.now()
+                    ))
+            
+            # 6. Clear Disk Inbox after processing batch
+            # We don't delete here anymore; hydration handles renaming to .processing
+            pass
         
-        # 6. Clear Disk Inbox after processing batch
-        if p2p_service.local_node:
-            try:
-                import os
-                node_id = p2p_service.local_node.node_id
-                inbox_path = self.data_dir / "p2p" / f"inbox_{node_id}.jsonl"
-                if os.path.exists(inbox_path):
-                    # For safety, we could just clear it, as we've already 
-                    # either processed messages OR they are now in the memory inbox.
-                    # But if we clear it, then crash, we might lose messages currently in memory inbox.
-                    # Correct way: the memory inbox IS the pending queue.
-                    # We should probably only append to disk and never clear "the file", 
-                    # but pruning is complex.
-                    # Simplified for BP: clear the file once it's emptied from memory.
-                    if not p2p_service.local_node.inbox:
-                        os.remove(inbox_path)
-            except Exception as ex:
-                logger.error(f"Failed to clear disk inbox: {ex}")
+        finally:
+            self._is_processing_inbox = False
 
     # 3. Scheduled Task
     async def trigger_scheduled_task(self):
@@ -1142,27 +1137,64 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 return
                 
             node_id = p2p_service.local_node.node_id
-            inbox_path = self.data_dir / "p2p" / f"inbox_{node_id}.jsonl"
+            p2p_dir = self.data_dir / "p2p"
+            inbox_path = p2p_dir / f"inbox_{node_id}.jsonl"
+            proc_path = p2p_dir / f"inbox_{node_id}.jsonl.processing"
             
+            # --- COMPATIBILITY MIGRATION ---
+            if len(node_id) == 64:
+                import uuid
+                public_key = p2p_service.local_node.public_key
+                old_uuid_id = str(uuid.uuid5(uuid.NAMESPACE_OID, public_key))
+                old_inbox_path = p2p_dir / f"inbox_{old_uuid_id}.jsonl"
+                
+                if old_inbox_path.exists() and not inbox_path.exists():
+                    logger.info(f"Migrating P2P Inbox: {old_uuid_id} -> {node_id}")
+                    try:
+                        os.rename(old_inbox_path, inbox_path)
+                    except Exception as e:
+                        logger.error(f"Failed to migrate inbox file: {e}")
+            # -------------------------------
+            
+            # ATOMIC HANDOFF: Rename main inbox to .processing before reading
             if inbox_path.exists():
+                try:
+                    if proc_path.exists():
+                        # Append to existing processing file if it exists (e.g. from crash)
+                        with open(proc_path, 'a', encoding='utf-8') as pf:
+                            with open(inbox_path, 'r', encoding='utf-8') as ifile:
+                                pf.write(ifile.read())
+                        os.remove(inbox_path)
+                    else:
+                        os.rename(inbox_path, proc_path)
+                except Exception as e:
+                    logger.error(f"Failed to rename inbox for atomic processing: {e}")
+                    return
+
+            if proc_path.exists():
                 pending_messages = []
                 try:
-                    with open(inbox_path, 'r', encoding='utf-8') as f:
+                    with open(proc_path, 'r', encoding='utf-8') as f:
                         for line in f:
                             if line.strip():
                                 try:
                                     msg_data = json.loads(line)
-                                    # Only add if not already processed (in case of crash between processing and clearing)
                                     m_id = msg_data.get('message_id')
                                     if not m_id or m_id not in self.processed_message_ids:
                                         pending_messages.append(msg_data)
                                 except: continue
                 except Exception as e:
-                    logger.warning(f"Error reading inbox: {e}")
+                    logger.warning(f"Error reading processing inbox: {e}")
                 
                 if pending_messages:
-                    logger.info(f"Hydrated {len(pending_messages)} pending messages from disk inbox.")
+                    logger.info(f"Hydrated {len(pending_messages)} messages from {proc_path.name}")
                     p2p_service.local_node.inbox.extend(pending_messages)
+                
+                # Delete the processing file once successfully (re)hydrated into memory
+                try:
+                    os.remove(proc_path)
+                except Exception as e:
+                    logger.error(f"Failed to delete processing file: {e}")
         except Exception as e:
             logger.error(f"Failed to hydrate system state: {e}")
 
