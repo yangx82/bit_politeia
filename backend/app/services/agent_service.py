@@ -94,52 +94,41 @@ class AgentService:
         from dotenv import load_dotenv
         import os
         load_dotenv()
-        self.p2p_reply_delay = 60 #int(os.getenv("AGENT_P2P_REPLY_DELAY") or 60)
-        # p2p_logger.info(f"AgentService [__init__]: P2P Reply Delay initialized to {self.p2p_reply_delay}s from ENV or Default")
+        self.p2p_reply_delay = 60 
         
-    def start_scheduler(self):
-        """Start the scheduler if not running."""
-        try:
-            if not self.scheduler.running:
-                self.scheduler.start()
-                logger.info("Scheduler started successfully.")
-            else:
-                logger.info("Scheduler already running.")
-        except Exception as e:
-            logger.error(f"Failed to start scheduler: {e}")
+        # Initialization logic (Moved to __init__)
         self.tools_map = {t.name: t for t in AGENT_TOOLS}
         self.governance_manager = None 
         self.reputation_manager = None
         self.archive_manager = None
-        self.ledger = Ledger() # Initialize Ledger
+        self.ledger = Ledger() 
         self.resident_memory = ResidentMemory() 
-        self.reporter = None # initialized after config
+        self.reporter = None 
         self.research_field = "AI Governance"
         self.context_builder = ContextBuilder()
         self.consolidation_service = ConsolidationService(self)
         
-        # 1. Load from JSON (Identity)
-        json_config = self._load_config()
-        
-        # 2. Load from ENV (Credentials & Overrides)
-        from dotenv import load_dotenv
-        import os
-        load_dotenv()
-        
-        self.name = json_config.get("name") or os.getenv("AGENT_NAME") or "Agent"
-        self.personality = json_config.get("personality") or os.getenv("AGENT_PERSONALITY") or "Professional and helpful"
-        self.agent_language = json_config.get("agent_language") or os.getenv("AGENT_LANGUAGE") or "中文"
-        self.ralph_wiggum_mode = json_config.get("ralph_wiggum_mode", False)
-        try:
-            self.p2p_reply_delay = int(json_config.get("p2p_reply_delay") or os.getenv("AGENT_P2P_REPLY_DELAY") or self.p2p_reply_delay)
-        except ValueError:
-            pass # Keep default or ENV value
-        # p2p_logger.info(f"Agent Service [start_scheduler]: Final P2P Reply Delay: {self.p2p_reply_delay}s")
-        
         # Hydrate History and System State from Disk
         self._hydrate_history()
         self._hydrate_system_state()
-        self.verbose_llm = False # Control flag for console output
+        self.verbose_llm = False
+
+    def start_scheduler(self):
+        """Start the scheduler and add background jobs."""
+        try:
+            if not self.scheduler.running:
+                # 1. Add background jobs using string references for robustness
+                self.scheduler.add_job("app.services.agent_service:trigger_scheduled_task_proxy", 'interval', hours=12, misfire_grace_time=60, id="periodic_brief_job", replace_existing=True) 
+                self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=10, misfire_grace_time=5, id="network_inbox_job", replace_existing=True) 
+                self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', seconds=60, id="sync_network_job", replace_existing=True) 
+                self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
+
+                self.scheduler.start()
+                logger.info("Scheduler started successfully with background jobs.")
+            else:
+                logger.info("Scheduler already running.")
+        except Exception as e:
+            logger.error(f"Failed to start scheduler/jobs: {e}")
 
     def _get_host_info(self) -> str:
         """Detect current host environment (OS, Shell, CWD) for the agent."""
@@ -166,25 +155,6 @@ class AgentService:
             info += "- **Constraint**: Use POSIX-compatible commands (e.g., `ls` instead of `dir`).\n"
             
         return info
-        
-        # Start Scheduler with robustness
-        # IMPORTANT: We must use the standalone proxy functions defined at module level 
-        # to avoid PicklingError (cannot pickle 'scheduler' attribute of 'self').
-        # The proxy functions import 'agent_service' global instance.
-        
-        # We need to import them or rely on them being available in the namespace when this runs?
-        # Actually, they are defined AFTER this class in the file.
-        # So we can't use them here directly if we run __init__ before they are defined.
-        # BUT, add_job takes a callable. If we use a string ref "app.services.agent_service:trigger_scheduled_task_proxy", it works even better for persistence!
-        
-        # Using string references for robust persistence
-        self.scheduler.add_job("app.services.agent_service:trigger_scheduled_task_proxy", 'interval', hours=12, misfire_grace_time=60, id="periodic_brief_job", replace_existing=True) 
-        # self.scheduler.add_job("app.services.agent_service:trigger_adhoc_task_proxy", 'interval', hours=24, misfire_grace_time=60, jitter=10, id="periodic_reward_job", replace_existing=True) 
-        self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=10, misfire_grace_time=5, id="network_inbox_job", replace_existing=True) 
-        self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', seconds=60, id="sync_network_job", replace_existing=True) 
-        
-        # Nightly Consolidation (2:00 AM)
-        self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
 
 
     async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None, p2p_reply_delay: int = 5, agent_language: str = "中文", ralph_wiggum_mode: bool = False):
@@ -902,6 +872,10 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         if not p2p_service.local_node:
             return
+            
+        # Robust Hydration: If memory inbox is empty, check if we need to load from disk
+        if not p2p_service.local_node.inbox:
+            self._hydrate_system_state()
             
         inbox = p2p_service.local_node.inbox
         while inbox:
