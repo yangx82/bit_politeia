@@ -1396,7 +1396,17 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         ))
         
         # 3. Direct Transmission
-        logger.info(f"Transmitting P2P message to {target_id}...")
+        # PROACTIVE TOPOLOGY CHECK: Log if we actually know this peer
+        network_status = p2p_service.get_network_status()
+        peer_name = "Unknown"
+        if network_status and "nodes" in network_status:
+            if target_id in network_status["nodes"]:
+                peer_name = network_status["nodes"][target_id].get("name", "Unknown")
+                logger.info(f"Recipient {target_id} identified as '{peer_name}' in topology.")
+            else:
+                logger.warning(f"Recipient {target_id} NOT found in local topology nodes. It might be a group or an offline node.")
+
+        logger.info(f"Transmitting P2P message to {target_id} ({peer_name})...")
         
         try:
             # Differentiate simple string vs complex dictionary payload

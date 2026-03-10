@@ -66,7 +66,19 @@ class SenseStage(PipelineStage):
         # 2. Retrieve P2P Network Context
         my_id = p2p_service.local_node.node_id if p2p_service.local_node else "unknown"
         my_groups = list(p2p_service.local_node.group_ids) if p2p_service.local_node else []
-        network_identity = f"- Node ID: {my_id}\n- My Groups: {my_groups}\n- My Monitoring Research Focus: {agent.research_field}"
+        
+        # PROACTIVE TOPOLOGY INJECTION: Give the agent awareness of OTHER nodes
+        network_status = p2p_service.get_network_status()
+        peers_info = ""
+        if network_status and "nodes" in network_status:
+            peer_list = []
+            for node_id, node_data in network_status["nodes"].items():
+                if node_id != my_id:
+                    peer_list.append(f"- {node_data.get('name', 'Unknown')}: {node_id}")
+            if peer_list:
+                peers_info = "\nAvailable Peers in Network:\n" + "\n".join(peer_list)
+        
+        network_identity = f"- Node ID: {my_id}\n- My Groups: {my_groups}\n- My Monitoring Research Focus: {agent.research_field}{peers_info}"
         context.metadata["network_identity"] = network_identity
 
         # 3. Build Hybrid History Splice (Session Core + Global Periphery)
