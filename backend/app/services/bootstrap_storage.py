@@ -254,6 +254,30 @@ class BootstrapStorage:
         conn.commit()
         conn.close()
 
+    def delete_node(self, node_id: str):
+        """Perform a full deletion of a node from the registry and all group relations."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        # 1. Remove from group memberships
+        cursor.execute('DELETE FROM group_members WHERE node_id=?', (node_id,))
+        
+        # 2. Remove from core node designations
+        cursor.execute('DELETE FROM group_core_nodes WHERE node_id=?', (node_id,))
+        
+        # 3. Remove from rankings
+        cursor.execute('DELETE FROM group_rankings WHERE node_id=?', (node_id,))
+        
+        # 4. Remove from pending joins
+        cursor.execute('DELETE FROM pending_joins WHERE node_id=?', (node_id,))
+        
+        # 5. Finally, remove from nodes table
+        cursor.execute('DELETE FROM nodes WHERE node_id=?', (node_id,))
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Storage: Node {node_id} and all its relations deleted.")
+
     # --- Pending Joins ---
 
     def add_pending_join(self, group_id: str, reg: NodeRegistration):

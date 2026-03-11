@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, List
 import uvicorn
 import logging
+import os
 
 from .bootstrap_service import bootstrap_service
 from ..p2p_community.bootstrap_client import NodeRegistration
@@ -27,9 +28,9 @@ async def root():
     return {"status": "running", "service": "Bit-Politeia Bootstrap"}
 
 @app.get("/topology")
-async def get_topology() -> Dict[str, Any]:
-    """Get full network topology and node list."""
-    return bootstrap_service.get_topology_info()
+async def get_topology(node_id: Optional[str] = None) -> Dict:
+    """Get full network topology and optionally update heartbeat."""
+    return bootstrap_service.get_topology_info(node_id=node_id)
 
 @app.get("/rules")
 async def get_rules() -> Dict[str, Any]:
@@ -55,6 +56,23 @@ async def register_node(registration: dict = Body(...)) -> Dict[str, bool]:
     except Exception as e:
         logger.error(f"Registration failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/nodes/{node_id}")
+async def unregister_node(node_id: str) -> Dict[str, bool]:
+    """Manually unregister a node from the bootstrap server."""
+    allow_removal = os.getenv("BOOTSTRAP_ALLOW_NODE_REMOVAL", "false").lower() == "true"
+    
+    if not allow_removal:
+        raise HTTPException(
+            status_code=403, 
+            detail="Node removal is disabled. Set BOOTSTRAP_ALLOW_NODE_REMOVAL=true to enable."
+        )
+        
+    success = bootstrap_service.unregister_node(node_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Node not found.")
+        
+    return {"success": success}
 
 @app.get("/groups/{group_id}/pending")
 async def get_pending_joins(group_id: str) -> Dict[str, Any]:

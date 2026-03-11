@@ -15,6 +15,12 @@ class PeerAddress:
     name: Optional[str] = None
     last_seen: datetime = field(default_factory=datetime.now)
 
+    @property
+    def is_online(self) -> bool:
+        """Check if the node has been seen in the last 5 minutes."""
+        diff = (datetime.now() - self.last_seen).total_seconds()
+        return diff < 300 # 5 minutes
+
     def to_dict(self) -> dict:
         return {
             "node_id": self.node_id,
@@ -22,7 +28,8 @@ class PeerAddress:
             "ip_address": self.ip_address,
             "port": self.port,
             "name": self.name,
-            "last_seen": self.last_seen.isoformat()
+            "last_seen": self.last_seen.isoformat(),
+            "is_online": self.is_online
         }
 
 @dataclass
@@ -93,10 +100,11 @@ class BootstrapClient:
         self.client = httpx.AsyncClient(timeout=15.0, verify=verify)
         logger.info(f"BootstrapClient: SSL verification set to {verify}")
 
-    async def get_joinable_groups(self, preferred_level: int = 1) -> List[GroupInfo]:
+    async def get_joinable_groups(self, preferred_level: int = 1, my_node_id: Optional[str] = None) -> List[GroupInfo]:
         """Fetch topology and filter for joinable groups."""
         try:
-            resp = await self.client.get(f"{self.server_url}/topology")
+            params = {"node_id": my_node_id} if my_node_id else {}
+            resp = await self.client.get(f"{self.server_url}/topology", params=params)
             if resp.status_code != 200:
                 logger.error(f"Failed to fetch topology: {resp.status_code}")
                 return []
@@ -186,10 +194,11 @@ class BootstrapClient:
             logger.error(f"Error fetching candidates: {e}")
             return []
 
-    async def get_network_topology(self) -> Dict:
+    async def get_network_topology(self, my_node_id: Optional[str] = None) -> Dict:
         """Fetch full network topology dictionary from server."""
         try:
-            resp = await self.client.get(f"{self.server_url}/topology")
+            params = {"node_id": my_node_id} if my_node_id else {}
+            resp = await self.client.get(f"{self.server_url}/topology", params=params)
             if resp.status_code == 200:
                 return resp.json()
             return {}

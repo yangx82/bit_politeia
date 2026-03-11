@@ -66,10 +66,18 @@ class BootstrapService:
         
         logger.info(f"Bootstrap: Initialized with single Level 1 group: {first_group_id} ({self._groups[first_group_id].name})")
 
-    def get_topology_info(self) -> Dict:
+    def get_topology_info(self, node_id: Optional[str] = None) -> Dict:
         """
         Returns full network topology: groups, nodes, and hierarchy.
+        If node_id is provided, updates its last_seen timestamp (Heartbeat).
         """
+        if node_id and node_id in self._peers:
+            peer = self._peers[node_id]
+            peer.last_seen = datetime.now()
+            # Persist the heartbeat to storage
+            self.storage.upsert_node(peer)
+            logger.debug(f"Bootstrap: Heartbeat received via topology sync from {node_id}")
+
         return {
             "groups": {gid: g.to_dict() for gid, g in self._groups.items()},
             "nodes": {nid: p.to_dict() for nid, p in self._peers.items()},
@@ -175,6 +183,55 @@ class BootstrapService:
         
         # Return True because node is registered in _peers (visible in topology)
         # even though group membership is pending
+        return True
+
+    def unregister_node(self, node_id: str) -> bool:
+        """
+        Manually unregister a node and remove it from all group memberships and topology.
+        """
+        if node_id not in self._peers:
+            logger.warning(f"Bootstrap: Attempted to unregister unknown node {node_id}")
+            return False
+
+        # 1. Remove from all group memberships in memory
+        for group_id, members in self._group_members.items():
+            if node_id in members:
+                members.remove(node_id)
+                # Update group stats
+                if group_id in self._groups:
+                    group = self._groups[group_id]
+                    group.member_count = len(members)
+                    group.has_space = group.member_count < self.group_capacity
+                    
+                    # Remove from core nodes
+                    if node_id in group.core_node_ids:
+                        group.core_node_ids.remove(node_id)
+                    
+                    # Remove from rankings
+                    if node_id in group.node_rankings:
+                        group.node_rankings.remove(node_id)
+                    
+                    # Persist group update (since count/cores/rankings changed)
+                    self.storage.upsert_group(group)
+
+        # 2. Remove from pending joins
+        for group_id, pending in self._pending_joins.items():
+            original_len = len(pending)
+            self._pending_joins[group_id] = [r for r in pending if r.node_id != node_id]
+            if len(self._pending_joins[group_id]) < original_len:
+                # remove_pending_join already called inside storage.delete_node, 
+                # but good to be explicit if iterating specifically here.
+                pass
+
+        # 3. Remove from peers registry
+        del self._peers[node_id]
+
+        # 4. Storage cleanup (Removes from nodes, group_members, rankings, cores, pending)
+        self.storage.delete_node(node_id)
+        
+        # 5. Global update
+        self._last_update = datetime.now()
+        logger.info(f"Bootstrap: Node {node_id} has been manually unregistered and removed from topology.")
         return True
 
     def get_election_candidates(self, group_id: str) -> List[str]:
