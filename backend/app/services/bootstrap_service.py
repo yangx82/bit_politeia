@@ -187,17 +187,30 @@ class BootstrapService:
 
     def unregister_node(self, node_id: str) -> bool:
         """
-        Manually unregister a node and remove it from all group memberships and topology.
+        Manually remove a node from the bootstrap server's state.
+        Returns True if the node existed and was removed.
         """
-        if node_id not in self._peers:
-            logger.warning(f"Bootstrap: Attempted to unregister unknown node {node_id}")
+        node_id = node_id.strip()
+        # Case-insensitive match check
+        target_nid = None
+        for nid in self._peers.keys():
+            if nid.lower() == node_id.lower():
+                target_nid = nid
+                break
+                
+        if not target_nid:
+            available = list(self._peers.keys())[:5]
+            logger.warning(f"Service: Attempted to unregister unknown node {node_id}. Available IDs (prefix): {available}")
             return False
-
-        # 1. Remove from all group memberships in memory
+            
+        # 1. Remove from in-memory maps
+        # Use the matched target_nid
+        self._peers.pop(target_nid, None)
+        
+        # Remove from all group memberships and update group stats
         for group_id, members in self._group_members.items():
-            if node_id in members:
-                members.remove(node_id)
-                # Update group stats
+            if target_nid in members:
+                members.remove(target_nid)
                 if group_id in self._groups:
                     group = self._groups[group_id]
                     group.member_count = len(members)

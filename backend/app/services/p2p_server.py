@@ -122,10 +122,18 @@ async def get_candidates(group_id: str) -> Dict[str, List[str]]:
     candidates = bootstrap_service.get_election_candidates(group_id)
     return {"candidates": candidates}
 
+@app.get("/nodes")
+async def list_nodes() -> Dict[str, Any]:
+    """List all currently registered nodes (for debugging)."""
+    topology = bootstrap_service.get_topology_info()
+    return {"nodes": topology.get("nodes", {})}
+
 @app.delete("/nodes/{node_id}")
 async def remove_node(node_id: str) -> Dict[str, bool]:
     """Manually remove a node from the topology (Safety Toggle required)."""
+    logger.info(f"Received request to delete node: {node_id}")
     if not ALLOW_NODE_REMOVAL:
+         logger.warning("Node removal blocked: Safety toggle BOOTSTRAP_ALLOW_NODE_REMOVAL=true not set.")
          raise HTTPException(
              status_code=status.HTTP_403_FORBIDDEN, 
              detail="Manual node removal is disabled on this server. Enable via BOOTSTRAP_ALLOW_NODE_REMOVAL=true"
@@ -133,6 +141,8 @@ async def remove_node(node_id: str) -> Dict[str, bool]:
     
     success = bootstrap_service.unregister_node(node_id)
     if not success:
+        logger.warning(f"Node removal failed: Node {node_id} not found.")
+        # We explicitly return "Node not found." to distinguish from FastAPI 404
         raise HTTPException(status_code=404, detail="Node not found.")
         
     return {"success": True}
