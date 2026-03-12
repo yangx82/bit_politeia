@@ -70,9 +70,19 @@ const Contacts = () => {
                                 <div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center text-blue-500">
                                     <User size={20} />
                                 </div>
-                                <span className={`text-[10px] px-2 py-1 rounded-full ${peer.status === 'online' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
-                                    {peer.status}
-                                </span>
+                                <div className="flex flex-col items-end gap-1">
+                                    <div className="flex items-center gap-1.5">
+                                        <div className={`w-2 h-2 rounded-full ${peer.status === 'online' ? 'bg-green-500 animate-pulse' : 'bg-slate-300'}`} />
+                                        <span className={`text-[10px] font-bold uppercase tracking-wider ${peer.status === 'online' ? 'text-green-600' : 'text-slate-400'}`}>
+                                            {peer.status}
+                                        </span>
+                                    </div>
+                                    {peer.last_seen && (
+                                        <span className="text-[9px] text-slate-400">
+                                            {new Date(peer.last_seen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                        </span>
+                                    )}
+                                </div>
                             </div>
                             <h3 className="font-bold text-slate-800 mb-1">{peer.name || 'Unknown Agent'}</h3>
                             <p className="text-xs text-slate-400 font-mono mb-4 truncate" title={peer.node_id}>

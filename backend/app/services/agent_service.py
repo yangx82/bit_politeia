@@ -1233,8 +1233,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 "name": node.name,
                 "public_key": node.public_key,
                 "endpoint": node.endpoint,
-                "status": "online" if node.endpoint else "unknown", # Simple status check
-                "last_seen": datetime.now().isoformat() # Placeholder for real last_seen
+                "status": "online" if node.is_online else "offline",
+                "last_seen": node.last_seen.isoformat() if hasattr(node, 'last_seen') else datetime.now().isoformat()
             })
         return peers
 

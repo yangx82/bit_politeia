@@ -1,6 +1,7 @@
 from typing import List, Optional, Set, Dict, Any, Callable
 from dataclasses import dataclass, field
 import logging
+import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,17 @@ class Node:
         
         self.inbox: List[dict] = []
         self.message_handler: Optional[Callable[[Dict[str, Any]], Any]] = None
+        self.last_seen: Optional[datetime.datetime] = None
+
+    @property
+    def is_online(self) -> bool:
+        """Determines if the node is online based on last_seen (within 5 minutes)."""
+        if not self.last_seen:
+            return False
+        import datetime
+        now = datetime.datetime.now()
+        delta = now - self.last_seen
+        return delta.total_seconds() < 300 # 5 minutes
 
     def to_dict(self) -> dict:
         return {
@@ -68,7 +80,8 @@ class Node:
             "name": self.name,
             "level": self.level,
             "endpoint": self.endpoint,
-            "group_ids": list(self.group_ids)
+            "group_ids": list(self.group_ids),
+            "is_online": self.is_online
         }
 
     def set_message_handler(self, handler: Callable[[Dict[str, Any]], Any]):

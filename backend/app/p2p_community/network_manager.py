@@ -131,6 +131,15 @@ class NetworkManager:
                 port = ndata.get("port")
                 if ip and port:
                     self.nodes[nid].endpoint = f"http://{ip}:{port}"
+                
+                # Update last_seen
+                ls_str = ndata.get("last_seen")
+                if ls_str:
+                    try:
+                        from datetime import datetime
+                        self.nodes[nid].last_seen = datetime.fromisoformat(ls_str)
+                    except (ValueError, TypeError):
+                        pass
 
     def get_group(self, group_id: str) -> Optional[Group]:
         return self.groups.get(group_id)

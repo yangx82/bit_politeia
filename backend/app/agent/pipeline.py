@@ -155,6 +155,8 @@ class PlanStage(PipelineStage):
         
         # Extract Reasoning/Thought Content
         thought_content = ""
+        
+        # 1. Check for dedicated reasoning fields
         if "reasoning_content" in response.additional_kwargs:
             thought_content = response.additional_kwargs["reasoning_content"]
         elif hasattr(response, "reasoning_content") and response.reasoning_content:
@@ -162,6 +164,18 @@ class PlanStage(PipelineStage):
         elif "thought" in response.additional_kwargs:
              thought_content = response.additional_kwargs["thought"]
              
+        # 2. Extract from XML-style tags in content (for DeepSeek/R1 models)
+        if not thought_content and response.content:
+            import re
+            tags = [r"<thought>(.*?)</thought>", r"<reasoning>(.*?)</reasoning>", r"\[THOUGHT\](.*?)\[/THOUGHT\]"]
+            for tag in tags:
+                match = re.search(tag, response.content, re.DOTALL | re.IGNORECASE)
+                if match:
+                    thought_content = match.group(1).strip()
+                    # Clean up the original content to remove the thought block
+                    # response.content = re.sub(tag, "", response.content, flags=re.DOTALL | re.IGNORECASE).strip()
+                    break
+
         # If explicitly missing reasoning field, use content as thought if tool_calls are present
         if not thought_content and response.tool_calls and response.content:
             thought_content = response.content
