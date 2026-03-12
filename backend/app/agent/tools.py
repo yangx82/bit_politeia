@@ -159,6 +159,40 @@ async def propose_election(group_id: str, candidate_ids: str) -> str:
         return f"Failed to start election: {str(e)}"
 
 @tool
+async def search_chat_history(peer_name_or_id: str, limit: int = 10) -> str:
+    """
+    Search and retrieve persistent chat history with a specific peer.
+    Use this when the resident asks about past conversations or when you need to recall context from previous sessions.
+    
+    Args:
+        peer_name_or_id: The Name or Node ID (UUID/Hex) of the peer.
+        limit: Number of recent messages to retrieve (default 10).
+    """
+    try:
+        from ..services.agent_service import agent_service
+        from ..services.p2p_service import p2p_service
+        
+        target_id = peer_name_or_id.strip()
+        
+        # 1. Try to resolve by name using local topology
+        network_status = p2p_service.get_network_status()
+        resolved_id = None
+        
+        if network_status and "nodes" in network_status:
+            for node_id, node_data in network_status["nodes"].items():
+                if node_data.get("name", "").lower() == target_id.lower():
+                    resolved_id = node_id
+                    break
+        
+        if resolved_id:
+            target_id = resolved_id
+            
+        result = await agent_service.get_chat_history_with_peer(target_id, limit)
+        return result
+    except Exception as e:
+        return f"Failed to retrieve chat history: {str(e)}"
+
+@tool
 async def submit_proposal(group_id: str, content: str) -> str:
     """
     Submit a proposal for the group. 
@@ -439,7 +473,7 @@ async def append_daily_note(content: str) -> str:
 # List of Tools to bind to the agent
 AGENT_TOOLS = [
     send_p2p_message, send_file, ask_resident, send_file_to_resident, get_my_status, read_community_rules, update_system_parameter, 
-    update_core_memory, append_daily_note,
+    search_chat_history, update_core_memory, append_daily_note,
     propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, 
     pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, 
     read_skill_guide, execute_shell_command,

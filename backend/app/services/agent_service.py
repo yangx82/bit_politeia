@@ -1455,6 +1455,46 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             logger.error(f"Failed to transmit P2P message to {target_id}: {e}")
             return {"success": False, "error": str(e)}
 
+    async def get_chat_history_with_peer(self, peer_id: str, limit: int = 20) -> str:
+        """
+        Retrieves the persistent chat history for a specific peer from the SessionManager.
+        This provides the LLM with explicitly requested historical context across sessions.
+        """
+        from ..services.session_service import session_manager
+        
+        # We try to get the session from disk/memory
+        session = session_manager.get_session(peer_id, "p2p")
+        if not session or not session.history_slice:
+            return f"No persistent chat history found with peer {peer_id}."
+            
+        # The history_slice contains LangChain BaseMessage objects (or dicts if serialized)
+        formatted_history = []
+        
+        # Take the last 'limit' messages
+        messages_to_process = session.history_slice[-limit:] if limit > 0 else session.history_slice
+        
+        for msg in messages_to_process:
+            # Handle both instantiated LangChain objects and serialized dicts
+            if isinstance(msg, dict):
+                role = msg.get("type", "unknown")
+                content = msg.get("content", "")
+            else:
+                role = msg.type if hasattr(msg, "type") else "unknown"
+                content = msg.content if hasattr(msg, "content") else str(msg)
+                
+            if role == "ai":
+                formatted_history.append(f"Me (Agent): {content}")
+            elif role == "human":
+                formatted_history.append(f"Peer ({peer_id}): {content}")
+            else:
+                formatted_history.append(f"{role}: {content}")
+                
+        if not formatted_history:
+            return f"Chat history exists but is empty for peer {peer_id}."
+            
+        header = f"--- Chat History with Peer {peer_id} (Last {len(formatted_history)} messages) ---\n"
+        return header + "\n".join(formatted_history)
+
     async def get_archive_chain(self) -> list[dict]:
         """Get local blockchain archive."""
         if not self.archive_manager:

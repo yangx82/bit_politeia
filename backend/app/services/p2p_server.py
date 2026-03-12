@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, status
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import uvicorn
 import logging
 import os
@@ -13,6 +13,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("BootstrapServer")
 
 app = FastAPI(title="Bit-Politeia Bootstrap Server")
+
+# Global safety toggle for node removal
+ALLOW_NODE_REMOVAL = os.getenv("BOOTSTRAP_ALLOW_NODE_REMOVAL", "false").lower() == "true"
 
 # Enable CORS for frontend communication
 app.add_middleware(
@@ -118,6 +121,21 @@ async def get_candidates(group_id: str) -> Dict[str, List[str]]:
     """Get candidate suggestions for a core node election based on reputation."""
     candidates = bootstrap_service.get_election_candidates(group_id)
     return {"candidates": candidates}
+
+@app.delete("/nodes/{node_id}")
+async def remove_node(node_id: str) -> Dict[str, bool]:
+    """Manually remove a node from the topology (Safety Toggle required)."""
+    if not ALLOW_NODE_REMOVAL:
+         raise HTTPException(
+             status_code=status.HTTP_403_FORBIDDEN, 
+             detail="Manual node removal is disabled on this server. Enable via BOOTSTRAP_ALLOW_NODE_REMOVAL=true"
+         )
+    
+    success = bootstrap_service.unregister_node(node_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Node not found.")
+        
+    return {"success": True}
 
 from fastapi import WebSocket, WebSocketDisconnect
 from .relay_manager import relay_manager
