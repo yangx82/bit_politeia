@@ -4,8 +4,15 @@ $dest = "D:\git\bit_politeia"
 
 $files = @(
     "backend\app\services\agent_service.py",
+    "backend\app\services\bootstrap_service.py",
+    "backend\app\services\bootstrap_storage.py",
+    "backend\app\services\p2p_server.py",
     "backend\app\agent\context.py",
-    "task.md"
+    "backend\app\agent\tools.py",
+    "backend\app\agent\prompts.py",
+    "backend\app\agent\pipeline.py",
+    "task.md",
+    "walkthrough.md"
 )
 
 $dirs = @(
