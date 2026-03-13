@@ -20,13 +20,11 @@ class BootstrapService:
     Used by both the FastAPI server (Cloud/LAN) and potentially local simulations.
     """
     def __init__(self):
-        self.storage = BootstrapStorage()
-        
-        # Load from Storage
-        self._groups = self.storage.load_groups()
-        self._peers = self.storage.load_nodes()
-        self._group_members = self.storage.load_group_members()
-        self._pending_joins = self.storage.load_pending_joins()
+        self.storage = None
+        self._groups = {}
+        self._peers = {}
+        self._group_members = {}
+        self._pending_joins = {}
         
         self._reputation = ReputationManager("bootstrap")
         self._last_update = datetime.now()
@@ -35,9 +33,26 @@ class BootstrapService:
         self.group_capacity = community_config.get_group_capacity()
         self.max_subgroups = 3 # Hardcoded or config
         
+        self._initialized = False
+
+    def initialize(self):
+        """Must be called after the event loop starts (e.g., inside FastAPI lifespan)."""
+        if self._initialized: return
+        
+        self.storage = BootstrapStorage()
+        
+        # Load from Storage
+        self._groups = self.storage.load_groups()
+        self._peers = self.storage.load_nodes()
+        self._group_members = self.storage.load_group_members()
+        self._pending_joins = self.storage.load_pending_joins()
+        
         # Initialize Topology if empty
         if not self._groups:
             self._initialize_root_group()
+            
+        self._initialized = True
+        logger.info("BootstrapService initialized successfully.")
 
     def _generate_group_name(self, level: int) -> str:
         """Generate a sequential human-readable name for a group (e.g., L1-G1)."""

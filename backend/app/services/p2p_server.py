@@ -17,6 +17,8 @@ app = FastAPI(title="Bit-Politeia Bootstrap Server")
 # Global safety toggle for node removal
 ALLOW_NODE_REMOVAL = os.getenv("BOOTSTRAP_ALLOW_NODE_REMOVAL", "false").lower() == "true"
 
+from contextlib import asynccontextmanager
+
 # Enable CORS for frontend communication
 app.add_middleware(
     CORSMiddleware,
@@ -25,6 +27,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize the bootstrap service on startup
+    logger.info("Initializing BootstrapService...")
+    try:
+        bootstrap_service.initialize()
+        logger.info("BootstrapService initialization complete.")
+    except Exception as e:
+        logger.error(f"FATAL: Failed to initialize BootstrapService: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+    yield
+    # Cleanup on shutdown (if needed)
+    logger.info("Shutting down BootstrapServer...")
+
+app.router.lifespan_context = lifespan
 
 @app.get("/")
 async def root():
