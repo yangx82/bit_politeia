@@ -137,7 +137,7 @@ class TelegramChannel(BaseChannel):
             self._app = None
     
     async def send(self, msg: OutboundMessage) -> None:
-        """Send a message through Telegram."""
+        """Send a message and optional files through Telegram."""
         if not self._app:
             logger.warning("Telegram bot not running, cannot send message")
             return
@@ -145,7 +145,30 @@ class TelegramChannel(BaseChannel):
         try:
             chat_id = int(msg.chat_id)
             html_content = _markdown_to_telegram_html(msg.content)
-            await self._app.bot.send_message(chat_id=chat_id, text=html_content, parse_mode="HTML")
+            
+            # 1. Send text content if present (or if there is no media)
+            if html_content or not msg.media:
+                await self._app.bot.send_message(chat_id=chat_id, text=html_content, parse_mode="HTML")
+            
+            # 2. Send media files
+            if msg.media:
+                for item in msg.media:
+                    if isinstance(item, dict):
+                        file_path = item.get("path")
+                        file_type = item.get("type", "file")
+                        file_name = item.get("name")
+                        
+                        if file_path and os.path.exists(file_path):
+                            logger.info(f"Telegram sending {file_type}: {file_path}")
+                            with open(file_path, "rb") as f:
+                                if file_type in ["image", "photo"]:
+                                    await self._app.bot.send_photo(chat_id=chat_id, photo=f, caption=file_name)
+                                else:
+                                    # Default to document
+                                    await self._app.bot.send_document(chat_id=chat_id, document=f, filename=file_name)
+                        else:
+                            logger.warning(f"Media file not found: {file_path}")
+
         except Exception as e:
             logger.error(f"Error sending Telegram message: {e}")
             try:
@@ -171,18 +194,73 @@ class TelegramChannel(BaseChannel):
         sender_id = str(user.id)
         
         # Handle Text
-        content = message.text or message.caption or "[media]"
+        content = message.text or message.caption or ""
+        media_items = []
         
-        # Handle Media (simple placeholder for now)
-        if message.photo:
-            content += " [Image received]"
+        # Determine if there's an attachment
+        attachment = None
+        file_type = "file"
+        file_name = f"tg_{message.message_id}"
         
+        if message.document:
+            attachment = message.document
+            file_name = message.document.file_name or file_name
+        elif message.photo:
+            attachment = message.photo[-1] # Highest resolution
+            file_type = "image"
+            file_name = f"{file_name}.jpg"
+        elif message.audio:
+            attachment = message.audio
+            file_type = "audio"
+            file_name = message.audio.file_name or f"{file_name}.mp3"
+        elif message.video:
+            attachment = message.video
+            file_type = "video"
+            file_name = message.video.file_name or f"{file_name}.mp4"
+            
+        if attachment:
+            try:
+                # 1. Ensure download directory exists
+                download_dir = Path("data/downloads")
+                download_dir.mkdir(parents=True, exist_ok=True)
+                
+                # 2. Get file object from Telegram
+                file = await context.bot.get_file(attachment.file_id)
+                
+                # 3. Save to disk
+                file_path = download_dir / file_name
+                # Download
+                await file.download_to_drive(custom_path=file_path)
+                
+                logger.info(f"Downloaded {file_type} from Telegram: {file_path}")
+                
+                # Add a system note to content so LLM knows a file arrived
+                if not content:
+                    content = f"[System] User sent a {file_type}: {file_name}"
+                else:
+                    content += f"\n[System] Attached {file_type}: {file_name}"
+                    
+                media_items.append({
+                    "type": file_type,
+                    "path": str(file_path.absolute()),
+                    "name": file_name
+                })
+                
+            except Exception as e:
+                logger.error(f"Failed to download Telegram file: {e}")
+                content += f"\n[System] User attempted to send a file, but download failed."
+
+        if not content and not media_items:
+            # e.g., location, contact, which we don't handle yet
+            content = "[Unsupported message type received]"
+
         # Forward to Bus
-        logger.info(f"Received Telegram message from {sender_id}: {content}")
+        logger.info(f"Received Telegram message from {sender_id}: {content[:50]}...")
         await self._handle_message(
             sender_id=sender_id,
             chat_id=str(chat_id),
             content=content,
+            media=media_items, # Pass media up to the base class handler
             metadata={
                 "username": user.username,
                 "first_name": user.first_name,

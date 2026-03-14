@@ -36,7 +36,7 @@ class LocalSandbox(Sandbox):
         self.temp_dir = tempfile.mkdtemp(prefix="agent_sandbox_", dir=base_dir)
         logger.info(f"Initialized LocalSandbox at {self.temp_dir}")
         
-    async def execute(self, command: str, working_dir: Optional[str] = None, timeout: int = 60) -> Tuple[str, str, int]:
+    def execute_sync(self, command: str, working_dir: Optional[str] = None, timeout: int = 60) -> Tuple[str, str, int]:
         cwd = working_dir or self.temp_dir
         
         # Ensure working_dir is within temp_dir or base_dir (security check)
@@ -51,45 +51,48 @@ class LocalSandbox(Sandbox):
             "TMP": self.temp_dir,
         }
         
+        # Windows requires these to start subprocesses reliably
+        if os.name == 'nt':
+            for key in ["COMSPEC", "SystemRoot", "SystemDrive"]:
+                if os.environ.get(key):
+                    safe_env[key] = os.environ.get(key)
+        
         try:
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=safe_env
-            )
+            import subprocess
+            from concurrent.futures import TimeoutError as FuturesTimeoutError
+            
+            # On Windows, we need to hide the console window when creating subprocess
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=timeout
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=cwd,
+                    env=safe_env,
+                    text=True,
+                    timeout=timeout,
+                    startupinfo=startupinfo,
+                    errors="replace"
                 )
-                exit_code = process.returncode or 0
-                return (
-                    stdout.decode("utf-8", errors="replace"),
-                    stderr.decode("utf-8", errors="replace"),
-                    exit_code
-                )
-            except asyncio.TimeoutError:
-                # Robust kill for Windows (kills process tree)
-                if os.name == 'nt':
-                    try:
-                        import subprocess
-                        subprocess.run(['taskkill', '/F', '/T', '/PID', str(process.pid)], 
-                                     capture_output=True, check=False)
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        process.kill()
-                    except Exception:
-                        pass
-                return ("", "Error: Command timed out", 124)
+                return result.stdout, result.stderr, result.returncode
+            except subprocess.TimeoutExpired as e:
+                stdout_str = e.stdout.decode('utf-8', errors='replace') if isinstance(e.stdout, bytes) else e.stdout or ""
+                stderr_str = e.stderr.decode('utf-8', errors='replace') if isinstance(e.stderr, bytes) else e.stderr or ""
+                return stdout_str, f"{stderr_str}\nError: Command timed out", 124
                 
         except Exception as e:
-            logger.error(f"Sandbox execution error: {e}")
-            return ("", f"Sandbox Error: {str(e)}", -1)
+            logger.error(f"Sandbox execution error: {repr(e)}", exc_info=True)
+            return ("", f"Sandbox Error ({type(e).__name__}): {str(e)}", -1)
+
+    async def execute(self, command: str, working_dir: Optional[str] = None, timeout: int = 60) -> Tuple[str, str, int]:
+        # Keep async interface for backwards compatibility if needed elsewhere
+        return await asyncio.to_thread(self.execute_sync, command, working_dir, timeout)
 
     def cleanup(self):
         try:

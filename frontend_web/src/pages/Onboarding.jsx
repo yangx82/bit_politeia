@@ -25,7 +25,9 @@ const Onboarding = ({ onComplete }) => {
         apiKey: '',
         model: 'gpt-4o',
         verboseLlm: false,
-        bootstrapVerify: true
+        bootstrapVerify: true,
+        p2pReplyDelay: 60,
+        agentLanguage: '中文'
     })
     const [loading, setLoading] = useState(false)
 
@@ -52,7 +54,9 @@ const Onboarding = ({ onComplete }) => {
                 verbose_llm: formData.verboseLlm,
                 bootstrap_verify: formData.bootstrapVerify,
                 name: formData.name,
-                personality: formData.personality
+                personality: formData.personality,
+                p2p_reply_delay: Number(formData.p2pReplyDelay),
+                agent_language: formData.agentLanguage
             })
 
             // 4. Save Preference Locally
@@ -67,7 +71,9 @@ const Onboarding = ({ onComplete }) => {
                 formData.verboseLlm,
                 formData.bootstrapVerify,
                 formData.name,
-                formData.personality
+                formData.personality,
+                formData.p2pReplyDelay,
+                formData.agentLanguage
             )
 
             onComplete()
@@ -122,6 +128,13 @@ const Onboarding = ({ onComplete }) => {
                         />
                     </div>
 
+                    <Input
+                        label="Agent Output Language"
+                        placeholder="e.g. 中文, English, Español"
+                        value={formData.agentLanguage}
+                        onChange={e => setFormData({ ...formData, agentLanguage: e.target.value })}
+                    />
+
                     <div className="h-px bg-slate-100 my-6" />
 
                     <h3 className="font-medium mb-4 text-slate-700">System Configuration</h3>
@@ -169,6 +182,16 @@ const Onboarding = ({ onComplete }) => {
                         />
                         <label htmlFor="verboseLlm" className="ml-2 text-sm text-slate-600">Enable Verbose LLM Output</label>
                     </div>
+
+                    <Input
+                        label="P2P Reply Delay (seconds)"
+                        type="number"
+                        min="0"
+                        placeholder="e.g. 60"
+                        value={formData.p2pReplyDelay}
+                        onChange={e => setFormData({ ...formData, p2pReplyDelay: e.target.value })}
+                        title="How many seconds the Agent should wait before broadcasting a P2P reply to the network."
+                    />
 
                     <div className="flex items-center mb-6">
                         <input

@@ -1,6 +1,7 @@
-from typing import List, Optional, Set, Dict, Any
+from typing import List, Optional, Set, Dict, Any, Callable
 from dataclasses import dataclass, field
 import logging
+import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,39 @@ class Node:
         self.group_ids: Set[str] = set()
         
         self.inbox: List[dict] = []
+        self.message_handler: Optional[Callable[[Dict[str, Any]], Any]] = None
+        self.last_seen: Optional[datetime.datetime] = None
+
+    @property
+    def is_online(self) -> bool:
+        """Determines if the node is online based on last_seen (within 5 minutes)."""
+        if not self.last_seen:
+            return False
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc)
+        
+        # Ensure last_seen is offset-aware for comparison
+        target_time = self.last_seen
+        if target_time.tzinfo is None:
+            target_time = target_time.replace(tzinfo=datetime.timezone.utc)
+            
+        delta = now - target_time
+        return delta.total_seconds() < 300 # 5 minutes
+
+    def to_dict(self) -> dict:
+        return {
+            "node_id": self.node_id,
+            "public_key": self.public_key,
+            "name": self.name,
+            "level": self.level,
+            "endpoint": self.endpoint,
+            "group_ids": list(self.group_ids),
+            "is_online": self.is_online
+        }
+
+    def set_message_handler(self, handler: Callable[[Dict[str, Any]], Any]):
+        """Set a handler to intercept messages. Return True to stop default processing."""
+        self.message_handler = handler
 
     def can_join_group(self, target_group: Group) -> bool:
         """
@@ -122,15 +156,42 @@ class Node:
         else:
             msg_data = message
             
-        logger.info(f"[Node {self.node_id}] Received {msg_data.get('message_type', 'unknown')} from {msg_data.get('sender_id', 'unknown')}")
+        logger.info(f"[{msg_data.get('sender_id', 'unknown')}] <<< RECEIVED via {msg_data.get('message_type', 'P2P')}: {str(msg_data.get('content'))[:100]}...")
+        if msg_data.get("message_type") == "DIRECT":
+             print(f"\n[<<<] INCOMING P2P MESSAGE from {msg_data.get('sender_id')}: {str(msg_data.get('content'))[:100]} [<<<]\n", flush=True)
+        
+        # Allow external handler to intercept (e.g., for WebRTC Signaling)
+        if self.message_handler:
+            try:
+                # Assuming handler is async
+                import inspect
+                if inspect.iscoroutinefunction(self.message_handler):
+                    if await self.message_handler(msg_data):
+                        return # Handled externally, skip inbox
+                else:
+                    if self.message_handler(msg_data):
+                        return
+            except Exception as e:
+                logger.error(f"Error in message handler: {e}")
+
         self.inbox.append(msg_data)
         
         # Persist to disk inbox for resumption
         try:
             import json
             import os
-            os.makedirs("data/p2p", exist_ok=True)
-            inbox_path = f"data/p2p/inbox_{self.node_id}.jsonl"
+            from pathlib import Path
+            
+            # Resolve backend/data/p2p safely
+            # app/p2p_community/models.py -> app/p2p_community -> app -> backend
+            current_file = Path(__file__).resolve()
+            backend_dir = current_file.parent.parent.parent
+            data_dir = backend_dir / "data"
+            p2p_dir = data_dir / "p2p"
+            
+            p2p_dir.mkdir(parents=True, exist_ok=True)
+            
+            inbox_path = p2p_dir / f"inbox_{self.node_id}.jsonl"
             with open(inbox_path, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(msg_data) + "\n")
         except Exception as e:

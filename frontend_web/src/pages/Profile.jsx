@@ -37,7 +37,10 @@ const Profile = () => {
         model: '',
         field: '',
         verboseLlm: false,
-        bootstrapVerify: true
+        bootstrapVerify: true,
+        p2pReplyDelay: 60,
+        agentLanguage: '中文',
+        ralphWiggumMode: false
     })
     const [updating, setUpdating] = useState(false)
 
@@ -70,7 +73,10 @@ const Profile = () => {
             verboseLlm: userData.verboseLlm || false,
             bootstrapVerify: userData.bootstrapVerify !== undefined ? userData.bootstrapVerify : true,
             name: userData.name || 'Agent',
-            personality: userData.personality || 'Professional'
+            personality: userData.personality || 'Professional',
+            p2pReplyDelay: userData.p2pReplyDelay || 60,
+            agentLanguage: userData.agentLanguage || '中文',
+            ralphWiggumMode: userData.ralphWiggumMode || false
         })
         fetchStatus()
     }, [])
@@ -89,7 +95,10 @@ const Profile = () => {
                 verbose_llm: agentConfig.verboseLlm,
                 bootstrap_verify: agentConfig.bootstrapVerify,
                 name: agentConfig.name,
-                personality: agentConfig.personality
+                personality: agentConfig.personality,
+                p2p_reply_delay: Number(agentConfig.p2pReplyDelay),
+                agent_language: agentConfig.agentLanguage,
+                ralph_wiggum_mode: agentConfig.ralphWiggumMode
             })
 
             const updatedStatus = response.data
@@ -105,6 +114,9 @@ const Profile = () => {
             localStorage.setItem('bp_bootstrap_verify', agentConfig.bootstrapVerify)
             localStorage.setItem('bp_name', agentConfig.name)
             localStorage.setItem('bp_personality', agentConfig.personality)
+            localStorage.setItem('bp_p2p_reply_delay', agentConfig.p2pReplyDelay)
+            localStorage.setItem('bp_agent_language', agentConfig.agentLanguage)
+            localStorage.setItem('bp_ralph_wiggum_mode', agentConfig.ralphWiggumMode)
 
             // Refresh local user state with new balance
             const localUser = Store.getUser()
@@ -219,10 +231,27 @@ const Profile = () => {
                         </div>
 
                         <Input
+                            label="Agent Output Language"
+                            placeholder="e.g. 中文, English"
+                            value={agentConfig.agentLanguage}
+                            onChange={e => setAgentConfig({ ...agentConfig, agentLanguage: e.target.value })}
+                        />
+
+                        <Input
                             label="Monitoring Research Field"
                             placeholder="e.g. AI Governance, Quantum Computing"
                             value={agentConfig.field}
                             onChange={e => setAgentConfig({ ...agentConfig, field: e.target.value })}
+                        />
+
+                        <Input
+                            label="P2P Reply Delay (seconds)"
+                            type="number"
+                            min="0"
+                            placeholder="e.g. 60"
+                            value={agentConfig.p2pReplyDelay}
+                            onChange={e => setAgentConfig({ ...agentConfig, p2pReplyDelay: e.target.value })}
+                            title="How many seconds the Agent should wait before broadcasting a P2P reply to the network."
                         />
 
                         <div className="flex items-center mt-4 mb-2">
@@ -244,6 +273,21 @@ const Profile = () => {
                                 className="w-4 h-4 text-primary focus:ring-primary border-slate-300 rounded"
                             />
                             <label htmlFor="bootstrapVerify" className="ml-2 text-sm text-slate-600">Verify Bootstrap SSL Certificate</label>
+                        </div>
+                        <div className="flex items-start mb-4 p-3 bg-red-50 border border-red-100 rounded-lg">
+                            <div className="flex items-center h-5">
+                                <input
+                                    type="checkbox"
+                                    id="ralphWiggumMode"
+                                    checked={agentConfig.ralphWiggumMode}
+                                    onChange={e => setAgentConfig({ ...agentConfig, ralphWiggumMode: e.target.checked })}
+                                    className="w-4 h-4 text-red-600 focus:ring-red-600 border-slate-300 rounded"
+                                />
+                            </div>
+                            <div className="ml-2 text-sm">
+                                <label htmlFor="ralphWiggumMode" className="font-semibold text-red-800">Enable Ralph Wiggum Loop (Continuous Execution)</label>
+                                <p className="text-red-600 mt-1 text-xs">WARNING: Bypasses the 50-step execution limit. The agent will run endlessly until the task is complete or it hits the maximum 5 loop epochs guardrail. Use with caution as this may consume high API credits.</p>
+                            </div>
                         </div>
 
                         <button

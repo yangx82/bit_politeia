@@ -18,15 +18,18 @@ async def configure_agent(request: ConfigRequest):
     rf = getattr(request, 'research_field', 'AI Governance')
     bu = getattr(request, 'bootstrap_url', 'http://localhost:8000')
     await agent_service.configure_agent(
-        request.base_url, 
-        request.api_key, 
-        request.model, 
-        rf,
-        bu,
-        request.verbose_llm,
-        request.bootstrap_verify,
-        request.name,
-        request.personality
+        base_url=request.base_url, 
+        api_key=request.api_key, 
+        model=request.model, 
+        research_field=rf,
+        bootstrap_url=bu,
+        verbose_llm=request.verbose_llm,
+        bootstrap_verify=request.bootstrap_verify,
+        name=request.name,
+        personality=request.personality,
+        p2p_reply_delay=getattr(request, 'p2p_reply_delay', 60),
+        agent_language=getattr(request, 'agent_language', '中文'),
+        ralph_wiggum_mode=getattr(request, 'ralph_wiggum_mode', False)
     )
     return await get_status()
 
@@ -36,7 +39,11 @@ async def send_instruction(request: ChatRequest):
 
 @router.get("/history", response_model=list[Message])
 async def get_history():
-    return await agent_service.get_history()
+    history = await agent_service.get_history()
+    # DEBUG: Print last few messages to check chat_id/sender format
+    if history:
+        print(f"\n[DEBUG-HISTORY] Last message: sender={history[-1].sender}, chat_id={history[-1].chat_id}")
+    return history
 
 @router.get("/history/search", response_model=list[Message])
 async def search_history(q: str = None, date_from: str = None, date_to: str = None):
@@ -67,18 +74,34 @@ async def get_groups():
 
 @router.post("/p2p/send")
 async def send_p2p_message(payload: dict = Body(...)):
-    """Send a direct P2P message."""
+    """Send a suggestion to the agent to send a P2P message."""
     target_id = payload.get("target_id")
     content = payload.get("content")
     if not target_id or not content:
         raise HTTPException(status_code=400, detail="target_id and content required")
     
-    return await agent_service.send_p2p_message(target_id, content)
+    text_content = content.get("text") if isinstance(content, dict) else str(content)
+    
+    instruction = (
+        f"【RESIDENT SUGGESTION】 I suggest you send the following message to '{target_id}':\n"
+        f"\"{text_content}\"\n"
+        f"Please evaluate this, and if you agree, use the 'send_p2p_message' tool to send it."
+    )
+    
+    import asyncio
+    asyncio.create_task(agent_service.process_user_instruction(instruction))
+    return {"status": "suggestion_forwarded", "message": "Suggestion forwarded to your agent. Please check the Chat for their decision."}
 
 @router.get("/archive/chain")
 async def get_archive_chain():
     """Get the local blockchain archive."""
     return await agent_service.get_archive_chain()
+
+@router.post("/archive/generate")
+async def generate_archive_block():
+    """Manually trigger generation of a new archive block."""
+    result = await agent_service.run_archiving()
+    return {"message": result}
 
 @router.get("/status", response_model=AgentStatus)
 async def get_status():
@@ -97,8 +120,16 @@ async def get_proposals():
 
 @router.post("/governance/proposals")
 async def create_proposal(request: ProposalCreateRequest):
-    """Create a new proposal."""
-    return await agent_service.create_proposal(request.group_id, request.content, request.duration_minutes)
+    """Send a suggestion to the agent to create a new proposal."""
+    instruction = (
+        f"【RESIDENT SUGGESTION】 I suggest you initiate a new governance proposal for group '{request.group_id}'.\n"
+        f"Proposal Content: '{request.content}'.\n"
+        f"Suggested duration: {request.duration_minutes} minutes.\n"
+        f"Please evaluate this, and if you agree, use the 'create_proposal' tool to broadcast it to the network."
+    )
+    import asyncio
+    asyncio.create_task(agent_service.process_user_instruction(instruction))
+    return {"status": "suggestion_forwarded", "message": "Suggestion forwarded to your agent. Please check the Chat for their decision."}
 
 @router.get("/governance/elections", response_model=list[dict])
 async def get_elections():
@@ -107,11 +138,13 @@ async def get_elections():
 
 @router.post("/governance/vote")
 async def cast_vote(request: VoteRequest):
-    """Cast a vote on an election."""
-    return await agent_service.cast_vote(
-        request.election_id, 
-        request.approval, 
-        request.reason, 
-        request.candidate_id
+    """Send a suggestion to the agent to cast a vote."""
+    vote_str = "Approve" if request.approval else "Reject"
+    instruction = (
+        f"【RESIDENT SUGGESTION】 I suggest you vote '{vote_str}' on election '{request.election_id}'.\n"
+        f"My reason: '{request.reason}'.\n"
+        f"Please evaluate this, and if you agree, use the 'vote_election' tool to cast the vote."
     )
-
+    import asyncio
+    asyncio.create_task(agent_service.process_user_instruction(instruction))
+    return {"status": "suggestion_forwarded", "message": "Suggestion forwarded to your agent. Please check the Chat for their decision."}

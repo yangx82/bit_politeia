@@ -46,7 +46,9 @@ class NATManager:
             return False
             
         except Exception as e:
-            logger.error(f"UPnP discovery failed: {e}")
+            # Downgrade to warning as UPnP is often disabled or unreliable on consumer routers
+            # and we use STUN/TURN as a primary traversal mechanism for WebRTC.
+            logger.warning(f"UPnP discovery skipped or failed (Typical for many routers): {e}")
             return False
 
     def get_external_ip(self) -> Optional[str]:

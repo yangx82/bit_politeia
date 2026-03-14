@@ -25,6 +25,8 @@ class PipelineContext(BaseModel):
     # Control flags
     stop_execution: bool = False
     requires_approval: bool = False
+    continuation_req: bool = False
+    continuation_reason: Optional[str] = None
     
     # Execution Environment
     _sandbox: Optional[Any] = None # Lazy initialized sandbox
@@ -64,31 +66,67 @@ class SenseStage(PipelineStage):
         # 2. Retrieve P2P Network Context
         my_id = p2p_service.local_node.node_id if p2p_service.local_node else "unknown"
         my_groups = list(p2p_service.local_node.group_ids) if p2p_service.local_node else []
-        network_identity = f"- Node ID: {my_id}\n- My Groups: {my_groups}\n- My Monitoring Research Focus: {agent.research_field}"
+        
+        # PROACTIVE TOPOLOGY INJECTION: Give the agent awareness of OTHER nodes
+        network_status = p2p_service.get_network_status()
+        peers_info = ""
+        if network_status and "nodes" in network_status:
+            peer_list = []
+            for node_id, node_data in network_status["nodes"].items():
+                if node_id != my_id:
+                    peer_list.append(f"- {node_data.get('name', 'Unknown')}: {node_id}")
+            if peer_list:
+                peers_info = "\nAvailable Peers in Network:\n" + "\n".join(peer_list)
+        
+        network_identity = f"- Node ID: {my_id}\n- My Groups: {my_groups}\n- My Monitoring Research Focus: {agent.research_field}{peers_info}"
         context.metadata["network_identity"] = network_identity
 
-        # 3. Build History Slice
+        # 3. Build Hybrid History Splice (Session Core + Global Periphery)
         effective_history = agent.history[:]
         while effective_history and effective_history[-1].content == agent_query:
             effective_history.pop()
+            
+        # a) Extract Session-Specific History (The Core Dialogue)
+        session_history = [msg for msg in effective_history if msg.chat_id == context.input_message.chat_id]
+        recent_session_history = session_history[-8:] if session_history else []
         
-        recent_history = effective_history[-10:] if effective_history else []
         lc_history = []
-        for msg in recent_history:
+        for msg in recent_session_history:
             if msg.sender == "agent":
                 lc_history.append(AIMessage(content=msg.content))
             else:
                 lc_history.append(HumanMessage(content=f"[{msg.sender}] {msg.content}"))
-        
+                
         context.session.history_slice = lc_history
         
+        # b) Extract Global Recent Events (The Periphery / Awareness)
+        # Get the most recent events that DO NOT belong to this session
+        global_events_raw = [msg for msg in effective_history if msg.chat_id != context.input_message.chat_id][-5:]
+        recent_global_events = ""
+        if global_events_raw:
+            events_formatted = []
+            for msg in global_events_raw:
+                sender_label = "Me" if msg.sender == "agent" else msg.sender
+                timestamp_str = msg.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                # Format: [2024-xx-xx] Me in chat_xyz: Hello
+                events_formatted.append(f"[{timestamp_str}] {sender_label} in {msg.chat_id}: {msg.content}")
+            recent_global_events = "\n".join(events_formatted)
+
         # Build initial messages for Plan stage
+        source_label = f"P2P Peer (Node ID: {context.input_message.sender_id})" if context.input_message.channel == "p2p" else "Resident (Human User)"
+        
         context.metadata["messages"] = agent.context_builder.build_messages(
             history=lc_history, 
             current_message=agent_query,
             rag_context=rag_context,
             network_identity=network_identity,
-            source=f"{context.input_message.channel} user {context.input_message.sender_id}"
+            recent_global_events=recent_global_events,
+            source=source_label,
+            name=agent.name,
+            personality=agent.personality,
+            agent_language=getattr(agent, 'agent_language', '中文'),
+            channel=context.input_message.channel,
+            host_info=agent._get_host_info()
         )
 
 class PlanStage(PipelineStage):
@@ -101,33 +139,68 @@ class PlanStage(PipelineStage):
             return
 
         messages = context.metadata["messages"]
-        
+        # from ..services.agent_service import p2p_logger
+        # p2p_logger.info(f"\n[PIPELINE] Sense Messages:\n{messages}\n" + "-"*50)
         # One turn of the ReAct loop
-        response = await agent.llm.ainvoke(messages)
-        context.metadata["last_response"] = response
+        try:
+            response = await agent.llm.ainvoke(messages)
+            context.metadata["last_response"] = response
+        except Exception as e:
+            logger.error(f"LLM API Error during pipeline plan stage: {e}")
+            context.final_answer = f"Error communicating with LLM. (Triggered Ralph Wiggum auto-heal if enabled: {str(e)})"
+            context.continuation_req = True
+            context.continuation_reason = f"API_ERROR: {str(e)}"
+            context.stop_execution = True
+            return
         
-        if agent.verbose_llm:
-            print(f"\n[PIPELINE] Planning Response:\n{response.content}\n" + "-"*50)
+        # Extract Reasoning/Thought Content
+        thought_content = ""
+        
+        # 1. Check for dedicated reasoning fields
+        if "reasoning_content" in response.additional_kwargs:
+            thought_content = response.additional_kwargs["reasoning_content"]
+        elif hasattr(response, "reasoning_content") and response.reasoning_content:
+            thought_content = response.reasoning_content
+        elif "thought" in response.additional_kwargs:
+             thought_content = response.additional_kwargs["thought"]
+             
+        # 2. Extract from XML-style tags in content (for DeepSeek/R1 models)
+        if not thought_content and response.content:
+            import re
+            tags = [r"<thought>(.*?)</thought>", r"<reasoning>(.*?)</reasoning>", r"\[THOUGHT\](.*?)\[/THOUGHT\]"]
+            for tag in tags:
+                match = re.search(tag, response.content, re.DOTALL | re.IGNORECASE)
+                if match:
+                    thought_content = match.group(1).strip()
+                    # Clean up the original content to remove the thought block
+                    # response.content = re.sub(tag, "", response.content, flags=re.DOTALL | re.IGNORECASE).strip()
+                    break
+
+        # If explicitly missing reasoning field, use content as thought if tool_calls are present
+        if not thought_content and response.tool_calls and response.content:
+            thought_content = response.content
 
         # Emit Thought
-        if response.content:
-            context.thoughts.append(response.content)
+        display_thought = thought_content or response.content
+        
+        # # DEBUG: User suggested to set a default if still empty to verify UI
+        # if not display_thought:
+        #     display_thought = "No thought content (Debug)!"
+
+        if display_thought:
+            context.thoughts.append(str(display_thought))
             context.session.message_count += 1
             
             # CRITICAL FIX: Thoughts are internal monologue.
             # 1. ALWAYS send to "gateway" for UI observability.
-            # 2. NEVER send to P2P channels.
-            # 3. Use input sender_id as chat_id only if it helps UI grouping, 
-            #    BUT ensuring the channel is NOT the P2P transport.
-            
-            # We publish to "gateway" with the chat_id of the current context
-            # so the UI can show thoughts in the relevant conversation window.
-            await agent.message_bus.publish_outbound(OutboundMessage(
+            logger.info(f"Pipeline: Publishing thought to gateway: {str(display_thought)[:50]}...")
+            out_msg = OutboundMessage(
                 channel="gateway", 
                 chat_id=context.input_message.sender_id,
-                content=str(response.content),
+                content=str(display_thought),
                 type="thought"
-            ))
+            )
+            await agent.message_bus.publish_outbound(out_msg)
 
         if response.tool_calls:
             context.tool_calls = response.tool_calls
@@ -152,13 +225,15 @@ class ExecuteStage(PipelineStage):
             
             # Emit Tool Call Event
             # Emit Tool Call Event - Internal Log
-            await agent.message_bus.publish_outbound(OutboundMessage(
+            out_msg = OutboundMessage(
                 channel="gateway",
                 chat_id=context.input_message.sender_id,
                 content=f"Invoking {tool_name} with {args}",
                 type="tool_call",
                 metadata={"tool": tool_name, "args": args}
-            ))
+            )
+            # print(f"[DEBUG-AG] Publishing Tool Call: {tool_name} to {out_msg.channel}")
+            await agent.message_bus.publish_outbound(out_msg)
 
             try:
                 # Actual Tool Execution
@@ -213,14 +288,16 @@ class NotifyStage(PipelineStage):
                 type="agent_message"
             ))
 
-            # 2. Publish to source channel ONLY if it has a real subscriber (skip 'resident')
-            # 'resident' is handled by the direct HTTP request/response cycle.
-            if context.input_message.channel != "resident":
-                await agent.message_bus.publish_outbound(OutboundMessage(
-                    channel=context.input_message.channel,
-                    chat_id=context.input_message.sender_id,
-                    content=context.final_answer
-                ))
+            # 2. Publish to source channel - DISABLED
+            # Reason: The caller (agent_service.process_bus_message) already handles the reply.
+            # Doing it here causes Duplicate Messages.
+            # Also, this logic used sender_id instead of chat_id, which was buggy for groups.
+            # if context.input_message.channel != "resident":
+            #     await agent.message_bus.publish_outbound(OutboundMessage(
+            #         channel=context.input_message.channel,
+            #         chat_id=context.input_message.sender_id,
+            #         content=context.final_answer
+            #     ))
 
 class ArchiveStage(PipelineStage):
     """Stage 6: Persistence & Cleanup."""

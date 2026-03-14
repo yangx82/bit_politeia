@@ -20,13 +20,11 @@ class BootstrapService:
     Used by both the FastAPI server (Cloud/LAN) and potentially local simulations.
     """
     def __init__(self):
-        self.storage = BootstrapStorage()
-        
-        # Load from Storage
-        self._groups = self.storage.load_groups()
-        self._peers = self.storage.load_nodes()
-        self._group_members = self.storage.load_group_members()
-        self._pending_joins = self.storage.load_pending_joins()
+        self.storage = None
+        self._groups = {}
+        self._peers = {}
+        self._group_members = {}
+        self._pending_joins = {}
         
         self._reputation = ReputationManager("bootstrap")
         self._last_update = datetime.now()
@@ -35,9 +33,26 @@ class BootstrapService:
         self.group_capacity = community_config.get_group_capacity()
         self.max_subgroups = 3 # Hardcoded or config
         
+        self._initialized = False
+
+    def initialize(self):
+        """Must be called after the event loop starts (e.g., inside FastAPI lifespan)."""
+        if self._initialized: return
+        
+        self.storage = BootstrapStorage()
+        
+        # Load from Storage
+        self._groups = self.storage.load_groups()
+        self._peers = self.storage.load_nodes()
+        self._group_members = self.storage.load_group_members()
+        self._pending_joins = self.storage.load_pending_joins()
+        
         # Initialize Topology if empty
         if not self._groups:
             self._initialize_root_group()
+            
+        self._initialized = True
+        logger.info("BootstrapService initialized successfully.")
 
     def _generate_group_name(self, level: int) -> str:
         """Generate a sequential human-readable name for a group (e.g., L1-G1)."""
@@ -66,10 +81,19 @@ class BootstrapService:
         
         logger.info(f"Bootstrap: Initialized with single Level 1 group: {first_group_id} ({self._groups[first_group_id].name})")
 
-    def get_topology_info(self) -> Dict:
+    def get_topology_info(self, node_id: Optional[str] = None) -> Dict:
         """
         Returns full network topology: groups, nodes, and hierarchy.
+        If node_id is provided, updates its last_seen timestamp (Heartbeat).
         """
+        if node_id and node_id in self._peers:
+            from datetime import timezone
+            peer = self._peers[node_id]
+            peer.last_seen = datetime.now(timezone.utc)
+            # Persist the heartbeat to storage
+            self.storage.upsert_node(peer)
+            logger.debug(f"Bootstrap: Heartbeat received via topology sync from {node_id}")
+
         return {
             "groups": {gid: g.to_dict() for gid, g in self._groups.items()},
             "nodes": {nid: p.to_dict() for nid, p in self._peers.items()},
@@ -175,6 +199,68 @@ class BootstrapService:
         
         # Return True because node is registered in _peers (visible in topology)
         # even though group membership is pending
+        return True
+
+    def unregister_node(self, node_id: str) -> bool:
+        """
+        Manually remove a node from the bootstrap server's state.
+        Returns True if the node existed and was removed.
+        """
+        node_id = node_id.strip()
+        # Case-insensitive match check
+        target_nid = None
+        for nid in self._peers.keys():
+            if nid.lower() == node_id.lower():
+                target_nid = nid
+                break
+                
+        if not target_nid:
+            available = list(self._peers.keys())[:5]
+            logger.warning(f"Service: Attempted to unregister unknown node {node_id}. Available IDs (prefix): {available}")
+            return False
+            
+        # 1. Remove from in-memory maps
+        # Use the matched target_nid
+        self._peers.pop(target_nid, None)
+        
+        # Remove from all group memberships and update group stats
+        for group_id, members in self._group_members.items():
+            if target_nid in members:
+                members.remove(target_nid)
+                if group_id in self._groups:
+                    group = self._groups[group_id]
+                    group.member_count = len(members)
+                    group.has_space = group.member_count < self.group_capacity
+                    
+                    # Remove from core nodes
+                    if node_id in group.core_node_ids:
+                        group.core_node_ids.remove(node_id)
+                    
+                    # Remove from rankings
+                    if node_id in group.node_rankings:
+                        group.node_rankings.remove(node_id)
+                    
+                    # Persist group update (since count/cores/rankings changed)
+                    self.storage.upsert_group(group)
+
+        # 2. Remove from pending joins
+        for group_id, pending in self._pending_joins.items():
+            original_len = len(pending)
+            self._pending_joins[group_id] = [r for r in pending if r.node_id != node_id]
+            if len(self._pending_joins[group_id]) < original_len:
+                # remove_pending_join already called inside storage.delete_node, 
+                # but good to be explicit if iterating specifically here.
+                pass
+
+        # 3. Remove from peers registry
+        self._peers.pop(node_id, None)
+
+        # 4. Storage cleanup (Removes from nodes, group_members, rankings, cores, pending)
+        self.storage.delete_node(node_id)
+        
+        # 5. Global update
+        self._last_update = datetime.now()
+        logger.info(f"Bootstrap: Node {node_id} has been manually unregistered and removed from topology.")
         return True
 
     def get_election_candidates(self, group_id: str) -> List[str]:

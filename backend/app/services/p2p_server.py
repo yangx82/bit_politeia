@@ -1,8 +1,9 @@
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, status
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import uvicorn
 import logging
+import os
 
 from .bootstrap_service import bootstrap_service
 from ..p2p_community.bootstrap_client import NodeRegistration
@@ -13,6 +14,11 @@ logger = logging.getLogger("BootstrapServer")
 
 app = FastAPI(title="Bit-Politeia Bootstrap Server")
 
+# Global safety toggle for node removal
+ALLOW_NODE_REMOVAL = os.getenv("BOOTSTRAP_ALLOW_NODE_REMOVAL", "false").lower() == "true"
+
+from contextlib import asynccontextmanager
+
 # Enable CORS for frontend communication
 app.add_middleware(
     CORSMiddleware,
@@ -22,14 +28,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize the bootstrap service on startup
+    logger.info("Initializing BootstrapService...")
+    try:
+        bootstrap_service.initialize()
+        logger.info("BootstrapService initialization complete.")
+    except Exception as e:
+        logger.error(f"FATAL: Failed to initialize BootstrapService: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+    yield
+    # Cleanup on shutdown (if needed)
+    logger.info("Shutting down BootstrapServer...")
+
+app.router.lifespan_context = lifespan
+
 @app.get("/")
 async def root():
     return {"status": "running", "service": "Bit-Politeia Bootstrap"}
 
 @app.get("/topology")
-async def get_topology() -> Dict[str, Any]:
-    """Get full network topology and node list."""
-    return bootstrap_service.get_topology_info()
+async def get_topology(node_id: Optional[str] = None) -> Dict:
+    """Get full network topology and optionally update heartbeat."""
+    return bootstrap_service.get_topology_info(node_id=node_id)
 
 @app.get("/rules")
 async def get_rules() -> Dict[str, Any]:
@@ -55,6 +78,23 @@ async def register_node(registration: dict = Body(...)) -> Dict[str, bool]:
     except Exception as e:
         logger.error(f"Registration failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/nodes/{node_id}")
+async def unregister_node(node_id: str) -> Dict[str, bool]:
+    """Manually unregister a node from the bootstrap server."""
+    allow_removal = os.getenv("BOOTSTRAP_ALLOW_NODE_REMOVAL", "false").lower() == "true"
+    
+    if not allow_removal:
+        raise HTTPException(
+            status_code=403, 
+            detail="Node removal is disabled. Set BOOTSTRAP_ALLOW_NODE_REMOVAL=true to enable."
+        )
+        
+    success = bootstrap_service.unregister_node(node_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Node not found.")
+        
+    return {"success": success}
 
 @app.get("/groups/{group_id}/pending")
 async def get_pending_joins(group_id: str) -> Dict[str, Any]:
@@ -100,6 +140,31 @@ async def get_candidates(group_id: str) -> Dict[str, List[str]]:
     """Get candidate suggestions for a core node election based on reputation."""
     candidates = bootstrap_service.get_election_candidates(group_id)
     return {"candidates": candidates}
+
+@app.get("/nodes")
+async def list_nodes() -> Dict[str, Any]:
+    """List all currently registered nodes (for debugging)."""
+    topology = bootstrap_service.get_topology_info()
+    return {"nodes": topology.get("nodes", {})}
+
+@app.delete("/nodes/{node_id}")
+async def remove_node(node_id: str) -> Dict[str, bool]:
+    """Manually remove a node from the topology (Safety Toggle required)."""
+    logger.info(f"Received request to delete node: {node_id}")
+    if not ALLOW_NODE_REMOVAL:
+         logger.warning("Node removal blocked: Safety toggle BOOTSTRAP_ALLOW_NODE_REMOVAL=true not set.")
+         raise HTTPException(
+             status_code=status.HTTP_403_FORBIDDEN, 
+             detail="Manual node removal is disabled on this server. Enable via BOOTSTRAP_ALLOW_NODE_REMOVAL=true"
+         )
+    
+    success = bootstrap_service.unregister_node(node_id)
+    if not success:
+        logger.warning(f"Node removal failed: Node {node_id} not found.")
+        # We explicitly return "Node not found." to distinguish from FastAPI 404
+        raise HTTPException(status_code=404, detail="Node not found.")
+        
+    return {"success": True}
 
 from fastapi import WebSocket, WebSocketDisconnect
 from .relay_manager import relay_manager

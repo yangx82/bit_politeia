@@ -16,29 +16,17 @@ async def send_p2p_message(recipient_id: str, content: str, message_type: str = 
         message_type: Type of message. Options: 'DIRECT' (one-to-one), 'GROUP' (broadcast to group), 'GOSSIP' (network wide).
     """
     try:
-        # P2P Service expects a dict content usually, but we handle text here
-        payload = {"text": content}
+        # print(f"[DEBUG-TOOL] send_p2p_message invoked for {recipient_id}")
+        # Use AgentService wrapper to ensure consistent logging and WebRTC fallback logic
+        from app.services.agent_service import agent_service
         
-        # P2P Service send_message might be sync or async? 
-        # In p2p_service.py it is `async def send_message`.
-        # We need to map message_type string to what service expects.
+        result = await agent_service.send_p2p_message(recipient_id, content)
         
-        # NOTE: p2p_service.send_message might need update to handle types or we use lower level network manager
-        # But p2p_service is the high level entry.
-        
-        # Let's assume p2p_service.send_message(target_id, content, msg_type) signature based on my previous edits
-        # or we might need to use `broadcast_message` for groups.
-        
-        if message_type.upper() == "GROUP":
-             success = await p2p_service.broadcast_message(recipient_id, payload)
-             return f"Broadcasted to group {recipient_id}: {'SUCCESS' if success else 'FAILED (Network/Relay Error)'}"
-        elif message_type.upper() == "DIRECT":
-             success = await p2p_service.send_message(recipient_id, payload)
-             return f"Sent direct message to {recipient_id}: {'SUCCESS' if success else 'FAILED (Target Offline or Relay Error)'}"
+        if result.get("success"):
+             mode = result.get("mode", "unknown")
+             return f"Message sent to {recipient_id} via {mode}: SUCCESS"
         else:
-             # Default or GOSSIP
-             success = await p2p_service.send_message(recipient_id, payload) # Fallback
-             return f"Sent message to {recipient_id}: {'SUCCESS' if success else 'FAILED'}"
+             return f"Failed to send message: {result.get('error')}"
              
     except Exception as e:
         logger.error(f"Tool Error sending message: {e}")
@@ -77,25 +65,14 @@ async def send_file(recipient_id: str, file_path: str, description: str = "File"
         # Ideally p2p_service.send_message should support 'file' string mapping to MessageType.FILE
         # Since we modified MessageType enum, we can pass "file" or MessageType.FILE.value
         
-        success = await p2p_service.send_message(recipient_id, payload, msg_type="file")
+        from app.services.agent_service import agent_service
+        # Note: we pass 'file' as the message_type parameter to agent_service.send_p2p_message
+        result = await agent_service.send_p2p_message(recipient_id, payload, message_type='file')
+        success = result.get('success', False)
         
         if success:
-             # Log the action (handled by send_message return usually, but we want implicit history log of action)
-             # sending a big base64 string to history is bad. We logged the text part in payload?
-             # send_message logic in models.py doesn't automatically log to history for the sender?
-             # Wait, previous fix added logging to `send_p2p_message` (the tool helper/service method).
-             # accessing p2p_service directly bypasses `AgentService.send_p2p_message`.
-             # So we should log manually here or use `AgentService` wrapper if available.
-             # Tools access `p2p_service` directly. 
-             # Let's log a summary to resident memory.
-            from app.services.agent_service import agent_service
-            agent_service.resident_memory.log_interaction(
-                "agent", 
-                f"Sent file '{file_name}' to {recipient_id}", 
-                msg_type="chat", 
-                chat_id=recipient_id
-            )
-            return f"Successfully sent file {file_name} to {recipient_id}"
+            # Tell the agent exactly where it was sent from or how it was sent
+            return f"Successfully queued file {file_name} for {recipient_id}"
         else:
             return "Failed to send file (Network Error)"
             
@@ -109,13 +86,15 @@ async def get_my_status() -> str:
     and the full network topology (groups and nodes).
     """
     # 1. Local Identity
-    my_id = p2p_service.local_node.node_id if p2p_service.local_node else "Not Initialized"
-    my_groups = list(p2p_service.local_node.group_ids) if p2p_service.local_node else []
+    local_node = p2p_service.local_node
+    my_id = local_node.node_id if local_node else "Not Initialized"
+    my_name = local_node.name if local_node else "Unknown"
+    my_groups = list(local_node.group_ids) if local_node else []
     
     # 2. Network Topology
     info = p2p_service.get_network_status()
     
-    status_report = f"--- My Status ---\nNode ID: {my_id}\nGroups: {my_groups}\n\n--- Network Topology ---\n{json.dumps(info, indent=2)}"
+    status_report = f"--- My Status ---\nName: {my_name}\nNode ID: {my_id}\nGroups: {my_groups}\n\n--- Network Topology ---\n{json.dumps(info, indent=2)}"
     return status_report
 
 import json
@@ -178,6 +157,40 @@ async def propose_election(group_id: str, candidate_ids: str) -> str:
         return f"Election initiated: {result}"
     except Exception as e:
         return f"Failed to start election: {str(e)}"
+
+@tool
+async def search_chat_history(peer_name_or_id: str, limit: int = 10) -> str:
+    """
+    Search and retrieve persistent chat history with a specific peer.
+    Use this when the resident asks about past conversations or when you need to recall context from previous sessions.
+    
+    Args:
+        peer_name_or_id: The Name or Node ID (UUID/Hex) of the peer.
+        limit: Number of recent messages to retrieve (default 10).
+    """
+    try:
+        from ..services.agent_service import agent_service
+        from ..services.p2p_service import p2p_service
+        
+        target_id = peer_name_or_id.strip()
+        
+        # 1. Try to resolve by name using local topology
+        network_status = p2p_service.get_network_status()
+        resolved_id = None
+        
+        if network_status and "nodes" in network_status:
+            for node_id, node_data in network_status["nodes"].items():
+                if node_data.get("name", "").lower() == target_id.lower():
+                    resolved_id = node_id
+                    break
+        
+        if resolved_id:
+            target_id = resolved_id
+            
+        result = await agent_service.get_chat_history_with_peer(target_id, limit)
+        return result
+    except Exception as e:
+        return f"Failed to retrieve chat history: {str(e)}"
 
 @tool
 async def submit_proposal(group_id: str, content: str) -> str:
@@ -355,7 +368,8 @@ async def delegate_task(recipient_id: str, task: str, context: Optional[str] = N
             "inputs": inputs
         }
         
-        await p2p_service.send_message(recipient_id, payload)
+        from app.services.agent_service import agent_service
+        await agent_service.send_p2p_message(recipient_id, payload)
         return f"Task delegated to {recipient_id}. Handoff ID: {handoff_id}. Awaiting result..."
         
     except Exception as e:
@@ -380,25 +394,86 @@ async def ask_resident(question: str) -> str:
         from datetime import datetime
         import uuid
         
-        # Log to agent's history so it shows in UI
-        agent_service.history.append(Message(
-            id=str(uuid.uuid4()),
-            content=question,
-            sender="agent",
-            timestamp=datetime.now(),
-            chat_id="resident"
-        ))
-        
-        # Also log to resident memory
-        agent_service.resident_memory.log_interaction("agent", question, msg_type="chat", chat_id="resident")
+        # Use proactive notification helper (Broadcasts to all bridges)
+        await agent_service.notify_resident(question)
         
         return f"Question sent to resident: {question}"
     except Exception as e:
         return f"Error asking resident: {str(e)}"
 
+@tool
+async def send_file_to_resident(file_path: str, description: str = "") -> str:
+    """
+    Send a local file (document, image, etc.) to the local resident (human user) via their connected channels (Feishu/Telegram/Web).
+    Args:
+        file_path: The absolute or relative path to the local file you want to send.
+        description: Optional text message to accompany the file.
+    """
+    try:
+        import os
+        from app.services.agent_service import agent_service
+        
+        if not os.path.exists(file_path):
+            return f"Error: File not found at {file_path}"
+            
+        file_name = os.path.basename(file_path)
+        ext = file_name.lower().split('.')[-1]
+        
+        # Simple type inference
+        file_type = "image" if ext in ["jpg", "jpeg", "png", "gif"] else "file"
+        
+        media_payload = [{
+            "type": file_type,
+            "path": os.path.abspath(file_path),
+            "name": file_name
+        }]
+        
+        msg_text = description if description else f"Here is the file: {file_name}"
+        
+        # Pass media as kwargs to notify_resident
+        await agent_service.notify_resident(content=msg_text, media=media_payload)
+        
+        return f"Successfully sent {file_name} to the resident."
+    except Exception as e:
+        return f"Error sending file to resident: {str(e)}"
+
+@tool
+async def update_core_memory(content: str) -> str:
+    """
+    Update or append to the agent's core long-term memory (MEMORY.md).
+    Use this to save critical rules, user preferences, or "thought stamps" that you must never forget.
+    This memory is loaded into your system prompt on every interaction.
+    """
+    try:
+        from app.services.memory_store import memory_store
+        # Read existing
+        existing = memory_store.read_long_term()
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+            
+        new_content = existing + content if existing else content
+        memory_store.write_long_term(new_content)
+        return "Successfully appended to core long-term memory."
+    except Exception as e:
+        return f"Error updating core memory: {str(e)}"
+
+@tool
+async def append_daily_note(content: str) -> str:
+    """
+    Append a note or summary to today's daily diary (YYYY-MM-DD.md).
+    Use this to journal important events, findings, or daily progress.
+    """
+    try:
+        from app.services.memory_store import memory_store
+        memory_store.append_today(content)
+        return "Successfully appended to today's daily note."
+    except Exception as e:
+        return f"Error appending to daily note: {str(e)}"
+
 # List of Tools to bind to the agent
 AGENT_TOOLS = [
-    send_p2p_message, send_file, ask_resident, get_my_status, read_community_rules, update_system_parameter, 
+    send_p2p_message, send_file, ask_resident, send_file_to_resident, get_my_status, read_community_rules, update_system_parameter, 
+    search_chat_history, update_core_memory, append_daily_note,
     propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, 
     pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, 
     read_skill_guide, execute_shell_command,

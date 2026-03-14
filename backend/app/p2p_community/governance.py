@@ -149,8 +149,8 @@ class Election:
             "group_id": self.group_id,
             "election_type": self.election_type.value,
             "initiator_id": self.initiator_id,
-            "start_time": self.start_time.isoformat(),
-            "end_time": self.end_time.isoformat(),
+            "start_time": self.start_time if isinstance(self.start_time, str) else self.start_time.isoformat(),
+            "end_time": self.end_time if isinstance(self.end_time, str) else self.end_time.isoformat(),
             "candidates": self.candidates,
             "proposal_id": self.proposal_id,
             "eligible_voters": list(self.eligible_voters),
@@ -197,7 +197,7 @@ class Proposal:
             "initiator_id": self.initiator_id,
             "group_id": self.group_id,
             "content": self.content,
-            "timestamp": self.timestamp.isoformat(),
+            "timestamp": self.timestamp if isinstance(self.timestamp, str) else self.timestamp.isoformat(),
             "scope": self.scope,
             "status": self.status,
             "pdf_hash": self.pdf_hash
@@ -230,7 +230,7 @@ class Vote:
         return {
             "voter_id": self.voter_id,
             "candidate_id": self.candidate_id,
-            "timestamp": self.timestamp.isoformat(),
+            "timestamp": self.timestamp if isinstance(self.timestamp, str) else self.timestamp.isoformat(),
             "signature": self.signature,
             "approval": self.approval,
             "reason": self.reason,

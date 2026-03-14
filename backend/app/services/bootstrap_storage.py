@@ -223,6 +223,7 @@ class BootstrapStorage:
         rows = cursor.fetchall()
         conn.close()
         
+        from datetime import timezone
         nodes = {}
         for row in rows:
             nodes[row['node_id']] = PeerAddress(
@@ -231,7 +232,7 @@ class BootstrapStorage:
                 ip_address=row['ip_address'],
                 port=row['port'],
                 name=row['name'],
-                last_seen=datetime.fromisoformat(row['last_seen']) if row['last_seen'] else datetime.now()
+                last_seen=datetime.fromisoformat(row['last_seen']) if row['last_seen'] else datetime.now(timezone.utc)
             )
         return nodes
 
@@ -253,6 +254,30 @@ class BootstrapStorage:
         cursor.execute('DELETE FROM group_members WHERE group_id=? AND node_id=?', (group_id, node_id))
         conn.commit()
         conn.close()
+
+    def delete_node(self, node_id: str):
+        """Perform a full deletion of a node from the registry and all group relations."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        # 1. Remove from group memberships
+        cursor.execute('DELETE FROM group_members WHERE node_id=?', (node_id,))
+        
+        # 2. Remove from core node designations
+        cursor.execute('DELETE FROM group_core_nodes WHERE node_id=?', (node_id,))
+        
+        # 3. Remove from rankings
+        cursor.execute('DELETE FROM group_rankings WHERE node_id=?', (node_id,))
+        
+        # 4. Remove from pending joins
+        cursor.execute('DELETE FROM pending_joins WHERE node_id=?', (node_id,))
+        
+        # 5. Finally, remove from nodes table
+        cursor.execute('DELETE FROM nodes WHERE node_id=?', (node_id,))
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Storage: Node {node_id} and all its relations deleted.")
 
     # --- Pending Joins ---
 

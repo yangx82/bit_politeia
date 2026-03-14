@@ -8,6 +8,9 @@ import os
 import asyncio
 from contextlib import asynccontextmanager
 
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 # Critical for China: Set HuggingFace Mirror before any imports that might use it
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
@@ -29,6 +32,9 @@ feishu_channel = None
 async def lifespan(app: FastAPI):
     # Startup
     global telegram_channel, feishu_channel
+    
+    # 0. Start Message Bus dispatcher
+    await message_bus.start()
     
     # 1. Telegram
     token = os.getenv("TELEGRAM_TOKEN")
@@ -64,6 +70,10 @@ async def lifespan(app: FastAPI):
         # configure_agent is async
         asyncio.create_task(agent_service.configure_agent(**env_config))
 
+    # 4. Start Scheduler
+    # Must be done after loop is running
+    agent_service.start_scheduler()
+
     yield
     
     # Shutdown
@@ -72,12 +82,40 @@ async def lifespan(app: FastAPI):
     if feishu_channel:
         await feishu_channel.stop()
 
+# Ensure log directory exists
+os.makedirs("data/logs", exist_ok=True)
+
 # Configure logging
+console_handler = logging.StreamHandler()
+log_format = "%(asctime)s - %(levelname)s:    %(name)s - %(message)s"
+console_handler.setFormatter(logging.Formatter(log_format))
+handlers = [console_handler]
+
+# Feature: Conditional Debug File Logging
+ENABLE_DEBUG_LOG = os.getenv("ENABLE_DEBUG_LOGGING", "true").lower() == "true"
+if ENABLE_DEBUG_LOG:
+    file_handler = logging.FileHandler("data/logs/p2p_network.log", encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter(log_format))
+    
+    # Optional filter based on DEBUG_MODULES
+    debug_modules = os.getenv("DEBUG_MODULES", "")
+    if debug_modules:
+        allowed_modules = [m.strip() for m in debug_modules.split(",")]
+        allowed_modules.append("p2p_network") # Always allow P2P Network logs to this file
+        class ModuleFilter(logging.Filter):
+            def filter(self, record):
+                return any(record.name.startswith(m) for m in allowed_modules)
+        file_handler.addFilter(ModuleFilter())
+        
+    handlers.append(file_handler)
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(levelname)s:    %(name)s - %(message)s"
+    handlers=handlers
 )
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logging.getLogger("watchfiles").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 

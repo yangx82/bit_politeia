@@ -11,13 +11,23 @@ from .message_protocol import MessageProtocol, MessageType, SignedMessage
 logger = logging.getLogger(__name__)
 
 class NetworkManager:
+    def _log_throttled(self, level: str, message: str, interval: int = 10):
+        """Log a message only if it hasn't been logged in the last 'interval' seconds."""
+        import time
+        now = time.time()
+        last_time = self._last_logs.get(message, 0)
+        if now - last_time > interval:
+            self._last_logs[message] = now
+            getattr(logger, level)(message)
+
     def __init__(self, message_protocol: MessageProtocol):
         self.groups: Dict[str, Group] = {}
         self.nodes: Dict[str, Node] = {}
+        self.local_node_id: Optional[str] = None
         self.message_protocol = message_protocol
         self.bootstrap = bootstrap_client
-        self.local_node_id = None
-        self.http_client = httpx.AsyncClient(timeout=10.0)
+        self.http_client = httpx.AsyncClient(timeout=3.0)
+        self._last_logs: Dict[str, float] = {} # For deduplication: message -> last_time
 
     async def initialize(self):
         """Initialize network state from bootstrap server."""
@@ -45,7 +55,7 @@ class NetworkManager:
     async def sync_topology(self):
         """Fetch and sync full network topology from bootstrap."""
         try:
-            topo = await self.bootstrap.get_network_topology()
+            topo = await self.bootstrap.get_network_topology(my_node_id=self.local_node_id)
             if topo:
                 self._sync_topology(topo)
                 logger.debug("Network topology synchronized")
@@ -101,8 +111,10 @@ class NetworkManager:
                     parent.add_child(gid)
 
         # 2. Sync Nodes
+        server_node_ids = set()
         if "nodes" in topology_data:
             for nid, ndata in topology_data["nodes"].items():
+                server_node_ids.add(nid)
                 if nid not in self.nodes:
                     node = Node(
                         node_id=nid,
@@ -121,6 +133,21 @@ class NetworkManager:
                 port = ndata.get("port")
                 if ip and port:
                     self.nodes[nid].endpoint = f"http://{ip}:{port}"
+                
+                # Update last_seen
+                ls_str = ndata.get("last_seen")
+                if ls_str:
+                    try:
+                        from datetime import datetime
+                        self.nodes[nid].last_seen = datetime.fromisoformat(ls_str)
+                    except (ValueError, TypeError):
+                        pass
+
+        # 3. Remove stale nodes (offline/deleted on bootstrap server)
+        stale_nodes = [nid for nid in self.nodes if nid not in server_node_ids and nid != self.local_node_id]
+        for nid in stale_nodes:
+            logger.info(f"[Network] Removing stale node {nid} from local topology cache")
+            del self.nodes[nid]
 
     def get_group(self, group_id: str) -> Optional[Group]:
         return self.groups.get(group_id)
@@ -178,14 +205,29 @@ class NetworkManager:
     async def handle_relayed_message(self, message_data: Dict):
         """Handle messages received via RelayClient."""
         try:
+            # Check for system messages first
+            msg_type = message_data.get("type", message_data.get("message_type"))
+            if msg_type == "SYSTEM_ERROR":
+                self._log_throttled("warning", f"[Network] Relay System Error: {message_data.get('content')} (Target: {message_data.get('recipient_id')})")
+                return
+
+            # Basic Validation before parsing
+            if "timestamp" not in message_data:
+                logger.warning(f"[Network] Received relayed message missing 'timestamp'. Content: {str(message_data)[:200]}")
+                # If it has recipient_id and content, maybe it's a malformed SignedMessage?
+                # We expect all standard P2P messages to be SignedMessages.
+                return
+
             # Parse dict back to SignedMessage
             message = SignedMessage.from_dict(message_data)
             logger.info(f"[Network] Received RELAYED message {message.message_id} from {message.sender_id}")
             
             # Route locally
-            await self.route_message(message)
+            await self.route_message(message, from_relay=True)
         except Exception as e:
-            logger.error(f"Failed to handle relayed message: {e}")
+            import traceback
+            logger.error(f"Failed to handle relayed message: {e}\n{traceback.format_exc()}")
+            logger.debug(f"Malformed message data: {message_data}")
 
     async def register_node_to_group(self, node_id: str, group_id: str) -> bool:
         """Join a group and notify bootstrap if it's the local node."""
@@ -263,19 +305,19 @@ class NetworkManager:
                 logger.warning(f"Transport error to {endpoint}: HTTP {resp.status_code}")
                 return False
         except Exception as e:
-            logger.warning(f"Failed to reach peer {endpoint}: {e}")
+            self._log_throttled("warning", f"Failed to reach peer {endpoint}: {e}")
             return False
 
     async def _send_via_relay(self, target_id: str, message: SignedMessage):
         """Fallback: Send message via Bootstrap Relay."""
         if hasattr(self, 'relay_client') and self.relay_client.websocket:
-            logger.info(f"Fallback: Sending message to {target_id} via RELAY")
+            self._log_throttled("info", f"Fallback: Sending message to {target_id} via RELAY")
             return await self.relay_client.send(message.to_dict())
         return False
 
-    async def route_message(self, message: SignedMessage) -> bool:
+    async def route_message(self, message: SignedMessage, from_relay: bool = False) -> bool:
         """Route message to local node or remote peer via HTTP, fallback to Relay."""
-        logger.info(f"[Network] Routing {message.message_type.value} message to {message.recipient_id}")
+        self._log_throttled("info", f"[Network] Routing {message.message_type.value} message to {message.recipient_id} (From Relay: {from_relay})")
 
         # Helper to route to single node with fallback
         async def send_to_node(node_id: str, msg: SignedMessage) -> bool:
@@ -291,11 +333,19 @@ class NetworkManager:
                     success = await self._send_http_message(target.endpoint, msg)
                 
                 if not success:
+                    # BLOCK RE-RELAY: If it came from relay, don't send back to relay
+                    if from_relay:
+                        self._log_throttled("warning", f"[Network] Dropping message to {node_id} to prevent Relay Loop.")
+                        return False
+                    
                     # Fallback to Relay
                     return await self._send_via_relay(node_id, msg)
                 return True
             else:
                  # Try Relay even if unknown (maybe new node)
+                 if from_relay:
+                     self._log_throttled("warning", f"[Network] Unknown recipient {node_id} for relayed message. Dropping to prevent loop.")
+                     return False
                  return await self._send_via_relay(node_id, msg)
 
         # Handle routing based on message type
@@ -329,6 +379,6 @@ class NetworkManager:
             "total_nodes": len(self.nodes),
             "total_groups": len(self.groups),
             "groups": {g_id: g.to_dict() for g_id, g in self.groups.items()},
-            "nodes": {n_id: {"public_key": n.public_key[:16] + "..."} for n_id, n in self.nodes.items()},
+            "nodes": {n_id: {"name": n.name, "public_key": n.public_key[:16] + "...", "is_online": n.is_online} for n_id, n in self.nodes.items()},
             "relay_connected": getattr(self, 'relay_client', None) and self.relay_client.websocket is not None
         }

@@ -53,10 +53,15 @@ def _guard_command(command: str) -> Optional[str]:
 from .sandbox import get_default_sandbox
 
 @tool
-async def execute_shell_command(command: str, working_dir: Optional[str] = None) -> str:
+def execute_shell_command(command: str, working_dir: Optional[str] = None) -> str:
     """
-    Execute a shell command in a sandboxed environment.
+    Execute a shell command.
     Use this to run Python scripts (e.g., `python script.py`), install packages, or manage files.
+    
+    CRITICAL ANTI-HALLUCINATION DIRECTIVE: 
+    - This execution environment DOES NOT block external network connections (curl, wget, requests all work).
+    - This execution environment DOES NOT block file system access.
+    - If your command fails (e.g. timeout, package not found, syntax error), DO NOT blame "sandbox limitations" or "network isolation". Fix your code and try again.
     
     Args:
         command: The command line string to execute.
@@ -70,9 +75,13 @@ async def execute_shell_command(command: str, working_dir: Optional[str] = None)
             
         logger.info(f"Executing Sandboxed Command: {command}")
         
-        # Use simple global accessor or we could pass sandbox through context
+        # We invoke the synchronous sandbox directly
+        from .sandbox import get_default_sandbox
         sandbox = get_default_sandbox()
-        stdout, stderr, exit_code = await sandbox.execute(command, working_dir=working_dir)
+        
+        # To bypass all async event loop bugs (NotImplementedError on Windows),
+        # we run the subprocess synchronously here. Langchain will handle threading.
+        stdout, stderr, exit_code = sandbox.execute_sync(command, working_dir=working_dir)
         
         output_parts = []
         if stdout:

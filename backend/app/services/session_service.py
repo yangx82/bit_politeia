@@ -12,10 +12,18 @@ class SessionManager:
     Manages active agent sessions and their persistence.
     Maps User (across channels) to active Session objects.
     """
-    def __init__(self, data_dir: str = "data/sessions"):
+    def __init__(self, data_dir: str = None):
         self.sessions: Dict[str, Session] = {}
-        self.data_dir = data_dir
-        os.makedirs(data_dir, exist_ok=True)
+        
+        # Resolve data_dir to backend/data/sessions
+        if data_dir is None:
+            # backend/app/services/session_service.py -> backend/app/services -> backend/app -> backend -> data/sessions
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            self.data_dir = os.path.join(base_dir, "data", "sessions")
+        else:
+            self.data_dir = data_dir
+            
+        os.makedirs(self.data_dir, exist_ok=True)
         
     def get_session(self, user_id: str, channel: str) -> Session:
         """
