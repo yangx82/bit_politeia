@@ -1228,13 +1228,14 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             if node_id == p2p_service.local_node.node_id:
                 continue
                 
+            from datetime import timezone
             peers.append({
                 "node_id": node_id,
                 "name": node.name,
                 "public_key": node.public_key,
                 "endpoint": node.endpoint,
                 "status": "online" if node.is_online else "offline",
-                "last_seen": node.last_seen.isoformat() if hasattr(node, 'last_seen') else datetime.now().isoformat()
+                "last_seen": node.last_seen.isoformat() if hasattr(node, 'last_seen') and node.last_seen else datetime.now(timezone.utc).isoformat()
             })
         return peers
 

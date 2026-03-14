@@ -87,8 +87,9 @@ class BootstrapService:
         If node_id is provided, updates its last_seen timestamp (Heartbeat).
         """
         if node_id and node_id in self._peers:
+            from datetime import timezone
             peer = self._peers[node_id]
-            peer.last_seen = datetime.now()
+            peer.last_seen = datetime.now(timezone.utc)
             # Persist the heartbeat to storage
             self.storage.upsert_node(peer)
             logger.debug(f"Bootstrap: Heartbeat received via topology sync from {node_id}")

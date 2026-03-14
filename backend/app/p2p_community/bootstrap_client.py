@@ -13,12 +13,18 @@ class PeerAddress:
     ip_address: str
     port: int
     name: Optional[str] = None
-    last_seen: datetime = field(default_factory=datetime.now)
+    from datetime import timezone
+    last_seen: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def is_online(self) -> bool:
         """Check if the node has been seen in the last 5 minutes."""
-        diff = (datetime.now() - self.last_seen).total_seconds()
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+        target_time = self.last_seen
+        if target_time.tzinfo is None:
+            target_time = target_time.replace(tzinfo=timezone.utc)
+        diff = (now - target_time).total_seconds()
         return diff < 300 # 5 minutes
 
     def to_dict(self) -> dict:

@@ -223,6 +223,7 @@ class BootstrapStorage:
         rows = cursor.fetchall()
         conn.close()
         
+        from datetime import timezone
         nodes = {}
         for row in rows:
             nodes[row['node_id']] = PeerAddress(
@@ -231,7 +232,7 @@ class BootstrapStorage:
                 ip_address=row['ip_address'],
                 port=row['port'],
                 name=row['name'],
-                last_seen=datetime.fromisoformat(row['last_seen']) if row['last_seen'] else datetime.now()
+                last_seen=datetime.fromisoformat(row['last_seen']) if row['last_seen'] else datetime.now(timezone.utc)
             )
         return nodes
 
