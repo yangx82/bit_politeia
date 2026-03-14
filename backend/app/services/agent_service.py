@@ -1511,41 +1511,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         return chain_data
 
 
-    async def get_peers(self) -> list[dict]:
-        """Get list of connected peers from P2P service."""
-        if not p2p_service._initialized:
-             return []
-        # Return list of Peer Info dicts
-        # assuming network_manager.peers is Dict[node_id, NodeInfo]
-        # or we use p2p_service.get_network_status() which returns summary
-        # But frontend expects list of objects with node_id, name, etc.
-        
-        peers = []
-        if hasattr(p2p_service, 'network_manager'):
-             # Create a safe list
-             for pid, p in p2p_service.network_manager.nodes.items():
-                  # Peer object to dict
-                  # Exclude local node from peers list?
-                  if p2p_service.local_node and pid == p2p_service.local_node.node_id:
-                      continue
-                  peers.append(p.to_dict())
-        return peers
 
-    async def get_groups(self) -> list[dict]:
-        """Get list of groups from P2P service."""
-        return p2p_service.get_groups()
-
-    async def receive_p2p_message(self, message: P2PMessage) -> dict:
-        """Handle incoming P2P message from other nodes."""
-        if not p2p_service._initialized:
-            return {"success": False, "error": "P2P not initialized"}
-        
-        from ..p2p_community.message_protocol import SignedMessage
-        signed_msg = SignedMessage.from_dict(message.dict())
-        
-        # Dispatch to network manager for internal routing/inbox delivery
-        await p2p_service.network_manager.route_message(signed_msg)
-        return {"success": True}
 
     # Governance Methods accessed by Tools
     async def start_election(self, group_id: str, candidates: list[str]) -> str:
