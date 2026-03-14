@@ -69,8 +69,14 @@ class Node:
         if not self.last_seen:
             return False
         import datetime
-        now = datetime.datetime.now()
-        delta = now - self.last_seen
+        now = datetime.datetime.now(datetime.timezone.utc)
+        
+        # Ensure last_seen is offset-aware for comparison
+        target_time = self.last_seen
+        if target_time.tzinfo is None:
+            target_time = target_time.replace(tzinfo=datetime.timezone.utc)
+            
+        delta = now - target_time
         return delta.total_seconds() < 300 # 5 minutes
 
     def to_dict(self) -> dict:

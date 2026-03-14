@@ -111,8 +111,10 @@ class NetworkManager:
                     parent.add_child(gid)
 
         # 2. Sync Nodes
+        server_node_ids = set()
         if "nodes" in topology_data:
             for nid, ndata in topology_data["nodes"].items():
+                server_node_ids.add(nid)
                 if nid not in self.nodes:
                     node = Node(
                         node_id=nid,
@@ -140,6 +142,12 @@ class NetworkManager:
                         self.nodes[nid].last_seen = datetime.fromisoformat(ls_str)
                     except (ValueError, TypeError):
                         pass
+
+        # 3. Remove stale nodes (offline/deleted on bootstrap server)
+        stale_nodes = [nid for nid in self.nodes if nid not in server_node_ids and nid != self.local_node_id]
+        for nid in stale_nodes:
+            logger.info(f"[Network] Removing stale node {nid} from local topology cache")
+            del self.nodes[nid]
 
     def get_group(self, group_id: str) -> Optional[Group]:
         return self.groups.get(group_id)
