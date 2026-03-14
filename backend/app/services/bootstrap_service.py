@@ -252,7 +252,7 @@ class BootstrapService:
                 pass
 
         # 3. Remove from peers registry
-        del self._peers[node_id]
+        self._peers.pop(node_id, None)
 
         # 4. Storage cleanup (Removes from nodes, group_members, rankings, cores, pending)
         self.storage.delete_node(node_id)
