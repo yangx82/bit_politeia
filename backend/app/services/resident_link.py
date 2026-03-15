@@ -13,10 +13,13 @@ logger = logging.getLogger(__name__)
 
 class ResidentMemory:
     """
-    Manages resident interaction logs using topic-based JSONL files.
-    - chat.jsonl: Dialogue history
-    - research.jsonl: Research outputs
-    - system.jsonl: System notifications
+    Manages resident interaction logs using a layered cognitive architecture:
+    - Working Memory: Short-term active buffer.
+    - Episodic Memory: Raw chronological journals (JSONL).
+    - Semantic Memory: Extracted facts, preferences, and persona.
+    - Social Memory: Relationship graph with trust and types.
+    - User Vault (NEW): Private/Secret keys and sensitive data.
+    - Procedural Memory (NEW): Skill/Tool awareness and policies.
     """
     
     def __init__(self, workspace_root: str = None):
@@ -24,15 +27,35 @@ class ResidentMemory:
         self.memory_dir = memory_store.memory_dir
         self.legacy_file = self.memory_dir.parent / "resident_memory.json"
         
-        # Topic files
+        # Topic files (Episodic Storage)
         self.topic_files = {
             "chat": self.memory_dir / "chat.jsonl",
             "research": self.memory_dir / "research.jsonl",
-            "system": self.memory_dir / "system.jsonl"
+            "system": self.memory_dir / "system.jsonl",
+            "agent": self.memory_dir / "agent.jsonl"
         }
+        
+        # Semantic Storage
+        self.semantic_file = self.memory_dir / "semantic_profile.json"
+        self._semantic_profile: Dict[str, Any] = {}
+        
+        # Social Graph Storage (Relationships)
+        self.social_file = self.memory_dir / "social_graph.json"
+        self._social_graph: Dict[str, Dict[str, Any]] = {}
+
+        # User Vault (Private Secrets)
+        self.vault_file = self.memory_dir / "vault.json"
+        self._vault: Dict[str, Any] = {}
+        
+        # Working Memory (In-memory buffer)
+        self._working_memory: List[Dict] = []
+        self._working_limit = 10
         
         self._ensure_files()
         self._migrate_legacy_json()
+        self._load_semantic_profile()
+        self._load_social_graph()
+        self._load_vault()
 
     def _ensure_files(self):
         """Ensure all topic files exist with metadata header."""
@@ -50,42 +73,126 @@ class ResidentMemory:
         with open(path, 'w', encoding='utf-8') as f:
             f.write(json.dumps(metadata) + "\n")
 
+    def _load_semantic_profile(self):
+        """Load stored facts and preferences from disk."""
+        if self.semantic_file.exists():
+            try:
+                with open(self.semantic_file, 'r', encoding='utf-8') as f:
+                    self._semantic_profile = json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load semantic profile: {e}")
+        if not self._semantic_profile:
+            self._semantic_profile = {
+                "facts": [],
+                "preferences": {},
+                "persona": "Neutral Resident",
+                "last_updated": None,
+                "last_consolidation_time": None
+            }
+
+    def _load_social_graph(self):
+        """Load peer relationships from disk."""
+        if self.social_file.exists():
+            try:
+                with open(self.social_file, 'r', encoding='utf-8') as f:
+                    self._social_graph = json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load social graph: {e}")
+        if not self._social_graph:
+            self._social_graph = {}
+
+    def _load_vault(self):
+        """Load private secrets from disk."""
+        if self.vault_file.exists():
+            try:
+                with open(self.vault_file, 'r', encoding='utf-8') as f:
+                    self._vault = json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load vault: {e}")
+        if not self._vault:
+            self._vault = {}
+
+    def save_semantic_profile(self):
+        """Persist semantic profile to disk."""
+        try:
+            self._semantic_profile["last_updated"] = datetime.now().isoformat()
+            with open(self.semantic_file, 'w', encoding='utf-8') as f:
+                json.dump(self._semantic_profile, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save semantic profile: {e}")
+
+    def save_social_graph(self):
+        """Persist social graph to disk."""
+        try:
+            with open(self.social_file, 'w', encoding='utf-8') as f:
+                json.dump(self._social_graph, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save social graph: {e}")
+
+    def save_vault(self):
+        """Persist vault to disk."""
+        try:
+            with open(self.vault_file, 'w', encoding='utf-8') as f:
+                json.dump(self._vault, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save vault: {e}")
+
+    def update_semantic_fact(self, fact: str):
+        """Add a new fact to semantic memory if not already present."""
+        if "facts" not in self._semantic_profile:
+            self._semantic_profile["facts"] = []
+        if fact not in self._semantic_profile["facts"]:
+            self._semantic_profile["facts"].append(fact)
+            self.save_semantic_profile()
+
+    def update_social_edge(self, peer_id: str, trust_diff: float = 0, rel_type: str = None, name: str = None):
+        """Update or create relationship edge with a peer."""
+        if peer_id not in self._social_graph:
+            self._social_graph[peer_id] = {
+                "name": name or "Unknown Peer",
+                "trust_score": 50.0,
+                "relationship_type": "observer",
+                "last_interaction": None,
+                "interaction_count": 0
+            }
+        
+        edge = self._social_graph[peer_id]
+        edge["trust_score"] = max(0, min(100, edge["trust_score"] + trust_diff))
+        if rel_type:
+            edge["relationship_type"] = rel_type
+        if name:
+            edge["name"] = name
+            
+        edge["last_interaction"] = datetime.now().isoformat()
+        edge["interaction_count"] += 1
+        self.save_social_graph()
+
+    def update_vault_item(self, key: str, value: Any):
+        """Add or update a private item in the resident vault."""
+        self._vault[key] = value
+        self.save_vault()
+
     def _migrate_legacy_json(self):
         """Migrate old resident_memory.json to chat.jsonl."""
         if not self.legacy_file.exists():
             return
-            
         try:
-            logger.info("Migrating legacy resident_memory.json...")
             with open(self.legacy_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                
             if isinstance(data, list) and data:
-                # Append to chat.jsonl
                 with open(self.topic_files["chat"], 'a', encoding='utf-8') as f_out:
                     for entry in data:
-                        # Ensure minimal fields
                         if "timestamp" not in entry:
                             entry["timestamp"] = datetime.now().isoformat()
                         f_out.write(json.dumps(entry, ensure_ascii=False) + "\n")
-                        
-            # Rename legacy file
             backup_name = self.legacy_file.parent / f"resident_memory_backup_{datetime.now().strftime('%Y%m%d%H%M%S')}.json"
             os.rename(self.legacy_file, backup_name)
-            logger.info(f"Migration complete. Backup at {backup_name}")
-            
         except Exception as e:
             logger.error(f"Migration failed: {e}")
 
     def log_interaction(self, sender: str, content: str, msg_type: str = "chat", chat_id: str = None):
-        """
-        Log interaction to appropriate topic file.
-        msg_type maps to: 'chat', 'research', 'system'. Default 'chat'.
-        """
-        # Map input type to known topics, default to chat
         topic = msg_type if msg_type in self.topic_files else "chat"
         file_path = self.topic_files[topic]
-        
         entry = {
             "id": str(uuid.uuid4()),
             "timestamp": datetime.now().isoformat(),
@@ -94,21 +201,76 @@ class ResidentMemory:
             "type": msg_type,
             "chat_id": chat_id
         }
-        
         try:
             with open(file_path, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:
             logger.error(f"Failed to log to {topic}: {e}")
+        if topic == "chat":
+            self._working_memory.append(entry)
+            if len(self._working_memory) > self._working_limit:
+                self._working_memory.pop(0)
+
+    def get_working_context(self) -> List[Dict]:
+        return self._working_memory
+
+    def get_semantic_context(self) -> str:
+        facts = self._semantic_profile.get("facts", [])
+        prefs = self._semantic_profile.get("preferences", {})
+        context = "### Resident Profile (Semantic Memory)\n"
+        if facts:
+            context += "Facts:\n" + "\n".join([f"- {f}" for f in facts]) + "\n"
+        if prefs:
+            context += "Preferences:\n" + "\n".join([f"- {k}: {v}" for k, v in prefs.items()]) + "\n"
+        return context
+
+    def get_social_context(self, peer_id: str = None) -> str:
+        if not peer_id or peer_id not in self._social_graph:
+            return ""
+        edge = self._social_graph[peer_id]
+        return (f"### Social Context for {edge.get('name', 'Peer')}\n"
+                f"- Relationship: {edge.get('relationship_type', 'unknown')}\n"
+                f"- Trust Level: {edge.get('trust_score', 50.0)}/100\n"
+                f"- Total Interactions: {edge.get('interaction_count', 0)}\n")
+
+    def get_vault_context(self) -> str:
+        """Fetch private resident secrets."""
+        if not self._vault:
+            return ""
+        items = [f"- {k}: {v}" for k, v in self._vault.items()]
+        return "### Private Resident Vault (Private Memory)\n" + "\n".join(items) + "\n"
+
+    def get_procedural_context(self) -> str:
+        """Fetch available skills/policies awareness."""
+        from .skill_manager import skill_manager
+        skills = skill_manager.get_skill_index()
+        if not skills:
+            return ""
+        return "### Internal Skill-Set (Procedural Memory)" + skills
+
+    def get_full_context_text(self, peer_id: str = None, recent_count: int = 10) -> str:
+        semantic = self.get_semantic_context()
+        social = self.get_social_context(peer_id)
+        vault = self.get_vault_context()
+        procedural = self.get_procedural_context()
+        working = self.get_working_context()
+        
+        msg_text = "\n".join([f"{m['sender']}: {m['content']}" for m in working])
+        parts = [semantic]
+        if social:
+            parts.append(social)
+        if vault:
+            parts.append(vault)
+        if procedural:
+            parts.append(procedural)
+            
+        parts.append(f"### Recent Interaction (Working Memory)\n{msg_text}")
+        return "\n".join([p for p in parts if p])
 
     def get_recent_history(self, limit: int = 50, topic: str = "chat") -> List[Dict]:
-        """Get recent history from a specific topic."""
         file_path = self.topic_files.get(topic, self.topic_files["chat"])
         entries = []
-        
-        if not file_path.exists():
-            return []
-            
+        if not file_path.exists(): return []
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -118,16 +280,11 @@ class ResidentMemory:
                         data = json.loads(line)
                         if data.get("_type") == "metadata": continue
                         entries.append(data)
-                    except json.JSONDecodeError:
-                        continue
-            
+                    except: continue
             return entries[-limit:]
-        except Exception as e:
-            logger.error(f"Error reading history: {e}")
-            return []
+        except: return []
 
     def get_all_history(self) -> List[Dict]:
-        """Retrieve ALL history across all topics (merged and sorted)."""
         all_entries = []
         for path in self.topic_files.values():
             if not path.exists(): continue
@@ -140,287 +297,82 @@ class ResidentMemory:
                             all_entries.append(data)
                         except: continue
             except: continue
-            
-        # Sort by timestamp
         all_entries.sort(key=lambda x: x.get("timestamp", ""))
         return all_entries
 
     def search_history(self, query: str = None, date_from: str = None, date_to: str = None) -> List[Dict]:
-        """Search across all history topics."""
         history = self.get_all_history()
         filtered = []
-        
         q_lower = query.lower() if query else None
         dt_from = datetime.fromisoformat(date_from) if date_from else None
         dt_to = datetime.fromisoformat(date_to) if date_to else None
-
         for entry in history:
-            # 1. Keyword check
-            if q_lower and q_lower not in entry.get('content', '').lower():
-                continue
-            
-            # 2. Date check
+            if q_lower and q_lower not in entry.get('content', '').lower(): continue
             if dt_from or dt_to:
                 try:
                     ts = datetime.fromisoformat(entry.get("timestamp"))
                     if dt_from and ts < dt_from: continue
                     if dt_to and ts > dt_to: continue
                 except: continue
-            
             filtered.append(entry)
-            
         return filtered
 
 class ResidentReporter:
-    """
-    Generates periodic reports for the Resident.
-    Aggregates community activity and fetches external research updates.
-    """
     def __init__(self, agent_service):
         self.agent = agent_service
+        self.message_bus = agent_service.message_bus
 
-    async def collect_community_activity(self) -> str:
-        """Summarize Governance and Economy events."""
-        summary = []
-        
-        # Governance
-        if self.agent.governance_manager:
-            gov = self.agent.governance_manager
-            active = len(gov.active_elections)
-            summary.append(f"Active Elections: {active}")
-            # Could list proposal titles here
-            
-        # Economy
-        if self.agent.ledger:
-            balance = await self.agent.get_balance()
-            summary.append(f"Current Balance: {balance}")
-            
-        return "\\n".join(summary)
-
-    async def collect_research_updates(self, interests: List[str]) -> str:
+    async def generate_community_report(self, consolidation_results: Dict[str, Any]) -> str:
         """
-        Retrieves real research progress with robust de-duplication,
-        sorting, and LLM translation.
+        Generate a natural language report for the resident based on memory consolidation results.
         """
-        from .knowledge_base import knowledge_base
-        import re
-        
-        # Get history (research topic preferred, but fallback to chat)
-        # We can look at both
-        recent_history = self.agent.resident_memory.get_recent_history(500, "research")
-        seen_titles = set()
-        for msg in recent_history:
-            content = msg.get('content', '')
-            titles = re.findall(r"Title:\s*(.*)", content)
-            for t in titles:
-                seen_titles.add(t.strip().lower())
-        
-        logger.info(f"DEBUG: Found {len(seen_titles)} seen titles in history.")
-        
-        updates = []
-        all_topics = []
-        for interest in interests:
-            # Only split by semicolon to allow space/AND/comma boolean logic within a topic
-            all_topics.extend([t.strip() for t in interest.split(';') if t.strip()])
-        
-        logger.info(f"DEBUG: Topics to search: {all_topics}")
-
-        for topic in all_topics:
-            search_results = knowledge_base.web_researcher.search(topic)
-            logger.info(f"DEBUG: Search for '{topic}' returned {len(search_results)} results.")
-            
-            topic_candidates = []
-            
-            # 1. Initial Filtering & Scoring
-            for idx, res in enumerate(search_results):
-                title = res["title"]
-                if title.strip().lower() in seen_titles:
-                    # logger.info(f"DEBUG: Skipping seen title: {title[:30]}...")
-                    continue
-                
-                # Calculate Hybrid Score
-                res['score'] = self._calculate_hybrid_score(res, idx)
-                topic_candidates.append(res)
-
-            logger.info(f"DEBUG: Topic '{topic}' has {len(topic_candidates)} new candidates after filtering.")
-
-            if not topic_candidates:
-                continue
-
-            # 2. Sort by Hybrid Score and pick Top 5 for LLM Review
-            topic_candidates.sort(key=lambda x: x['score'], reverse=True)
-            top_5_candidates = topic_candidates[:5]
-            
-            # 3. LLM Impact Assessment (Select Top 2 from Top 5)
-            selected_indices = await self._select_best_candidates(topic, top_5_candidates)
-            selected = [top_5_candidates[i] for i in selected_indices if i < len(top_5_candidates)]
-            
-            # Fallback if LLM fails
-            if not selected:
-                selected = top_5_candidates[:2]
-
-            updates.append(f"### Topic: {topic}")
-            for res in selected:
-                abstract_cn = await self._translate_abstract(res['abstract'])
-                updates.append(
-                    f"Title: {res['title']}\\n"
-                    f"Abstract: {res['abstract']}\\n"
-                    f"【中文摘要】: {abstract_cn}\\n"
-                    f"Source: {res['source']}"
-                )
-            updates.append("") 
-                
-        if updates:
-            return "\\n".join(updates)
-            
-        return "No new updates."
-
-    def _calculate_hybrid_score(self, paper: Dict, rank_index: int) -> float:
-        """
-        Calculate score based on Relevance (Rank) and Recency (Date).
-        Score = 0.4 * Relevance + 0.6 * Recency
-        """
-        # Relevance: 0-100 based on search rank (assuming input is sorted by relevance)
-        # Rank 0 = 100, Rank 99 = 0
-        relevance_score = max(0, 100 - rank_index)
-        
-        # Recency: 0-100 based on days since publication
-        recency_score = 0
-        try:
-            pub_date = datetime.strptime(paper.get('published', '')[:10], "%Y-%m-%d")
-            days_diff = (datetime.now() - pub_date).days
-            # Linear decay: 100 today, 0 after 60 days
-            recency_score = max(0, 100 - (days_diff * 1.6)) 
-        except Exception:
-            recency_score = 50 # Default if date logic fails
-
-        return (0.4 * relevance_score) + (0.6 * recency_score)
-
-    async def _select_best_candidates(self, topic: str, candidates: List[Dict]) -> List[int]:
-        """Ask LLM to select the 2 most impactful papers from the list."""
         if not self.agent.llm:
-            return [0, 1]
+            return "Unable to generate report: LLM not initialized."
+
+        public_facts = consolidation_results.get("public_facts", [])
+        social_updates = consolidation_results.get("social_updates", [])
+        
+        # Build prompt for summary
+        prompt = f"""
+        You are a helpful AI Agent reporting to your resident. 
+        You just finished your daily memory consolidation and need to provide a brief, professional, and friendly summary.
+        
+        === DATA FROM TODAY'S CONSOLIDATION ===
+        - New Facts/Insights: {json.dumps(public_facts, ensure_ascii=False)}
+        - Social Changes: {json.dumps(social_updates, ensure_ascii=False)}
+        
+        Task:
+        Provide a concise "Daily Community & State Report" in {self.agent.agent_language}.
+        Highlight what you've learned or how your relationships have changed. 
+        If there are no significant changes, keep it very brief.
+        Format it as a professional update.
+        """
 
         try:
-            candidate_text = ""
-            for i, p in enumerate(candidates):
-                candidate_text += f"[{i}] Title: {p['title']}\\n    Abstract: {p['abstract'][:200]}...\\n\\n"
-
-            prompt = [
-                SystemMessage(content="You are a senior academic editor. Select the 2 papers with the highest potential impact, novelty, and relevance to the topic."),
-                HumanMessage(content=f"Topic: {topic}\\n\\nCandidates:\\n{candidate_text}\\n\\nReturn ONLY a JSON list of the 2 best indices, e.g. [0, 3].")
+            from langchain_core.messages import SystemMessage, HumanMessage
+            messages = [
+                SystemMessage(content="You are a clear and concise reporter."),
+                HumanMessage(content=prompt)
             ]
-            response = await self.agent.llm.ainvoke(prompt)
-            content = response.content.strip()
-            
-            # Naive JSON parsing
-            import json
-            # Handle potential markdown fence wrapping
-            if "```" in content:
-                content = content.split("```")[1].replace("json", "").strip()
-            
-            indices = json.loads(content)
-            if isinstance(indices, list):
-                return indices[:2]
+            response = await self.agent.llm.ainvoke(messages)
+            return response.content.strip()
         except Exception as e:
-            logger.error(f"LLM selection failed: {e}")
+            logger.error(f"Failed to generate community report: {e}")
+            return "I completed my daily memory consolidation, but I encountered an error while drafting the summary report."
+
+    async def send_report_to_resident(self, report_text: str):
+        """Send the formatted report to the resident via the message bus."""
+        from ..bus.events import OutboundMessage
         
-        return [0, 1] # Fallback to first two
+        # Publish as a 'message' so it's visible in the main feed.
+        await self.message_bus.publish_outbound(OutboundMessage(
+            channel="p2p",
+            chat_id="resident",
+            content=report_text,
+            type="message"
+        ))
+        logger.info("Sent daily community report to resident.")
 
-    async def _translate_abstract(self, abstract: str) -> str:
-        """Use the Agent's LLM to provide a concise Chinese translation."""
-        if not self.agent.llm:
-            return "（翻译不可用：LLM 未配置）"
-            
-        import asyncio
-        for attempt in range(3):
-            try:
-                prompt = [
-                    SystemMessage(content="You are a professional scientific translator. Translate the following English abstract into concise, academic Chinese."),
-                    HumanMessage(content=f"Abstract:\\n{abstract}")
-                ]
-                response = await self.agent.llm.ainvoke(prompt)
-                return response.content.strip()
-            except Exception as e:
-                logger.warning(f"Translation attempt {attempt+1} failed: {e}")
-                if attempt < 2:
-                    await asyncio.sleep(2) # Wait 2 seconds before retry
-                    
-        return "（翻译不可用：请求超时或服务繁忙）"
-
-    async def generate_daily_brief(self, interests: List[str] = None) -> str:
-        """Compose the full daily brief."""
-        interests = interests or ["AI Governance", "P2P Economics"]
-        
-        community_news = await self.collect_community_activity()
-        # Infer additional interests from history
-        inferred_interests = await self._infer_interests_from_history(interests)
-        if inferred_interests:
-            logger.info(f"Inferred implicit interests: {inferred_interests}")
-            # Merge and de-duplicate (simple set logic might not be enough if case differs, but good for now)
-            # We append inferred to the end
-            interests = list(set(interests + inferred_interests))
-        
-        research_news = await self.collect_research_updates(interests)
-        
-        brief = f"""
-== Daily Community Brief ==
-{datetime.now().strftime('%Y-%m-%d')}
-
-[Community Updates]
-{community_news}
-
-[Research Radar]
-{research_news}
-
-[Agent Status]
-Online and Monitoring.
-"""
-        return brief
-
-    async def _infer_interests_from_history(self, explicit_interests: List[str]) -> List[str]:
-        """Analyze recent chat history to find implicit research interests."""
-        if not self.agent.llm:
-            return []
-            
-        try:
-            # Get last 20 messages, exclude reports
-            recent_msgs = self.agent.resident_memory.get_recent_history(20, "chat")
-            conversation_text = ""
-            for msg in recent_msgs:
-                if msg.get('sender') in ['user', 'agent'] and msg.get('type') == 'chat':
-                    conversation_text += f"{msg.get('sender')}: {msg.get('content')}\\n"
-            
-            if not conversation_text.strip():
-                return []
-
-            prompt = [
-                SystemMessage(content="You are a research assistant. Analyze the conversation history and identify 1-2 SPECIFIC research topics the user is interested in. "
-                                      "Ignore general chit-chat. Return ONLY a comma-separated list of topics (e.g., 'Quantum Computing, DAO Governance'). "
-                                      "If no clear research topic is found, return empty string."),
-                HumanMessage(content=f"Explicit Interests: {', '.join(explicit_interests)}\\n\\nConversation History:\\n{conversation_text}")
-            ]
-            
-            response = await self.agent.llm.ainvoke(prompt)
-            content = response.content.strip()
-            
-            if not content or "no clear" in content.lower():
-                return []
-                
-            inferred = [t.strip() for t in content.split(',') if t.strip()]
-            # Simple de-duplication against explicit
-            new_interests = []
-            for inf in inferred:
-                is_new = True
-                for exp in explicit_interests:
-                    if inf.lower() in exp.lower() or exp.lower() in inf.lower():
-                        is_new = False
-                        break
-                if is_new:
-                    new_interests.append(inf)
-                    
-            return new_interests[:2] # Max 2 inferred topics
-            
-        except Exception as e:
-            logger.error(f"Failed to infer interests: {e}")
-            return []
+    async def generate_daily_report(self):
+        """Legacy stub."""
+        return "Daily report generation stub."

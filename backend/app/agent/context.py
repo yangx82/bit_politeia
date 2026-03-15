@@ -85,6 +85,13 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
         if memory_context:
             parts.append(f"\n\n# Memory Context\n{memory_context}")
             
+        # 4. Long-term Tasks
+        from .agent_service import agent_service
+        if agent_service and agent_service.task_manager:
+            task_context = agent_service.task_manager.get_task_context()
+            if task_context:
+                parts.append(task_context)
+                
         return "\n\n---\n\n".join(parts)
     
     def build_messages(
@@ -94,6 +101,7 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
         rag_context: str = None,
         network_identity: str = None,
         recent_global_events: str = None,
+        resident_memory_context: str = None,
         source: str = "user",
         name: str = "Agent",
         personality: str = "Professional and helpful",
@@ -116,6 +124,9 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
         # Add Language Instruction overrides
         messages.append(SystemMessage(content=f"IMPORTANT DIRECTIVE: You MUST generate all responses and communicate exclusively in the following language: {agent_language}. (Unless strictly quoting a source in another language)."))
         
+        if resident_memory_context:
+            messages.append(SystemMessage(content=f"Your Internal Memory (Semantic & Working):\n{resident_memory_context}"))
+
         if network_identity:
             messages.append(SystemMessage(content=f"Your Network Identity:\n{network_identity}"))
             

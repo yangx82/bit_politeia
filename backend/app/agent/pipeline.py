@@ -115,12 +115,18 @@ class SenseStage(PipelineStage):
         # Build initial messages for Plan stage
         source_label = f"P2P Peer (Node ID: {context.input_message.sender_id})" if context.input_message.channel == "p2p" else "Resident (Human User)"
         
+        # LAYERED & HIERARCHICAL MEMORY INJECTION: Get Semantic + Social + Working context
+        # sender_id is the peer we are talking to
+        peer_id = context.input_message.sender_id
+        memory_context = agent.resident_memory.get_full_context_text(peer_id=peer_id)
+
         context.metadata["messages"] = agent.context_builder.build_messages(
             history=lc_history, 
             current_message=agent_query,
             rag_context=rag_context,
             network_identity=network_identity,
             recent_global_events=recent_global_events,
+            resident_memory_context=memory_context,
             source=source_label,
             name=agent.name,
             personality=agent.personality,
@@ -191,6 +197,14 @@ class PlanStage(PipelineStage):
             context.thoughts.append(str(display_thought))
             context.session.message_count += 1
             
+            # DIMENSION 4: Subject Separation - Log to Agent Journal
+            agent.resident_memory.log_interaction(
+                sender="agent",
+                content=str(display_thought),
+                msg_type="agent",
+                chat_id=context.input_message.chat_id
+            )
+
             # CRITICAL FIX: Thoughts are internal monologue.
             # 1. ALWAYS send to "gateway" for UI observability.
             logger.info(f"Pipeline: Publishing thought to gateway: {str(display_thought)[:50]}...")
@@ -312,3 +326,55 @@ class ArchiveStage(PipelineStage):
             context._sandbox.cleanup()
             
         logger.info(f"Session {context.session.session_id} archived and cleaned up.")
+
+class RetrospectiveStage(PipelineStage):
+    """Stage: Review completed/failed tasks and extract lessons."""
+    async def run(self, context: PipelineContext, agent: Any):
+        logger.info(f"[{context.session.session_id}] Stage: Retrospective")
+        
+        # Check if any tasks were completed or failed in this session
+        # This requires the agent to have tool for marking task status.
+        # For now, we scan for tasks that just reached terminal status.
+        if not hasattr(agent, 'task_manager') or not agent.task_manager:
+            return
+
+        terminal_tasks = [t for t in agent.task_manager.tasks.values() 
+                          if t.status in ["completed", "failed"] 
+                          and (datetime.now() - t.updated_at).total_seconds() < 300] # Last 5 mins
+        
+        for task in terminal_tasks:
+            if task.lessons_learned:
+                continue # Already processed or provided
+            
+            logger.info(f"Generating retrospective for task: {task.goal}")
+            
+            # Ask LLM to summarize lessons
+            prompt = f"""
+            You recently finished a long-term task: "{task.goal}" 
+            Status: {task.status.value}
+            Checkpoint: {task.checkpoint}
+            
+            Based on your final answer: "{context.final_answer}"
+            
+            Extract the core 'Lesson Learned' or 'Retrospective Summary'. 
+            If it was a success, what were the key factors? 
+            If it failed, what went wrong and how to avoid it?
+            
+            Format: A clear, concise paragraph (max 100 words).
+            """
+            
+            try:
+                from langchain_core.messages import HumanMessage
+                resp = await agent.llm.ainvoke([HumanMessage(content=prompt)])
+                task.lessons_learned = resp.content
+                agent.task_manager.save_tasks()
+                
+                # Optional: Push to Semantic Memory
+                if agent.resident_memory:
+                    agent.resident_memory.log_interaction(
+                        sender="system",
+                        content=f"Retrospective for '{task.goal}': {task.lessons_learned}",
+                        msg_type="moderation"
+                    )
+            except Exception as e:
+                logger.error(f"Retrospective generation failed: {e}")

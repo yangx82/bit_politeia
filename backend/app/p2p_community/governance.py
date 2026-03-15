@@ -4,6 +4,7 @@ from typing import List, Dict, Set, Optional, Any
 from datetime import datetime, timedelta
 import uuid
 import logging
+from pathlib import Path
 from .models import Node
 
 logger = logging.getLogger(__name__)
@@ -242,6 +243,11 @@ class GovernanceManager:
     def __init__(self, node_id: str, storage_path: str = "governance_store.json"):
         self.node_id = node_id
         self.storage_path = storage_path
+        
+        # Ensure data directory exists
+        path_obj = Path(self.storage_path)
+        path_obj.parent.mkdir(parents=True, exist_ok=True)
+        
         self.active_elections: Dict[str, Election] = {}
         self.proposals: Dict[str, Proposal] = {}
         self.load_state()

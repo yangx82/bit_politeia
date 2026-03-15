@@ -38,6 +38,7 @@ from .memory_store import memory_store
 from .knowledge_base import knowledge_base
 
 from .consolidation import ConsolidationService
+from .task_manager import TaskManager
 
 class AgentService:
     def __init__(self):
@@ -108,6 +109,7 @@ class AgentService:
         self.research_field = "AI Governance"
         self.context_builder = ContextBuilder()
         self.consolidation_service = ConsolidationService(self)
+        self.task_manager = TaskManager()
         
         # Hydrate History and System State from Disk
         self._hydrate_history()
@@ -123,6 +125,7 @@ class AgentService:
                 self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=10, misfire_grace_time=5, id="network_inbox_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', seconds=60, id="sync_network_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=30, id="task_monitor_job", replace_existing=True)
 
                 self.scheduler.start()
                 logger.info("Scheduler started successfully with background jobs.")
@@ -269,7 +272,8 @@ class AgentService:
         await self.message_bus.start()
         asyncio.create_task(self.listen_to_bus())
         
-        self.governance_manager = GovernanceManager(node_id)
+        gov_path = str(self.data_dir / "governance_store.json")
+        self.governance_manager = GovernanceManager(node_id, storage_path=gov_path)
         self.reputation_manager = ReputationManager(node_id)
         self.archive_manager = ArchiveManager(node_id)
         self.reporter = ResidentReporter(self)
@@ -448,7 +452,7 @@ class AgentService:
 
     async def run_pipeline(self, msg: InboundMessage) -> tuple[str, bool, str]:
         """Execute the 6-stage pipeline for an inbound message."""
-        from ..agent.pipeline import PipelineContext, SenseStage, PlanStage, ExecuteStage, ConsolidateStage, NotifyStage, ArchiveStage
+        from ..agent.pipeline import PipelineContext, SenseStage, PlanStage, ExecuteStage, ConsolidateStage, RetrospectiveStage, NotifyStage, ArchiveStage
         from ..services.session_service import session_manager
         
         # 0. Get or Create Session
@@ -481,6 +485,7 @@ class AgentService:
             PlanStage(),
             ExecuteStage(),
             ConsolidateStage(),
+            RetrospectiveStage(),
             NotifyStage(),
             ArchiveStage()
         ]
@@ -1654,6 +1659,26 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         
         return f"Archived Block #{block.index} Hash: {block.hash}"
 
+    async def check_tasks_monitor(self):
+        """Background job to check status of long-term tasks."""
+        if not self.task_manager:
+            return
+            
+        active_tasks = self.task_manager.get_active_tasks()
+        if not active_tasks:
+            return
+            
+        logger.info(f"Task Monitor: Checking {len(active_tasks)} active tasks...")
+        
+        for task in active_tasks:
+            # Simple Logic: If active and no progress for 1 hour, or just a periodic check
+            # For this MVP, we just log it. In a real system, we'd trigger a self-poke.
+            # Example: Trigger a 'thought' to the gateway to remind the resident/node
+            if task.status == "active":
+                logger.debug(f"Task '{task.goal}' is ongoing. Checkpoint: {task.checkpoint}")
+            elif task.status == "blocked":
+                 logger.info(f"Task '{task.goal}' is BLOCKED. Waiting for resumption condition.")
+
     async def get_latest_archive_report(self) -> dict:
         if not self.archive_manager:
             return {}
@@ -1779,6 +1804,11 @@ async def run_consolidation_proxy():
     """Proxy for agent_service.consolidation_service.run_daily_consolidation"""
     if agent_service and agent_service.consolidation_service:
         await agent_service.consolidation_service.run_daily_consolidation()
+
+async def check_tasks_monitor_proxy():
+    """Proxy for agent_service.check_tasks_monitor"""
+    if agent_service:
+        await agent_service.check_tasks_monitor()
 
 
 agent_service = AgentService()

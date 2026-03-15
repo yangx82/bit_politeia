@@ -381,6 +381,7 @@ from ..agent.tools_exec import execute_shell_command
 from ..agent.tools_fs import list_dir, read_file, write_file, edit_file, copy_files, move_files
 from ..agent.tools_web import fetch_web_page
 from ..agent.tools_cron import schedule_reminder, list_reminders, cancel_reminder, start_scheduler, get_scheduler_status
+from ..agent.tools_task import TASK_TOOLS
 
 @tool
 async def ask_resident(question: str) -> str:
@@ -482,4 +483,4 @@ AGENT_TOOLS = [
     schedule_reminder, list_reminders, cancel_reminder,
     start_scheduler, get_scheduler_status,
     delegate_task
-]
+] + TASK_TOOLS
