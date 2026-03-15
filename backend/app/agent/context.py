@@ -22,9 +22,10 @@ class ContextBuilder:
     Assembles memory, skills, and conversation history into a coherent prompt for the LLM.
     """
     
-    def __init__(self):
+    def __init__(self, task_manager=None):
         self.memory = memory_store
         self.skill_manager = skill_manager
+        self.task_manager = task_manager
     
     def build_system_prompt(self, name: str = "Agent", personality: str = "Professional and helpful", channel: str = "resident", host_info: str = None) -> str:
         """
@@ -86,9 +87,8 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
             parts.append(f"\n\n# Memory Context\n{memory_context}")
             
         # 4. Long-term Tasks
-        from .agent_service import agent_service
-        if agent_service and agent_service.task_manager:
-            task_context = agent_service.task_manager.get_task_context()
+        if self.task_manager:
+            task_context = self.task_manager.get_task_context()
             if task_context:
                 parts.append(task_context)
                 

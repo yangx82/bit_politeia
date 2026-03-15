@@ -107,9 +107,9 @@ class AgentService:
         self.resident_memory = ResidentMemory() 
         self.reporter = None 
         self.research_field = "AI Governance"
-        self.context_builder = ContextBuilder()
-        self.consolidation_service = ConsolidationService(self)
         self.task_manager = TaskManager()
+        self.context_builder = ContextBuilder(task_manager=self.task_manager)
+        self.consolidation_service = ConsolidationService(self)
         
         # Hydrate History and System State from Disk
         self._hydrate_history()
