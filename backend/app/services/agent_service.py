@@ -122,8 +122,8 @@ class AgentService:
             if not self.scheduler.running:
                 # 1. Add background jobs using string references for robustness
                 self.scheduler.add_job("app.services.agent_service:trigger_scheduled_task_proxy", 'interval', hours=12, misfire_grace_time=60, id="periodic_brief_job", replace_existing=True) 
-                self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=10, misfire_grace_time=5, id="network_inbox_job", replace_existing=True) 
-                self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', seconds=60, id="sync_network_job", replace_existing=True) 
+                self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=30, misfire_grace_time=15, id="network_inbox_job", replace_existing=True) 
+                self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', minutes=2, id="sync_network_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=30, id="task_monitor_job", replace_existing=True)
 
@@ -504,11 +504,12 @@ class AgentService:
             if not context.stop_execution:
                 await stages[2].run(context, self) # Execute
         
-        # 3. Wrapping Up: Consolidate, Notify, Archive
+        # 3. Wrapping Up: Consolidate, Retrospective, Notify, Archive
         await stages[3].run(context, self) # Consolidate
         session_manager.save_session(context.session) # Save intermediate
-        await stages[4].run(context, self) # Notify
-        await stages[5].run(context, self) # Archive
+        await stages[4].run(context, self) # Retrospective
+        await stages[5].run(context, self) # Notify
+        await stages[6].run(context, self) # Archive
         session_manager.save_session(context.session) # Final save
         
         if iteration >= max_iterations:
@@ -993,6 +994,10 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                             content=f"Agent processed P2P message from {sender_id[:8]}",
                             type="thought"
                         ))
+                except asyncio.CancelledError:
+                    logger.warning(f"Process Network Inbox was cancelled during message processing from {sender_id}. This usually happens on timeout or shutdown.")
+                    self._is_processing_inbox = False
+                    raise
                 except Exception as e:
                     logger.error(f"Error processing P2P message from {sender_id}: {e}")
                     # Optional: Push back to inbox or Dead Letter Queue?
@@ -1001,7 +1006,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         id=str(uuid.uuid4()),
                         content=f"Error processing P2P message: {e}",
                         sender="system",
-                        timestamp=datetime.now()
+                        timestamp=datetime.now(),
+                        chat_id=effective_chat_id
                     ))
             
             # 6. Clear Disk Inbox after processing batch
