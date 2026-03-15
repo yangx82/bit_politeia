@@ -125,7 +125,7 @@ class AgentService:
                 self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=30, misfire_grace_time=15, id="network_inbox_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', minutes=2, id="sync_network_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
-                self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=30, id="task_monitor_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=30, next_run_time=datetime.now(), id="task_monitor_job", replace_existing=True)
 
                 self.scheduler.start()
                 logger.info("Scheduler started successfully with background jobs.")
@@ -1677,11 +1677,27 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         logger.info(f"Task Monitor: Checking {len(active_tasks)} active tasks...")
         
         for task in active_tasks:
-            # Simple Logic: If active and no progress for 1 hour, or just a periodic check
-            # For this MVP, we just log it. In a real system, we'd trigger a self-poke.
-            # Example: Trigger a 'thought' to the gateway to remind the resident/node
+            # Logic: If active and no progress for 30 mins, or just a periodic check
+            # For this MVP, we log it and then trigger a 'self-poke' message to the agent.
             if task.status == "active":
-                logger.debug(f"Task '{task.goal}' is ongoing. Checkpoint: {task.checkpoint}")
+                last_update = task.updated_at
+                now = datetime.now()
+                # If no update for 30 mins, or if it's a fresh start
+                if (now - last_update).total_seconds() > 1800:
+                    logger.info(f"Task Monitor: Task '{task.goal}' seems idle. Triggering self-poke.")
+                    
+                    # Synthesize an internal message
+                    poke_msg = InboundMessage(
+                        channel="internal",
+                        sender_id="system",
+                        chat_id="resident", # Direct to user context or dedicated internal?
+                        content=f"[INTERNAL MONITOR]: 正在推进长期任务 \"{task.goal}\"。当前状态: {task.status}。请检查 Checkpoint 并决定下一步行动。"
+                    )
+                    
+                    # Run the loop in the background
+                    asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
+                else:
+                    logger.debug(f"Task '{task.goal}' is ongoing. Checkpoint: {task.checkpoint}")
             elif task.status == "blocked":
                  logger.info(f"Task '{task.goal}' is BLOCKED. Waiting for resumption condition.")
 

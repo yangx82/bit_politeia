@@ -63,11 +63,41 @@ class TaskManager:
                 logger.error(f"Failed to load tasks: {e}")
 
     def save_tasks(self):
-        """Persist tasks to disk."""
+        """Persist tasks to disk and generate a human-readable summary."""
         try:
             data = {t_id: t.model_dump(mode='json') for t_id, t in self.tasks.items()}
             with open(self.storage_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            
+            # Generate human-readable summary
+            summary_path = self.storage_path.parent / "tasks_summary.md"
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write("# Long-term Task Summary\n\n")
+                active = self.get_active_tasks()
+                if not active:
+                    f.write("No active long-term tasks.\n")
+                else:
+                    for t in active:
+                        f.write(f"## {t.goal}\n")
+                        f.write(f"- **Status**: `{t.status}`\n")
+                        f.write(f"- **Priority**: {t.priority}\n")
+                        f.write(f"- **Created**: {t.created_at.strftime('%Y-%m-%d %H:%M')}\n")
+                        if t.checkpoint:
+                            f.write(f"- **Checkpoint**: {t.checkpoint}\n")
+                        if t.subtasks:
+                            f.write("- **Subtasks**:\n")
+                            for st in t.subtasks:
+                                check = "[x]" if st.status == TaskStatus.COMPLETED else "[ ]"
+                                f.write(f"  - {check} {st.description}\n")
+                        f.write("\n")
+                
+                # Recently completed
+                completed = [t for t in self.tasks.values() if t.status == TaskStatus.COMPLETED][-5:]
+                if completed:
+                    f.write("---\n## Recently Completed\n\n")
+                    for t in completed:
+                        f.write(f"- ✅ {t.goal} (Lessons: {t.lessons_learned or 'None'})\n")
+                        
         except Exception as e:
             logger.error(f"Failed to save tasks: {e}")
 
