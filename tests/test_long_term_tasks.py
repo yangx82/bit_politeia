@@ -83,6 +83,18 @@ class TestLongTermTasks(unittest.IsolatedAsyncioTestCase):
         context = self.task_manager.get_task_context()
         self.assertIn("# ACTIVE LONG-TERM TASKS", context)
         self.assertIn("Ongoing Project", context)
+        self.assertIn("(Status: active)", context)
+
+    def test_context_injection_after_reload(self):
+        # Create task and save it
+        self.task_manager.create_task("Reload Test Task")
+        
+        # Load in a fresh manager
+        new_manager = TaskManager(storage_path=self.test_file)
+        context = new_manager.get_task_context()
+        
+        self.assertIn("Reload Test Task", context)
+        self.assertIn("(Status: active)", context) # Should not crash!
 
 if __name__ == "__main__":
     unittest.main()

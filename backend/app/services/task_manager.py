@@ -144,7 +144,7 @@ class TaskManager:
         
         lines = ["# ACTIVE LONG-TERM TASKS"]
         for t in active:
-            lines.append(f"## Task: {t.goal} (Status: {t.status.value})")
+            lines.append(f"## Task: {t.goal} (Status: {t.status})")
             lines.append(f"- ID: {t.id}")
             if t.checkpoint:
                 lines.append(f"- Last Checkpoint: {t.checkpoint}")
