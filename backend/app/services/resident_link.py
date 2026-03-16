@@ -373,6 +373,39 @@ class ResidentReporter:
         ))
         logger.info("Sent daily community report to resident.")
 
+    async def generate_daily_brief(self, interests: List[str]) -> str:
+        """
+        Generate a concise brief about specific interests/research fields.
+        """
+        if not self.agent.llm:
+            return "LLM not initialized."
+            
+        recent_research = self.agent.resident_memory.get_recent_history(limit=5, topic="research")
+        research_text = "\n".join([f"- {r['content']}" for r in recent_research])
+        
+        prompt = f"""
+        You are an AI research assistant. Provide a very brief daily executive summary for the resident.
+        Focus on these interests: {", ".join(interests)}
+        
+        Recent Research Activity:
+        {research_text or "No specific research activity logged today."}
+        
+        Task:
+        Summarize the progress or state in {self.agent.agent_language}. Keep it under 3 sentences.
+        """
+        
+        try:
+            from langchain_core.messages import SystemMessage, HumanMessage
+            messages = [
+                SystemMessage(content="You are a professional research reporter."),
+                HumanMessage(content=prompt)
+            ]
+            response = await self.agent.llm.ainvoke(messages)
+            return response.content.strip()
+        except Exception as e:
+            logger.error(f"Failed to generate daily brief: {e}")
+            return f"I am continuing to track {', '.join(interests)}, but I couldn't generate a polished summary right now."
+
     async def generate_daily_report(self):
         """Legacy stub."""
-        return "Daily report generation stub."
+        return await self.generate_daily_brief([self.agent.research_field])
