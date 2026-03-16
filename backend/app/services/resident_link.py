@@ -366,11 +366,14 @@ class ResidentReporter:
         
         # Publish as a 'message' so it's visible in the main feed.
         await self.message_bus.publish_outbound(OutboundMessage(
-            channel="p2p",
+            channel="gateway",
             chat_id="resident",
             content=report_text,
             type="message"
         ))
+        
+        # Log to resident memory as well
+        self.agent.resident_memory.log_interaction("agent_report", report_text, "report", chat_id="resident")
         logger.info("Sent daily community report to resident.")
 
     async def generate_daily_brief(self, interests: List[str]) -> str:

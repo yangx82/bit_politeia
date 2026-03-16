@@ -1025,9 +1025,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         if self.reporter:
              interests = [self.research_field] 
              summary = await self.reporter.generate_daily_brief(interests)
-             
-             # Log this brief
-             self.resident_memory.log_interaction("agent_report", summary, "report", chat_id="resident")
+             await self.reporter.send_report_to_resident(summary)
         
         elif self.llm:
              msg_obj = InboundMessage(
