@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import api from '../services/api'
-import { Send, Search, Users, User, MessageSquare } from 'lucide-react'
+import { Send, Search, Users, User, MessageSquare, Clock, CheckCircle2, AlertCircle } from 'lucide-react'
 
 // Helper to format time
 const formatTime = (isoString) => {
@@ -151,6 +151,13 @@ const Chat = () => {
                                 timestamp: new Date()
                             }]);
                             scrollToBottom();
+                        } else if (eventType === 'agent_status_update') {
+                            const { message_id, status } = payload.metadata || {};
+                            if (message_id && status) {
+                                setMessages(prev => prev.map(m => 
+                                    m.id === message_id ? { ...m, status } : m
+                                ));
+                            }
                         } else if (eventType === 'agent_message') {
                             // Clear logs when a final message arrives
                             setAgentLogs([]);
@@ -650,8 +657,15 @@ const Chat = () => {
                                     <div key={msg.id || idx} className={`flex ${align === 'right' ? 'justify-end' : 'justify-start'} mb-4`}>
                                         <div className={`max-w-[70%] rounded-2xl p-4 shadow-sm ${styleClass}`}>
                                             <div className="text-sm whitespace-pre-wrap leading-relaxed">{displayContent}</div>
-                                            <div className={`text-[10px] mt-1 text-right ${timeClass}`}>
+                                            <div className={`text-[10px] mt-1 flex items-center justify-end gap-1 ${timeClass}`}>
                                                 {formatTime(msg.timestamp)}
+                                                {isAgent && msg.status && (
+                                                    <span title={msg.status}>
+                                                        {msg.status === 'pending' && <Clock size={10} className="animate-pulse" />}
+                                                        {msg.status === 'sent' && <CheckCircle2 size={10} />}
+                                                        {msg.status === 'failed' && <AlertCircle size={10} className="text-red-400" />}
+                                                    </span>
+                                                )}
                                             </div>
                                         </div>
                                     </div>
