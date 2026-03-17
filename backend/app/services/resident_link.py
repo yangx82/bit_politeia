@@ -376,38 +376,114 @@ class ResidentReporter:
         self.agent.resident_memory.log_interaction("agent_report", report_text, "report", chat_id="resident")
         logger.info("Sent daily community report to resident.")
 
-    async def generate_daily_brief(self, interests: List[str]) -> str:
+    async def generate_community_brief(self) -> str:
         """
-        Generate a concise brief about specific interests/research fields.
+        Summarize recent community/social changes from Semantic and Social memory.
         """
-        if not self.agent.llm:
-            return "LLM not initialized."
-            
-        recent_research = self.agent.resident_memory.get_recent_history(limit=5, topic="research")
-        research_text = "\n".join([f"- {r['content']}" for r in recent_research])
+        mem = self.agent.resident_memory
+        facts = mem._semantic_profile.get("facts", [])[-5:]
+        
+        # Get active social graph summaries
+        social_summaries = []
+        for peer_id, edge in mem._social_graph.items():
+            if edge.get("interaction_count", 0) > 0:
+                social_summaries.append(f"- {edge.get('name', 'Peer')}: Trust {edge.get('trust_score', 50.0)}, Rel: {edge.get('relationship_type')}")
+        
+        social_text = "\n".join(social_summaries[:5])
+        facts_text = "\n".join([f"- {f}" for f in facts])
         
         prompt = f"""
-        You are an AI research assistant. Provide a very brief daily executive summary for the resident.
-        Focus on these interests: {", ".join(interests)}
+        You are an AI Social Observer. Summarize the recent community and social state for the resident.
         
-        Recent Research Activity:
-        {research_text or "No specific research activity logged today."}
+        Recent Facts:
+        {facts_text or "No new community facts recently."}
+        
+        Social Graph Snapshot:
+        {social_text or "No active peer relationships recorded yet."}
         
         Task:
-        Summarize the progress or state in {self.agent.agent_language}. Keep it under 3 sentences.
+        Provide a concise "Community & Social Summary" in {self.agent.agent_language}. Focus on trust changes and key facts. Keep it under 3 sentences.
         """
         
         try:
             from langchain_core.messages import SystemMessage, HumanMessage
             messages = [
-                SystemMessage(content="You are a professional research reporter."),
+                SystemMessage(content="You are a social dynamics analyzer."),
                 HumanMessage(content=prompt)
             ]
             response = await self.agent.llm.ainvoke(messages)
             return response.content.strip()
         except Exception as e:
-            logger.error(f"Failed to generate daily brief: {e}")
-            return f"I am continuing to track {', '.join(interests)}, but I couldn't generate a polished summary right now."
+            logger.error(f"Failed to generate community brief: {e}")
+            return "I am monitoring community affairs, but I couldn't summarize them clearly at this moment."
+
+    async def generate_daily_brief(self, interests: List[str]) -> str:
+        """
+        Generate a unified brief covering both research interests and community state.
+        """
+        if not self.agent.llm:
+            return "LLM not initialized."
+            
+        # 1. Generate Research Part
+        recent_research = self.agent.resident_memory.get_recent_history(limit=5, topic="research")
+        research_text = "\n".join([f"- {r['content']}" for r in recent_research])
+        
+        research_prompt = f"""
+        Context: Research Brief
+        Interests: {", ".join(interests)}
+        Recent Research:
+        {research_text or "No specific research activity logged today."}
+        
+        Task: 
+        Summarize research progress in {self.agent.agent_language}. (1-2 sentences)
+        """
+        
+        # 2. Generate Community Part (via internal method)
+        community_summary = await self.community_brief_content()
+        
+        try:
+            from langchain_core.messages import SystemMessage, HumanMessage
+            
+            # Combine Research + Community into a single call or sequence
+            # For best nuance, we sequence them.
+            research_resp = await self.agent.llm.ainvoke([
+                SystemMessage(content="You are a professional research reporter."),
+                HumanMessage(content=research_prompt)
+            ])
+            research_summary = research_resp.content.strip()
+            
+            # Combine into a final readable block
+            final_report = (
+                f"### 📋 智能体定期汇报 (Periodic Report)\n\n"
+                f"#### 🔍 研究动态 (Research Focus: {', '.join(interests)})\n"
+                f"{research_summary}\n\n"
+                f"#### 🌐 社区事务 (Community Affairs)\n"
+                f"{community_summary}"
+            )
+            return final_report
+            
+        except Exception as e:
+            logger.error(f"Failed to generate unified brief: {e}")
+            return f"I'm keeping track of {', '.join(interests)} and community affairs, but the summary generation failed. Please check my raw logs."
+
+    async def community_brief_content(self) -> str:
+        """Helper to generate the community part of the brief."""
+        mem = self.agent.resident_memory
+        facts = mem._semantic_profile.get("facts", [])[-3:]
+        
+        # Social Graph
+        social_summaries = []
+        for edge in list(mem._social_graph.values())[:3]:
+             social_summaries.append(f"- {edge.get('name')}: Trust {edge.get('trust_score')}")
+        
+        prompt = f"""
+        Summarize community/social state briefly in {self.agent.agent_language}.
+        Recent Facts: {json.dumps(facts, ensure_ascii=False)}
+        Social Graph: {", ".join(social_summaries)}
+        Focus on the most important updates. (1-2 sentences)
+        """
+        resp = await self.agent.llm.ainvoke([HumanMessage(content=prompt)])
+        return resp.content.strip()
 
     async def generate_daily_report(self):
         """Legacy stub."""
