@@ -8,7 +8,8 @@ class Message(BaseModel):
     sender: str  # "user" or "agent"
     timestamp: datetime
     chat_id: Optional[str] = None
-    status: str = "sent"  # pending, sent, failed
+    status: Optional[str] = None
+  # pending, sent, failed
 
 class ChatRequest(BaseModel):
     content: str

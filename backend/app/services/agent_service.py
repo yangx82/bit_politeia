@@ -848,9 +848,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             sender="agent",
             timestamp=datetime.now(),
             chat_id=chat_id,
-            status="sent"
+            chat_id=chat_id
         ))
-        self.resident_memory.log_interaction("agent", content, msg_type="chat", chat_id=chat_id, status="sent")
+        self.resident_memory.log_interaction("agent", content, msg_type="chat", chat_id=chat_id)
         
         # 2. Broadcast or Targeted Send
         if broadcast:

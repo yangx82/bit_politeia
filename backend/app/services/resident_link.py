@@ -196,7 +196,7 @@ class ResidentMemory:
         content: str, 
         msg_type: str = "chat", 
         chat_id: str = None,
-        status: str = "sent"
+        status: str = None
     ):
         topic = msg_type if msg_type in self.topic_files else "chat"
         file_path = self.topic_files[topic]
