@@ -134,6 +134,30 @@ class AgentService:
         except Exception as e:
             logger.error(f"Failed to start scheduler/jobs: {e}")
 
+    def _get_host_info(self) -> str:
+        """Detect current host environment (OS, Shell, CWD) for the agent."""
+        import platform
+        import os
+        
+        system = platform.system()
+        release = platform.release()
+        machine = platform.machine()
+        cwd = os.getcwd()
+        
+        shell = "cmd.exe" if system == "Windows" else os.getenv("SHELL", "bash/sh")
+        
+        info = "\n### HOST ENVIRONMENT (DYNAMICALLY DETECTED)\n"
+        info += f"- **Operating System**: {system} {release} ({machine})\n"
+        info += f"- **Primary Shell**: {shell}\n"
+        info += f"- **Current Working Directory**: {cwd}\n"
+        
+        if system == "Windows":
+            info += "- **File System**: Windows-style paths (e.g., C:\\Users\\...)\n"
+            info += "- **Constraint**: Use Windows-compatible commands (e.g., `dir` instead of `ls`).\n"
+        else:
+            info += "- **File System**: POSIX-style paths (e.g., /home/user/...)\n"
+            info += "- **Constraint**: Use POSIX-compatible commands (e.g., `ls` instead of `dir`).\n"
+            
         return info
     
     def _normalize_session_id(self, sid: str) -> str:
