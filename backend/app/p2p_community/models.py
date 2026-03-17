@@ -183,7 +183,6 @@ class Node:
             from pathlib import Path
             
             # Resolve backend/data/p2p safely
-            # app/p2p_community/models.py -> app/p2p_community -> app -> backend
             current_file = Path(__file__).resolve()
             backend_dir = current_file.parent.parent.parent
             data_dir = backend_dir / "data"
@@ -191,9 +190,15 @@ class Node:
             
             p2p_dir.mkdir(parents=True, exist_ok=True)
             
+            def json_serial(obj):
+                """JSON serializer for objects not serializable by default json code"""
+                if hasattr(obj, 'isoformat'):
+                    return obj.isoformat()
+                raise TypeError(f"Type {type(obj)} not serializable")
+
             inbox_path = p2p_dir / f"inbox_{self.node_id}.jsonl"
             with open(inbox_path, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(msg_data) + "\n")
+                f.write(json.dumps(msg_data, default=json_serial) + "\n")
         except Exception as e:
             logger.error(f"Failed to persist inbox message: {e}")
 
