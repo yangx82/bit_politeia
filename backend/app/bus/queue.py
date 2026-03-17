@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Callable, Awaitable, Dict, List
+from typing import Callable, Awaitable, Dict, List, Optional, Set, Any
 
 from .events import InboundMessage, OutboundMessage
 
@@ -16,12 +16,13 @@ class MessageBus:
     them and pushes responses to the outbound queue.
     """
     
-    def __init__(self):
-        self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
-        self.outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
+    def __init__(self, maxsize: int = 1000):
+        self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue(maxsize=maxsize)
+        self.outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue(maxsize=maxsize)
         self._outbound_subscribers: Dict[str, List[Callable[[OutboundMessage], Awaitable[None]]]] = {}
         self._running = False
-        self._dispatch_task = None
+        self._dispatch_task: Optional[asyncio.Task[None]] = None
+        self._pending_callbacks: Set[asyncio.Task[Any]] = set()
     
     async def publish_inbound(self, msg: InboundMessage) -> None:
         """Publish a message from a channel to the agent."""
@@ -75,11 +76,14 @@ class MessageBus:
                 
                 for callback in subscribers:
                     try:
-                        # Call subscribers concurrently? Or sequentially safe?
-                        # Using await ensures ordered delivery per subscriber implementation
-                        await callback(msg)
+                        # Call subscribers concurrently to prevent blocking other channels
+                        # Ensure callback is awaited if it's a coroutine function
+                        coro = callback(msg)
+                        task = asyncio.create_task(coro) # type: ignore
+                        self._pending_callbacks.add(task)
+                        task.add_done_callback(self._pending_callbacks.discard)
                     except Exception as e:
-                        logger.error(f"Error dispatching to {msg.channel}: {e}")
+                        logger.error(f"Error launching dispatch task for {msg.channel}: {e}")
                 
                 self.outbound.task_done()
             except asyncio.CancelledError:
@@ -88,11 +92,22 @@ class MessageBus:
                 logger.error(f"Error in bus dispatch loop: {e}")
                 await asyncio.sleep(1) # Prevent tight loop on error
     
-    def stop(self) -> None:
-        """Stop the dispatcher loop."""
+    async def stop(self) -> None:
+        """Stop the dispatcher loop and wait for pending tasks."""
         self._running = False
-        if self._dispatch_task:
+        if self._dispatch_task is not None:
             self._dispatch_task.cancel()
+            try:
+                await self._dispatch_task
+            except asyncio.CancelledError:
+                pass
+            self._dispatch_task = None
+        
+        # Wait for pending callbacks with a timeout
+        if self._pending_callbacks:
+            logger.info(f"Waiting for {len(self._pending_callbacks)} pending callbacks to finish...")
+            await asyncio.wait(self._pending_callbacks, timeout=5.0)
+            
         logger.info("Message Bus stopped")
     
     @property
