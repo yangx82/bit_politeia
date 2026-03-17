@@ -997,24 +997,24 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     # p2p_logger.info(f"DEBUG: process_network_inbox calling run_pipeline. Channel={msg_obj.channel}, Sender={msg_obj.sender_id}")
                     response_text, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
                     
-                        # 4. Agent's Final Answer is for internal record, NOT sent over P2P.
-                        # All outbound P2P communication must be done explicitly by the LLM via `send_p2p_message` tool.
-                        if response_text and "[NO_RESPONSE_NEEDED]" not in str(response_text) and response_text != "No response generated.":
-                            # Log the agent's final conclusion of this P2P interaction to local history so the resident sees it
-                            self.history.append(Message(
-                                id=str(uuid.uuid4()),
-                                content=f"[Agent completed P2P task]: {response_text}",
-                                sender="agent",
-                                timestamp=datetime.now(),
-                                chat_id=effective_chat_id
-                            ))
-                            # Ensure Gateway knows processing is done
-                            await self.message_bus.publish_outbound(OutboundMessage(
-                                channel="gateway",
-                                chat_id=effective_chat_id,
-                                content=f"Agent processed P2P message from {sender_id[:8]}",
-                                type="thought"
-                            ))
+                    # 4. Agent's Final Answer is for internal record, NOT sent over P2P.
+                    # All outbound P2P communication must be done explicitly by the LLM via `send_p2p_message` tool.
+                    if response_text and "[NO_RESPONSE_NEEDED]" not in str(response_text) and response_text != "No response generated.":
+                        # Log the agent's final conclusion of this P2P interaction to local history so the resident sees it
+                        self.history.append(Message(
+                            id=str(uuid.uuid4()),
+                            content=f"[Agent completed P2P task]: {response_text}",
+                            sender="agent",
+                            timestamp=datetime.now(),
+                            chat_id=effective_chat_id
+                        ))
+                        # Ensure Gateway knows processing is done
+                        await self.message_bus.publish_outbound(OutboundMessage(
+                            channel="gateway",
+                            chat_id=effective_chat_id,
+                            content=f"Agent processed P2P message from {sender_id[:8]}",
+                            type="thought"
+                        ))
                 except asyncio.CancelledError:
                     logger.warning(f"Process Network Inbox was cancelled during message processing from {sender_id}. This usually happens on timeout or shutdown.")
                     self._is_processing_inbox = False
