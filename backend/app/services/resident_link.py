@@ -190,7 +190,14 @@ class ResidentMemory:
         except Exception as e:
             logger.error(f"Migration failed: {e}")
 
-    def log_interaction(self, sender: str, content: str, msg_type: str = "chat", chat_id: str = None):
+    def log_interaction(
+        self, 
+        sender: str, 
+        content: str, 
+        msg_type: str = "chat", 
+        chat_id: str = None,
+        status: str = "sent"
+    ):
         topic = msg_type if msg_type in self.topic_files else "chat"
         file_path = self.topic_files[topic]
         entry = {
@@ -199,17 +206,49 @@ class ResidentMemory:
             "sender": sender,
             "content": content,
             "type": msg_type,
-            "chat_id": chat_id
+            "chat_id": chat_id,
+            "status": status
         }
         try:
             with open(file_path, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:
             logger.error(f"Failed to log to {topic}: {e}")
-        if topic == "chat":
-            self._working_memory.append(entry)
-            if len(self._working_memory) > self._working_limit:
-                self._working_memory.pop(0)
+    def update_message_status(self, message_id: str, status: str, topic: str = "chat"):
+        """Update the status of a specific message in the JSONL log."""
+        file_path = self.topic_files.get(topic, self.topic_files["chat"])
+        if not file_path.exists():
+            return
+
+        temp_path = file_path.with_suffix(".tmp")
+        updated = False
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f_in, \
+                 open(temp_path, 'w', encoding='utf-8') as f_out:
+                for line in f_in:
+                    try:
+                        data = json.loads(line)
+                        if data.get("id") == message_id:
+                            data["status"] = status
+                            updated = True
+                        f_out.write(json.dumps(data, ensure_ascii=False) + "\n")
+                    except:
+                        f_out.write(line)
+            
+            if updated:
+                os.replace(temp_path, file_path)
+            else:
+                os.remove(temp_path)
+        except Exception as e:
+            logger.error(f"Failed to update message status in {topic}: {e}")
+            if temp_path.exists():
+                os.remove(temp_path)
+
+        # Update working memory if present
+        for msg in self._working_memory:
+            if msg.get("id") == message_id:
+                msg["status"] = status
+                break
 
     def get_working_context(self) -> List[Dict]:
         return self._working_memory

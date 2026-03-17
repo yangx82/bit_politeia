@@ -847,9 +847,10 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             content=content,
             sender="agent",
             timestamp=datetime.now(),
-            chat_id=chat_id
+            chat_id=chat_id,
+            status="sent"
         ))
-        self.resident_memory.log_interaction("agent", content, msg_type="chat", chat_id=chat_id)
+        self.resident_memory.log_interaction("agent", content, msg_type="chat", chat_id=chat_id, status="sent")
         
         # 2. Broadcast or Targeted Send
         if broadcast:
@@ -1436,23 +1437,27 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         # 2. Log Outbound Message (History)
         # Normalize target_id for history and UI consistency
         norm_target = self._normalize_session_id(target_id)
+        msg_id = str(uuid.uuid4())
         
-        self.history.append(Message(
-            id=str(uuid.uuid4()),
+        msg_obj = Message(
+            id=msg_id,
             content=f"{text_to_check}",
             sender="agent",
             timestamp=datetime.now(),
-            chat_id=norm_target
-        ))
-        self.resident_memory.log_interaction("agent", text_to_check, msg_type="chat", chat_id=norm_target)
+            chat_id=norm_target,
+            status="pending"
+        )
+        self.history.append(msg_obj)
+        self.resident_memory.log_interaction("agent", text_to_check, msg_type="chat", chat_id=norm_target, status="pending")
         
-        # Dual broadcast to UI
+        # Dual broadcast to UI (Initial Pending)
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="gateway",
             chat_id=norm_target,
             content=f"{text_to_check}",
             type="chat",
-            sender="agent"
+            sender="agent",
+            metadata={"message_id": msg_id, "status": "pending"}
         ))
         
         # Publish to p2p for internal tracking if needed
@@ -1496,7 +1501,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             
             if sent_via_webrtc:
                 logger.info(f"[{target_id}] Message transmitted via WebRTC: {text_to_check[:100]}...")
-                return {"success": True, "mode": "webrtc"}
+                success_final = True
+                mode = "webrtc"
             else:
                 # Fallback to HTTP/Relay
                 explicit_type = kwargs.get("message_type")
@@ -1510,15 +1516,34 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 success = await p2p_service.send_message(target_id, msg_content, msg_type=out_type)
                 if success:
                     logger.info(f"[{target_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
+                    success_final = True
+                    mode = "http_relay"
                     # Trigger Upgrade if simple text and not already connected/connecting
                     if not isinstance(content, dict):
                         pc = p2p_service.webrtc_manager.pcs.get(target_id.lower())
                         if not pc or (pc.signalingState == "stable" and pc.connectionState not in ["connecting", "connected"]):
                             asyncio.create_task(p2p_service.webrtc_manager.initiate_connection(target_id))
-                    return {"success": True, "mode": "http_relay"}
                 else:
                     logger.error(f"[{target_id}] FINAL FAILURE: Failed to transmit P2P message via ANY path (target={target_id})")
-                    return {"success": False, "error": "All transport paths failed"}
+                    success_final = False
+
+            # 4. Update Status and Notify Gateway
+            new_status = "sent" if success_final else "failed"
+            msg_obj.status = new_status
+            self.resident_memory.update_message_status(msg_id, new_status)
+            
+            await self.message_bus.publish_outbound(OutboundMessage(
+                channel="gateway",
+                chat_id=norm_target,
+                content=msg_id,
+                type="status_update",
+                metadata={"message_id": msg_id, "status": new_status}
+            ))
+
+            if success_final:
+                return {"success": True, "mode": mode}
+            else:
+                return {"success": False, "error": "All transport paths failed"}
 
         except Exception as e:
             logger.error(f"Failed to transmit P2P message to {target_id}: {e}")
