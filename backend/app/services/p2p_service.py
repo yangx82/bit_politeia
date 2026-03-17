@@ -22,6 +22,7 @@ class P2PService:
         self.network_manager = NetworkManager(self.message_protocol)
         self.local_node: Optional[Node] = None
         self.processed_signaling_ids: set[str] = set() # Store message_ids of sdp/ice messages
+        self.early_messages: List[Dict[str, Any]] = [] # Buffer for messages before initialization
         self._initialized = False
         
         # Initialize WebRTC Manager
@@ -81,6 +82,13 @@ class P2PService:
         
         self._initialized = True
         logger.info(f"P2PService initialized for Node {node_id} at {node_url}")
+        
+        # Process buffered messages
+        if self.early_messages:
+            logger.info(f"Processing {len(self.early_messages)} buffered early messages...")
+            for msg in self.early_messages:
+                asyncio.create_task(self.local_node.receive_message(msg))
+            self.early_messages.clear()
 
     async def send_signaling_message(self, target_id: str, msg_type: str, content: Dict[str, Any]):
         """Callback for WebRTCManager to send signaling via Relay/HTTP."""
@@ -114,13 +122,29 @@ class P2PService:
             
             
         if self.local_node:
-             # We call receive_message directly (bypassing message_handler interceptor to avoid loops? 
-             # No, receive_message calls message_handler. 
-             # But this IS the handler result. We want to put it in inbox.
-             # Wait, receive_message puts in inbox.
-             # But if we call receive_message, it might trigger the interceptor again?
-             # My interceptor checks for SDP/ICE. This is "DIRECT" type. So it should pass through.
+             # Standardize: Always use Hex Node ID for sender_id if it's a 64-char string
+             # (NetworkManager/MessageProtocol handle normalization, but we want it clean here)
+             
+             # Call receive_message directly puts it in inbox.jsonl
              await self.local_node.receive_message(msg_data)
+             
+             # CRITICAL: Also publish to the P2P channel on the message bus immediately!
+             # This allows agent_service to pick it up without waiting for the 30s scheduler.
+             from ..bus.queue import message_bus
+             from ..bus.events import InboundMessage
+             
+             inbound = InboundMessage(
+                 channel="p2p",
+                 sender_id=peer_id,
+                 chat_id=peer_id, # Target for replies
+                 content=message,
+                 metadata=msg_data
+             )
+             await message_bus.publish_inbound(inbound)
+             logger.info(f"WebRTC message from {peer_id[:8]} dispatched to bus.")
+        else:
+             logger.warning(f"P2PService: Node not ready. Buffering message from {peer_id[:8]}")
+             self.early_messages.append(msg_data)
 
     async def handle_p2p_message(self, message: Dict[str, Any]) -> bool:
         """

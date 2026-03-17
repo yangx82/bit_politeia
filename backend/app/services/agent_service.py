@@ -134,31 +134,20 @@ class AgentService:
         except Exception as e:
             logger.error(f"Failed to start scheduler/jobs: {e}")
 
-    def _get_host_info(self) -> str:
-        """Detect current host environment (OS, Shell, CWD) for the agent."""
-        import platform
-        import os
-        
-        system = platform.system()
-        release = platform.release()
-        machine = platform.machine()
-        cwd = os.getcwd()
-        
-        shell = "cmd.exe" if system == "Windows" else os.getenv("SHELL", "bash/sh")
-        
-        info = "\n### HOST ENVIRONMENT (DYNAMICALLY DETECTED)\n"
-        info += f"- **Operating System**: {system} {release} ({machine})\n"
-        info += f"- **Primary Shell**: {shell}\n"
-        info += f"- **Current Working Directory**: {cwd}\n"
-        
-        if system == "Windows":
-            info += "- **File System**: Windows-style paths (e.g., C:\\Users\\...)\n"
-            info += "- **Constraint**: Use Windows-compatible commands (e.g., `dir` instead of `ls`).\n"
-        else:
-            info += "- **File System**: POSIX-style paths (e.g., /home/user/...)\n"
-            info += "- **Constraint**: Use POSIX-compatible commands (e.g., `ls` instead of `dir`).\n"
-            
         return info
+    
+    def _normalize_session_id(self, sid: str) -> str:
+        """Standardize Session/Chat IDs to Hex 64-char format if it looks like a P2P ID."""
+        if not sid: return sid
+        # Strip potential prefixes
+        if sid.startswith("[p2p] "):
+            sid = sid[6:]
+        # If it's a known name, try to resolve to Node ID
+        if p2p_service._initialized and p2p_service.network_manager:
+            for node_id, node in p2p_service.network_manager.nodes.items():
+                if node.name == sid:
+                    return node_id
+        return sid
 
 
     async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None, p2p_reply_delay: int = 5, agent_language: str = "中文", ralph_wiggum_mode: bool = False):
@@ -457,17 +446,16 @@ class AgentService:
         
         # 0. Get or Create Session
         session = session_manager.get_session(msg.sender_id, msg.channel)
-        
-        # Refactored P2P Delay: Move delay to cognitive layer (Pipeline Start)
+          # Refactored P2P Delay: Move delay to cognitive layer (Pipeline Start)
         delay_val = getattr(self, 'p2p_reply_delay', 60)
-        # p2p_logger.info(f"DEBUG: run_pipeline START. Channel={msg.channel}, Sender={msg.sender_id}, DelayVal={delay_val} (Type: {type(delay_val)})")
         
         if msg.channel == "p2p" and delay_val > 0:
-            # p2p_logger.info(f"Simulating human response delay: {delay_val}s for P2P pipeline (Source: {msg.sender_id})")
             # 1. Notify Gateway that we are thinking (so UI shows status)
+            # Ensure chat_id is normalized for UI
+            ui_chat_id = self._normalize_session_id(msg.chat_id)
             await self.message_bus.publish_outbound(OutboundMessage(
                 channel="gateway",
-                chat_id=msg.sender_id,
+                chat_id=ui_chat_id,
                 content=f"... (Simulating {delay_val}s human-like research delay) ...",
                 type="thought"
             ))
@@ -745,21 +733,25 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
     async def process_bus_message(self, msg: InboundMessage):
         """Process an inbound message from a channel."""
         # 1. Log to history (Frontend Sync)
-        # Format sender as "[Channel] UserID" so frontend sees it clearly
-        formatted_sender = f"[{msg.channel}] {msg.sender_id}"
+        # Standardize ID: P2P messages use Hex ID consistently
+        raw_chat_id = self._normalize_session_id(msg.chat_id)
+        formatted_sender = msg.sender_id # Default
         
-        # Ensure chat_id in history also carries the [Channel] prefix for merging logic
-        # But keep raw chat_id for sending the reply back
-        raw_chat_id = msg.chat_id
+        # Identity Normalization for History
         history_chat_id = raw_chat_id
-        
-        # Determine history chat_id (Prefix if not resident)
-        if msg.channel != "resident":
+        if msg.channel == "p2p":
+             # Try to find name for sender formatting
+             if p2p_service._initialized:
+                  node = p2p_service.network_manager.nodes.get(msg.sender_id)
+                  if node and node.name:
+                       formatted_sender = node.name
+        elif msg.channel != "resident":
+             # Other channels keep prefix for now (Legacy)
              history_chat_id = f"[{msg.channel}] {raw_chat_id}"
+             formatted_sender = f"[{msg.channel}] {msg.sender_id}"
              # Update Resident Bridges registry for proactive notifications
-             if msg.channel != "p2p":
-                  self.resident_bridges[msg.channel] = raw_chat_id
-                  self._save_system_state() # Persist the new bridge immediately
+             self.resident_bridges[msg.channel] = raw_chat_id
+             self._save_system_state()
 
         user_msg_obj = Message(
             id=str(uuid.uuid4()),
@@ -770,6 +762,16 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         )
         self.history.append(user_msg_obj)
         self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", chat_id=history_chat_id)
+
+        # 1.5 DUAL BROADCAST: Inform Gateway of inbound P2P message
+        if msg.channel == "p2p":
+             await self.message_bus.publish_outbound(OutboundMessage(
+                 channel="gateway",
+                 chat_id=history_chat_id,
+                 content=msg.content,
+                 sender=formatted_sender,
+                 type="chat"
+             ))
 
         # 2. Pipeline Execution
         # p2p_logger.info(f"DEBUG: process_bus_message calling run_pipeline. Channel={msg.channel}, Sender={msg.sender_id}")
@@ -786,6 +788,15 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 reply_to=msg.metadata.get("message_id")
             )
             await self.message_bus.publish_outbound(out_msg)
+            
+            # 3.5 DUAL BROADCAST: Push Agent response to Gateway immediately
+            if msg.channel == "p2p":
+                 await self.message_bus.publish_outbound(OutboundMessage(
+                     channel="gateway",
+                     chat_id=history_chat_id,
+                     content=response_text,
+                     type="chat"
+                 ))
 
         # 4. Log Reply to history
         agent_msg_obj = Message(
@@ -905,22 +916,22 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         if m_id in self.processed_message_ids:
                             continue
                         self.processed_message_ids.add(m_id)
-                        self._save_system_state() # Persist de-dup IDs
-                        # Keep set size reasonable (last 1000 IDs)
-                        if len(self.processed_message_ids) > 1000:
-                            # Convert to list to pop first element (simple FIFO)
-                            l = list(self.processed_message_ids)
-                            self.processed_message_ids = set(l[100:])
-                            
-                    # Process based on type
-                    logger.info(f"Processing P2P message type {msg_type} from {sender_id[:8]}...")
+                        
+                    # Normalize Sender ID (Hex ID)
+                    sender_id = self._normalize_session_id(sender_id)
                     
-                    recipient_id = msg.get('recipient_id')
+                    # Process based on type
+                    logger.info(f"Processing P2P message from {sender_id[:8]}...")
+                    
+                    recipient_id = self._normalize_session_id(msg.get('recipient_id'))
                     
                     # Determine chat_id: Group ID if group message, else Sender ID
+                    # Standardize: Use normalized ID for session consistency
                     effective_chat_id = sender_id
                     if msg_type == "GROUP" and recipient_id:
                         effective_chat_id = recipient_id
+                    
+                    effective_chat_id = self._normalize_session_id(effective_chat_id)
 
                     # Use 'content' text if available
                     text_content = str(content)
@@ -964,6 +975,16 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         chat_id=effective_chat_id
                     ))
                     self.resident_memory.log_interaction(sender_id, text_content, msg_type="chat", chat_id=effective_chat_id)
+                    
+                    # DUAL BROADCAST: Inform UI and other listeners
+                    await self.message_bus.publish_outbound(OutboundMessage(
+                        channel="gateway",
+                        chat_id=effective_chat_id,
+                        content=text_content,
+                        type="chat",
+                        sender=sender_id
+                    ))
+                    # Also publish to p2p for internal listeners
                     await self.message_bus.publish_outbound(OutboundMessage(
                         channel="p2p",
                         chat_id=effective_chat_id,
@@ -976,24 +997,24 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     # p2p_logger.info(f"DEBUG: process_network_inbox calling run_pipeline. Channel={msg_obj.channel}, Sender={msg_obj.sender_id}")
                     response_text, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
                     
-                    # 4. Agent's Final Answer is for internal record, NOT sent over P2P.
-                    # All outbound P2P communication must be done explicitly by the LLM via `send_p2p_message` tool.
-                    if response_text and "[NO_RESPONSE_NEEDED]" not in str(response_text) and response_text != "No response generated.":
-                        # Log the agent's final conclusion of this P2P interaction to local history so the resident sees it
-                        self.history.append(Message(
-                            id=str(uuid.uuid4()),
-                            content=f"[Agent completed P2P task]: {response_text}",
-                            sender="agent",
-                            timestamp=datetime.now(),
-                            chat_id=effective_chat_id
-                        ))
-                        # Also notify the UI safely
-                        await self.message_bus.publish_outbound(OutboundMessage(
-                            channel="gateway",
-                            chat_id=effective_chat_id,
-                            content=f"Agent processed P2P message from {sender_id[:8]}",
-                            type="thought"
-                        ))
+                        # 4. Agent's Final Answer is for internal record, NOT sent over P2P.
+                        # All outbound P2P communication must be done explicitly by the LLM via `send_p2p_message` tool.
+                        if response_text and "[NO_RESPONSE_NEEDED]" not in str(response_text) and response_text != "No response generated.":
+                            # Log the agent's final conclusion of this P2P interaction to local history so the resident sees it
+                            self.history.append(Message(
+                                id=str(uuid.uuid4()),
+                                content=f"[Agent completed P2P task]: {response_text}",
+                                sender="agent",
+                                timestamp=datetime.now(),
+                                chat_id=effective_chat_id
+                            ))
+                            # Ensure Gateway knows processing is done
+                            await self.message_bus.publish_outbound(OutboundMessage(
+                                channel="gateway",
+                                chat_id=effective_chat_id,
+                                content=f"Agent processed P2P message from {sender_id[:8]}",
+                                type="thought"
+                            ))
                 except asyncio.CancelledError:
                     logger.warning(f"Process Network Inbox was cancelled during message processing from {sender_id}. This usually happens on timeout or shutdown.")
                     self._is_processing_inbox = False
@@ -1389,17 +1410,31 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             return {"success": True, "status": "refused", "reason": reason}
              
         # 2. Log Outbound Message (History)
+        # Normalize target_id for history and UI consistency
+        norm_target = self._normalize_session_id(target_id)
+        
         self.history.append(Message(
             id=str(uuid.uuid4()),
             content=f"{text_to_check}",
             sender="agent",
             timestamp=datetime.now(),
-            chat_id=target_id
+            chat_id=norm_target
         ))
-        self.resident_memory.log_interaction("agent", text_to_check, msg_type="chat", chat_id=target_id)
+        self.resident_memory.log_interaction("agent", text_to_check, msg_type="chat", chat_id=norm_target)
+        
+        # Dual broadcast to UI
+        await self.message_bus.publish_outbound(OutboundMessage(
+            channel="gateway",
+            chat_id=norm_target,
+            content=f"{text_to_check}",
+            type="chat",
+            sender="agent"
+        ))
+        
+        # Publish to p2p for internal tracking if needed
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="p2p",
-            chat_id=target_id,
+            chat_id=target_id, # Use raw target for P2P routing
             content=f"{text_to_check}",
             type="chat",
             sender="agent"
