@@ -146,7 +146,8 @@ class MessageProtocol:
         sender_id: str,
         recipient_id: str,
         message_type: MessageType,
-        content: Dict[str, Any]
+        content: Dict[str, Any],
+        message_id: Optional[str] = None
     ) -> SignedMessage:
         """
         Create a new signed message.
@@ -161,7 +162,7 @@ class MessageProtocol:
             Signed message ready for transmission
         """
         message = SignedMessage(
-            message_id=self._generate_message_id(sender_id),
+            message_id=message_id or self._generate_message_id(sender_id),
             sender_id=sender_id,
             recipient_id=recipient_id,
             message_type=message_type,

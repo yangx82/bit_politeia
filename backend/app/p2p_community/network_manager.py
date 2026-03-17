@@ -272,7 +272,8 @@ class NetworkManager:
         sender_id: str,
         target_id: str,
         msg_type: str,
-        content: Dict[str, Any]
+        content: Dict[str, Any],
+        message_id: Optional[str] = None
     ):
         """
         Create, sign, and route a message.
@@ -288,7 +289,8 @@ class NetworkManager:
             sender_id=sender_id,
             recipient_id=target_id,
             message_type=m_type,
-            content=content
+            content=content,
+            message_id=message_id
         )
         
         return await self.route_message(signed_msg)

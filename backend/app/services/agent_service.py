@@ -1057,6 +1057,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             
             # 6. Clear Disk Inbox after processing batch
             # We don't delete here anymore; hydration handles renaming to .processing
+            # CRITICAL: Save system state after processing messages to persist deduplication IDs
+            self._save_system_state()
             pass
         
         finally:
@@ -1486,6 +1488,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             if isinstance(content, dict):
                 msg_content = content
                 webrtc_payload_dict = content.copy()
+                webrtc_payload_dict["message_id"] = msg_id # CRITICAL: Include unique ID
                 if "message_type" not in webrtc_payload_dict:
                     webrtc_payload_dict["message_type"] = "DIRECT"
                 import json
@@ -1493,7 +1496,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             else:
                 msg_content = {"text": text_to_check}
                 import json
-                webrtc_payload = json.dumps({"text": text_to_check, "message_type": "DIRECT"})
+                webrtc_payload = json.dumps({"text": text_to_check, "message_type": "DIRECT", "message_id": msg_id})
 
             # Try WebRTC First
             sent_via_webrtc = await p2p_service.webrtc_manager.send_message(target_id, webrtc_payload)
@@ -1512,7 +1515,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 
                 # Check for explicit 'file' type mappings
                 out_type = "file" if custom_type == "file" else "DIRECT"
-                success = await p2p_service.send_message(target_id, msg_content, msg_type=out_type)
+                # Pass the unique business-level msg_id to the protocol layer
+                success = await p2p_service.send_message(
+                    target_id, 
+                    msg_content, 
+                    msg_type=out_type,
+                    message_id=msg_id
+                )
                 if success:
                     logger.info(f"[{target_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
                     success_final = True

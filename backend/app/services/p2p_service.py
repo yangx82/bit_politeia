@@ -99,26 +99,31 @@ class P2PService:
         import uuid
         import datetime
         
+        # Try parse JSON if message looks like standard P2P payload
+        incoming_id = None
+        content = None
+        try:
+            import json
+            content = json.loads(message)
+            if isinstance(content, dict):
+                 incoming_id = content.get('message_id')
+        except:
+            pass
+
         # Wrap as generic message structure so `agent_service` logs it to history.
         msg_data = {
-            "message_id": str(uuid.uuid4()), # Crucial for deduplication and logging
+            "message_id": incoming_id or str(uuid.uuid4()), # Use incoming ID or fallback to new UUID
             "sender_id": peer_id,
             "recipient_id": self.local_node.node_id if self.local_node else "unknown",
             "message_type": MessageType.DIRECT.value, # Default to DIRECT
             "content": {"text": message},
             "timestamp": datetime.datetime.now().isoformat()
         }
-        
-        # Try parse JSON if message looks like standard P2P payload
-        try:
-            import json
-            content = json.loads(message)
+        if isinstance(content, dict):
             if "text" in content or "data" in content:
-                 msg_data["content"] = content
-                 if "message_type" in content:
-                      msg_data["message_type"] = content["message_type"]
-        except:
-            pass
+                msg_data["content"] = content
+                if "message_type" in content:
+                    msg_data["message_type"] = content["message_type"]
             
             
         if self.local_node:
@@ -184,14 +189,14 @@ class P2PService:
             
         return False
 
-    async def send_message(self, target_id: str, content: Dict[str, Any], msg_type: str = MessageType.DIRECT.value):
+    async def send_message(self, target_id: str, content: Dict[str, Any], msg_type: str = MessageType.DIRECT.value, message_id: Optional[str] = None):
         """
         Send a message to a target (Node or Group).
         """
         if not self.local_node:
             raise RuntimeError("P2PService not initialized")
             
-        return await self.local_node.send_message(target_id, content, msg_type)
+        return await self.local_node.send_message(target_id, content, msg_type, message_id=message_id)
 
     async def broadcast_to_group(self, group_id: str, text: str, subject: str = None):
         """
