@@ -1498,30 +1498,46 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 import json
                 webrtc_payload = json.dumps({"text": text_to_check, "message_type": "DIRECT", "message_id": msg_id})
 
-            # Try WebRTC First
-            sent_via_webrtc = await p2p_service.webrtc_manager.send_message(target_id, webrtc_payload)
+            # Determine message type - prioritize kwargs, then content
+            explicit_type = kwargs.get("message_type")
+            if explicit_type:
+                custom_type = explicit_type
+            else:
+                custom_type = content.get("type", "DIRECT") if isinstance(content, dict) else "DIRECT"
+            
+            # Map to protocol message types
+            # GROUP messages should NOT use WebRTC (WebRTC is for peer-to-peer)
+            # Only use WebRTC for DIRECT messages
+            use_webrtc = custom_type not in ["GROUP", "GOSSIP", "file"]
+            
+            sent_via_webrtc = False
+            if use_webrtc:
+                sent_via_webrtc = await p2p_service.webrtc_manager.send_message(target_id, webrtc_payload)
             
             if sent_via_webrtc:
                 logger.info(f"[{target_id}] Message transmitted via WebRTC: {text_to_check[:100]}...")
                 success_final = True
                 mode = "webrtc"
             else:
-                # Fallback to HTTP/Relay
-                explicit_type = kwargs.get("message_type")
-                if explicit_type:
-                    custom_type = explicit_type
-                else:
-                    custom_type = content.get("type", "DIRECT") if isinstance(content, dict) else "DIRECT"
-                
+                # Fallback to HTTP/Relay (or direct for GROUP messages)
                 # Check for explicit 'file' type mappings
-                out_type = "file" if custom_type == "file" else "DIRECT"
-                # Pass the unique business-level msg_id to the protocol layer
-                success = await p2p_service.send_message(
-                    target_id, 
-                    msg_content, 
-                    msg_type=out_type,
-                    message_id=msg_id
-                )
+                out_type = "file" if custom_type == "file" else custom_type
+                
+                # For GROUP messages, use broadcast_to_group if available, otherwise use send_message
+                if custom_type == "GROUP":
+                    # Use the dedicated group broadcast method
+                    success = await p2p_service.broadcast_to_group(
+                        target_id,
+                        text_to_check
+                    )
+                else:
+                    # Pass the unique business-level msg_id to the protocol layer
+                    success = await p2p_service.send_message(
+                        target_id, 
+                        msg_content, 
+                        msg_type=out_type,
+                        message_id=msg_id
+                    )
                 if success:
                     logger.info(f"[{target_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
                     success_final = True
