@@ -1604,7 +1604,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         # 1. Update status in history
         found = False
         for msg in self.history:
-            if msg.id == message_id:
+            # Match against P2P network ID stored in metadata
+            p2p_msg_id = msg.metadata.get("message_id") if msg.metadata else None
+            if p2p_msg_id == message_id:
                 msg.status = "failed"
                 found = True
                 break
