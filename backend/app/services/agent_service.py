@@ -306,6 +306,15 @@ class AgentService:
         
         # Initialize LLM with Tools
         try:
+            # Clear proxy env vars that use unsupported schemes (e.g. socks://)
+            # httpx (used internally by langchain/OpenAI) doesn't support socks without extras
+            import os
+            for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 
+                              'http_proxy', 'https_proxy', 'all_proxy']:
+                if proxy_var in os.environ and 'socks' in os.environ[proxy_var].lower():
+                    logger.info(f"Clearing unsupported proxy env var: {proxy_var}={os.environ[proxy_var]}")
+                    del os.environ[proxy_var]
+            
             # Common fix: Ensure base_url for OpenAI-compatible proxies ends with /v1
             logger.info(f"Initializing ChatOpenAI with base_url: {base_url}")
             
