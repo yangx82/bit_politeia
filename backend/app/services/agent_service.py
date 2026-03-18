@@ -605,7 +605,9 @@ class AgentService:
             lc_history = []
             for msg in recent_history:
                 if msg.sender == "agent":
-                    lc_history.append(AIMessage(content=msg.content))
+                    # Include status for agent's own messages to perceive delivery state
+                    status_prefix = f"[STATUS: {msg.status.upper()}] " if msg.status and msg.status in ["pending", "failed"] else ""
+                    lc_history.append(AIMessage(content=f"{status_prefix}{msg.content}"))
                 else:
                     lc_history.append(HumanMessage(content=f"[{msg.sender}] {msg.content}"))
 
@@ -1141,7 +1143,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 content=entry.get('content', ''),
                 sender=entry.get('sender', 'unknown'),
                 timestamp=datetime.fromisoformat(entry.get('timestamp')) if entry.get('timestamp') else datetime.now(),
-                chat_id=entry.get('chat_id')
+                chat_id=entry.get('chat_id'),
+                status=entry.get('status')
             ))
         logger.info(f"AgentService: Loaded {len(self.history)} messages from persistent storage.")
 
@@ -1435,7 +1438,15 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             
             return {"success": True, "status": "refused", "reason": reason}
              
-        # 2. Log Outbound Message (History)
+        # 2. Identify Message Type and Payload Early
+        # This is needed for the initial "pending" broadcast
+        explicit_type = kwargs.get("message_type")
+        if explicit_type:
+            custom_type = explicit_type
+        else:
+            custom_type = content.get("type", "DIRECT") if isinstance(content, dict) else "DIRECT"
+        
+        # 3. Log Outbound Message (History)
         # Normalize target_id for history and UI consistency
         norm_target = self._normalize_session_id(target_id)
         msg_id = str(uuid.uuid4())
@@ -1449,16 +1460,16 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             status="pending"
         )
         self.history.append(msg_obj)
-        self.resident_memory.log_interaction("agent", text_to_check, msg_type="chat", chat_id=norm_target, status="pending")
+        self.resident_memory.log_interaction("agent", text_to_check, msg_type=custom_type.lower() if custom_type else "chat", chat_id=norm_target, status="pending")
         
         # Dual broadcast to UI (Initial Pending)
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="gateway",
             chat_id=norm_target,
             content=f"{text_to_check}",
-            type="chat",
+            type=custom_type if custom_type == "file" else "chat",
             sender="agent",
-            metadata={"message_id": msg_id, "status": "pending"}
+            metadata={"message_id": msg_id, "status": "pending", "message_type": custom_type}
         ))
         
         # Publish to p2p for internal tracking if needed
@@ -1498,12 +1509,6 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 import json
                 webrtc_payload = json.dumps({"text": text_to_check, "message_type": "DIRECT", "message_id": msg_id})
 
-            # Determine message type - prioritize kwargs, then content
-            explicit_type = kwargs.get("message_type")
-            if explicit_type:
-                custom_type = explicit_type
-            else:
-                custom_type = content.get("type", "DIRECT") if isinstance(content, dict) else "DIRECT"
             
             # Map to protocol message types
             # GROUP messages should NOT use WebRTC (WebRTC is for peer-to-peer)
@@ -1530,6 +1535,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         target_id,
                         text_to_check
                     )
+                    mode = "group_broadcast"
                 else:
                     # Pass the unique business-level msg_id to the protocol layer
                     success = await p2p_service.send_message(
@@ -1538,6 +1544,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         msg_type=out_type,
                         message_id=msg_id
                     )
+                    mode = "http_relay"
                 if success:
                     logger.info(f"[{target_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
                     success_final = True

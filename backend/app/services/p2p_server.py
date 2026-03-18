@@ -192,23 +192,25 @@ async def websocket_relay(websocket: WebSocket, node_id: str):
                 # Check for standard SignedMessage format or specific relay envelope
                 # Expecting SignedMessage which has 'recipient_id'
                 target_id = message.get("recipient_id")
+                msg_type = message.get("message_type")
                 
                 if target_id:
-                     if target_id == "bootstrap":
-                         # Handle control messages to bootstrap if needed
-                         pass
+                     if msg_type == "group":
+                         # Group Broadcast
+                         success = await relay_manager.broadcast_to_group(node_id, target_id, message)
                      else:
-                         # Relay to target
+                         # Direct Relay to target
                          success = await relay_manager.route_message(node_id, target_id, message)
-                         if not success:
-                             # Send error back to sender
-                             error_msg = {
-                                 "type": "SYSTEM_ERROR",
-                                 "error_code": "DELIVERY_FAILED",
-                                 "recipient_id": target_id,
-                                 "content": "Target node is not connected to relay."
-                             }
-                             await websocket.send_text(json.dumps(error_msg))
+                         
+                     if not success:
+                         # Send error back to sender
+                         error_msg = {
+                             "type": "SYSTEM_ERROR",
+                             "error_code": "DELIVERY_FAILED",
+                             "recipient_id": target_id,
+                             "content": f"Target {target_id} not reachable via relay."
+                         }
+                         await websocket.send_text(json.dumps(error_msg))
                 else:
                     logger.warning(f"Relay: Received malformed message from {node_id} (No recipient_id or type)")
                     

@@ -356,22 +356,33 @@ class NetworkManager:
         
         elif message.message_type == MessageType.GROUP:
             group_id = message.recipient_id
+            
+            # Local Delivery Check: Deliver to self if we are a member (even if group metadata not synced)
+            if self.local_node_id in self.nodes:
+                if group_id in self.nodes[self.local_node_id].group_ids:
+                    if message.sender_id != self.local_node_id:
+                        await self.nodes[self.local_node_id].receive_message(message)
+            
+            # Broadcast to other known members
             if group_id in self.groups:
                 members = self.groups[group_id].members
                 results = []
                 for member_id in members:
                     if member_id == self.local_node_id:
-                        if message.sender_id != self.local_node_id:
-                            # Delivery to self
-                            if self.local_node_id in self.nodes:
-                                await self.nodes[self.local_node_id].receive_message(message)
-                            results.append(True)
                         continue
                     results.append(await send_to_node(member_id, message))
-                return any(results) if results else True # success if empty or at least one peer reached
+                
+                # If we couldn't reach anyone locally AND we are the original sender,
+                # fallback to Relay to reach others (the Relay now has group awareness)
+                if not from_relay and not any(results):
+                    return await self._send_via_relay(group_id, message)
+                return True
             else:
-                logger.warning(f"Target group {message.recipient_id} not found")
-                return False
+                # If we don't know the members but we are the sender, push to relay
+                if not from_relay:
+                    logger.info(f"[Network] Group {group_id} not found locally. Pushing to Relay for broadcast.")
+                    return await self._send_via_relay(group_id, message)
+                return True
         
         return await send_to_node(message.recipient_id, message)
 

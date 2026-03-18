@@ -35,10 +35,6 @@ class RelayManager:
             
         try:
             target_ws = self.active_connections[target_id]
-            # Wrap in a structure indicating it's a relayed message
-            # Or just send raw signed message?
-            # Let's send a wrapper so the client knows source context if needed, 
-            # though SignedMessage has sender_id.
             # Keeping it simple: Send exactly what was received.
             await target_ws.send_text(json.dumps(payload))
             return True
@@ -46,5 +42,34 @@ class RelayManager:
             logger.error(f"Relay: Failed to send to {target_id}: {e}")
             self.disconnect(target_id) # Assume broken link
             return False
+
+    async def broadcast_to_group(self, sender_id: str, group_id: str, payload: dict) -> bool:
+        """
+        Broadcast a message to all members of a group who are connected via WebSocket.
+        """
+        from .bootstrap_service import bootstrap_service
+        
+        # Get members from global topology
+        members = bootstrap_service._group_members.get(group_id, set())
+        if not members:
+            logger.warning(f"Relay: Attempted broadcast to unknown or empty group {group_id}")
+            return False
+            
+        logger.info(f"Relay: Group Broadcast from {sender_id} to Group {group_id} ({len(members)} members)")
+        
+        success_count = 0
+        for member_id in members:
+            if member_id == sender_id:
+                continue
+                
+            if member_id in self.active_connections:
+                try:
+                    await self.active_connections[member_id].send_text(json.dumps(payload))
+                    success_count += 1
+                except Exception as e:
+                    logger.error(f"Relay: Failed to broadcast to {member_id}: {e}")
+                    self.disconnect(member_id)
+        
+        return success_count > 0
 
 relay_manager = RelayManager()
