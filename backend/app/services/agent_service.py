@@ -1471,7 +1471,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             custom_type = content.get("type") if isinstance(content, dict) else None
             if not custom_type:
                 # If target_id matches a known group, it's a group message
-                if target_id in self.local_node.group_ids:
+                from .p2p_service import p2p_service as _p2p
+                local_node = _p2p.local_node
+                if local_node and target_id in local_node.group_ids:
                     custom_type = "group"
                 else:
                     custom_type = "direct"
