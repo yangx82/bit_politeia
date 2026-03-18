@@ -932,7 +932,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 msg = inbox.pop(0)
                 sender_id = msg.get('sender_id')
                 content = msg.get('content')
-                msg_type = msg.get('message_type')
+                msg_type = msg.get('message_type', msg.get('type'))
+                
+                # Filter out system messages that are handled elsewhere (e.g., in handle_p2p_message)
+                if msg_type == "SYSTEM_ERROR":
+                    continue
                 
                 try:
                     receive_time = datetime.now().timestamp()
