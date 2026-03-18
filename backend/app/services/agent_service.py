@@ -1514,17 +1514,25 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         ))
         
         # 3. Direct Transmission
-        # PROACTIVE TOPOLOGY CHECK: Log if we actually know this peer
-        network_status = p2p_service.get_network_status()
+        # PROACTIVE TOPOLOGY CHECK: Log if we actually know this peer or group
         peer_name = "Unknown"
-        if network_status and "nodes" in network_status:
-            if target_id in network_status["nodes"]:
-                peer_name = network_status["nodes"][target_id].get("name", "Unknown")
-                logger.info(f"Recipient {target_id} identified as '{peer_name}' in topology.")
-            else:
-                logger.warning(f"Recipient {target_id} NOT found in local topology nodes. It might be a group or an offline node.")
+        is_group = False
+        
+        # Check nodes first
+        target_node = p2p_service.network_manager.nodes.get(target_id)
+        if target_node:
+            peer_name = target_node.name
+            logger.info(f"Recipient {target_id} identified as peer '{peer_name}' in topology.")
+        # Check groups
+        elif target_id in p2p_service.network_manager.groups:
+            peer_name = p2p_service.network_manager.groups[target_id].name
+            is_group = True
+            logger.info(f"Recipient {target_id} identified as group '{peer_name}'.")
+        else:
+            logger.warning(f"Recipient {target_id} NOT found in local topology nodes or groups. It might be an offline node or a new group.")
 
-        logger.info(f"Transmitting P2P message to {target_id} ({peer_name})...")
+        target_label = f"Group: {peer_name}" if is_group else peer_name
+        logger.info(f"Transmitting P2P message to {target_id} ({target_label})...")
         
         try:
             # Differentiate simple string vs complex dictionary payload
@@ -1578,9 +1586,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     )
                     mode = "http_relay"
                 if success:
-                    logger.info(f"[{target_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
                     success_final = True
-                    mode = "http_relay"
+                    # Log based on transmission mode
+                    if mode == "group_broadcast":
+                        logger.info(f"[{target_id}] Group Broadcast successfully initiated: {text_to_check[:100]}...")
+                    else:
+                        logger.info(f"[{target_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
                     # Trigger Upgrade if simple text and not already connected/connecting
                     # CRITICAL: Only for DIRECT messages!
                     if not isinstance(content, dict) and custom_type == "direct":
