@@ -1458,7 +1458,14 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         if explicit_type:
             custom_type = explicit_type
         else:
-            custom_type = content.get("type", "DIRECT") if isinstance(content, dict) else "DIRECT"
+            # Check content for type, then fallback to target_id identification
+            custom_type = content.get("type") if isinstance(content, dict) else None
+            if not custom_type:
+                # If target_id matches a known group, it's a group message
+                if target_id in self.local_node.group_ids:
+                    custom_type = "group"
+                else:
+                    custom_type = "direct"
         
         # 3. Log Outbound Message (History)
         # Normalize target_id for history and UI consistency
@@ -1527,7 +1534,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             # Map to protocol message types
             # GROUP messages should NOT use WebRTC (WebRTC is for peer-to-peer)
             # Only use WebRTC for DIRECT messages
-            use_webrtc = custom_type not in ["GROUP", "GOSSIP", "file"]
+            use_webrtc = custom_type not in ["group", "gossip", "file"]
             
             sent_via_webrtc = False
             if use_webrtc:
@@ -1543,7 +1550,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 out_type = "file" if custom_type == "file" else custom_type
                 
                 # For GROUP messages, use broadcast_to_group if available, otherwise use send_message
-                if custom_type == "GROUP":
+                if custom_type == "group":
                     # Use the dedicated group broadcast method
                     success = await p2p_service.broadcast_to_group(
                         target_id,
@@ -1564,7 +1571,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     success_final = True
                     mode = "http_relay"
                     # Trigger Upgrade if simple text and not already connected/connecting
-                    if not isinstance(content, dict):
+                    # CRITICAL: Only for DIRECT messages!
+                    if not isinstance(content, dict) and custom_type == "direct":
                         pc = p2p_service.webrtc_manager.pcs.get(target_id.lower())
                         if not pc or (pc.signalingState == "stable" and pc.connectionState not in ["connecting", "connected"]):
                             asyncio.create_task(p2p_service.webrtc_manager.initiate_connection(target_id))

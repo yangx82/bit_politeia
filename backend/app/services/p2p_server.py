@@ -195,11 +195,14 @@ async def websocket_relay(websocket: WebSocket, node_id: str):
                 msg_type = message.get("message_type")
                 
                 if target_id:
-                     if msg_type == "group":
+                     logger.info(f"Relay Handler: Received message from {node_id}. target_id={target_id}, msg_type='{msg_type}' (raw)")
+                     if msg_type and str(msg_type).lower() == "group":
                          # Group Broadcast
+                         logger.info(f"Relay Handler: Detected GROUP message. Broadcasting to group {target_id}")
                          success = await relay_manager.broadcast_to_group(node_id, target_id, message)
                      else:
                          # Direct Relay to target
+                         logger.info(f"Relay Handler: Detected DIRECT message. Routing to node {target_id}")
                          success = await relay_manager.route_message(node_id, target_id, message)
                          
                      if not success:

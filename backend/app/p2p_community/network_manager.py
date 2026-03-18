@@ -26,7 +26,7 @@ class NetworkManager:
         self.local_node_id: Optional[str] = None
         self.message_protocol = message_protocol
         self.bootstrap = bootstrap_client
-        self.http_client = httpx.AsyncClient(timeout=3.0)
+        self.http_client = httpx.AsyncClient(timeout=3.0, trust_env=False)
         self._last_logs: Dict[str, float] = {} # For deduplication: message -> last_time
 
     async def initialize(self):
@@ -281,9 +281,9 @@ class NetworkManager:
         """
         Create, sign, and route a message.
         """
-        # Convert string msg_type to Enum
+        # Convert string msg_type to Enum (handle case-insensitivity)
         try:
-            m_type = MessageType(msg_type)
+            m_type = MessageType(msg_type.lower()) if isinstance(msg_type, str) else msg_type
         except ValueError:
             logger.warning(f"Invalid message type {msg_type}, defaulting to DIRECT")
             m_type = MessageType.DIRECT

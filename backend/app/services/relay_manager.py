@@ -51,8 +51,15 @@ class RelayManager:
         
         # Get members from global topology
         members = bootstrap_service._group_members.get(group_id, set())
+        connected_nodes = list(self.active_connections.keys())
+        logger.info(f"Relay: broadcast_to_group called. group_id={group_id}, sender={sender_id}")
+        logger.info(f"Relay: Known group members for {group_id}: {members}")
+        logger.info(f"Relay: All connected WebSocket nodes: {connected_nodes}")
+        logger.info(f"Relay: All known groups: {list(bootstrap_service._group_members.keys())}")
+        
         if not members:
-            logger.warning(f"Relay: Attempted broadcast to unknown or empty group {group_id}")
+            logger.warning(f"Relay: Attempted broadcast to unknown or empty group {group_id}. "
+                         f"Known groups: {list(bootstrap_service._group_members.keys())}")
             return False
             
         logger.info(f"Relay: Group Broadcast from {sender_id} to Group {group_id} ({len(members)} members)")
@@ -60,16 +67,21 @@ class RelayManager:
         success_count = 0
         for member_id in members:
             if member_id == sender_id:
+                logger.info(f"Relay: Skipping sender {member_id}")
                 continue
                 
             if member_id in self.active_connections:
                 try:
                     await self.active_connections[member_id].send_text(json.dumps(payload))
                     success_count += 1
+                    logger.info(f"Relay: Successfully sent to member {member_id}")
                 except Exception as e:
                     logger.error(f"Relay: Failed to broadcast to {member_id}: {e}")
                     self.disconnect(member_id)
+            else:
+                logger.warning(f"Relay: Member {member_id} is NOT connected via WebSocket")
         
+        logger.info(f"Relay: Broadcast complete. Delivered to {success_count}/{len(members)-1} members (excluding sender)")
         return success_count > 0
 
 relay_manager = RelayManager()
