@@ -1580,6 +1580,45 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             logger.error(f"Failed to transmit P2P message to {target_id}: {e}")
             return {"success": False, "error": str(e)}
 
+    async def handle_remote_delivery_error(self, message_id: str, error_content: Any):
+        """
+        Handle asynchronous delivery failure reported by the P2P network (e.g., from Relay).
+        Updates local history and notifies the UI.
+        """
+        logger.warning(f"Handling remote delivery error for message {message_id}: {error_content}")
+        
+        # 1. Update status in history
+        found = False
+        for msg in self.history:
+            if msg.id == message_id:
+                msg.status = "failed"
+                found = True
+                break
+        
+        # 2. Update status in persistent resident memory
+        self.resident_memory.update_message_status(message_id, "failed")
+        
+        # 3. Notify Gateway/UI
+        # Find target chat_id for this message if possible to keep UI scoped
+        chat_id = "resident" # Default
+        for msg in self.history:
+            if msg.id == message_id:
+                chat_id = msg.chat_id
+                break
+                
+        await self.message_bus.publish_outbound(OutboundMessage(
+            channel="gateway",
+            chat_id=chat_id,
+            content=message_id,
+            type="status_update",
+            metadata={"message_id": message_id, "status": "failed", "error": str(error_content)}
+        ))
+        
+        if found:
+            logger.info(f"Successfully updated status to 'failed' for message {message_id}")
+        else:
+            logger.warning(f"Message ID {message_id} not found in current history buffer for status update.")
+
     async def get_chat_history_with_peer(self, peer_id: str, limit: int = 20) -> str:
         """
         Retrieves the persistent chat history for a specific peer from the SessionManager.

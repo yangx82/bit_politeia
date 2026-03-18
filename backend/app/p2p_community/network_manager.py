@@ -208,7 +208,10 @@ class NetworkManager:
             # Check for system messages first
             msg_type = message_data.get("type", message_data.get("message_type"))
             if msg_type == "SYSTEM_ERROR":
-                self._log_throttled("warning", f"[Network] Relay System Error: {message_data.get('content')} (Target: {message_data.get('recipient_id')})")
+                self._log_throttled("warning", f"[Network] Relay System Error: {message_data.get('content')} (Target: {message_data.get('recipient_id')}, Message: {message_data.get('message_id')})")
+                # Propagate to local node for handling (async status update)
+                if self.local_node_id in self.nodes:
+                     await self.nodes[self.local_node_id].receive_message(message_data)
                 return
 
             # Basic Validation before parsing

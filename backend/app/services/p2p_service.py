@@ -187,6 +187,16 @@ class P2PService:
             await self.webrtc_manager.handle_candidate(sender_id, content)
             return True
             
+        elif msg_type == "SYSTEM_ERROR":
+            # Asynchronous delivery failure from the relay
+            m_id = message.get("message_id")
+            if m_id:
+                logger.warning(f"P2P Delivery Failure for message {m_id}: {content}")
+                # Import here to avoid circular dependency
+                from .agent_service import agent_service
+                asyncio.create_task(agent_service.handle_remote_delivery_error(m_id, content))
+            return True
+            
         return False
 
     async def send_message(self, target_id: str, content: Dict[str, Any], msg_type: str = MessageType.DIRECT.value, message_id: Optional[str] = None):

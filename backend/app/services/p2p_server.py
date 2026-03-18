@@ -208,6 +208,7 @@ async def websocket_relay(websocket: WebSocket, node_id: str):
                              "type": "SYSTEM_ERROR",
                              "error_code": "DELIVERY_FAILED",
                              "recipient_id": target_id,
+                             "message_id": message.get("message_id"),  # Track which message failed
                              "content": f"Target {target_id} not reachable via relay."
                          }
                          await websocket.send_text(json.dumps(error_msg))
