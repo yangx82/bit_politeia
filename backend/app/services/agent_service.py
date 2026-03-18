@@ -967,8 +967,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     
                     # Determine chat_id: Group ID if group message, else Sender ID
                     # Standardize: Use normalized ID for session consistency
+                    # Support both 'group' and 'GROUP' for legacy consistency
                     effective_chat_id = sender_id
-                    if msg_type == "GROUP" and recipient_id:
+                    if msg_type and str(msg_type).lower() == "group" and recipient_id:
                         effective_chat_id = recipient_id
                     
                     effective_chat_id = self._normalize_session_id(effective_chat_id) or "unknown_chat"

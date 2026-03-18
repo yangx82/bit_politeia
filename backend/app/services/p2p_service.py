@@ -138,10 +138,16 @@ class P2PService:
              from ..bus.queue import message_bus
              from ..bus.events import InboundMessage
              
+             # Determine effective chat_id (Group vs Direct)
+             effective_chat_id = peer_id
+             if isinstance(content, dict):
+                 if str(content.get("message_type")).lower() == "group":
+                     effective_chat_id = content.get("target_id") or content.get("recipient_id") or peer_id
+             
              inbound = InboundMessage(
                  channel="p2p",
                  sender_id=peer_id,
-                 chat_id=peer_id, # Target for replies
+                 chat_id=effective_chat_id, # Target for replies/session grouping
                  content=message,
                  metadata=msg_data
              )
