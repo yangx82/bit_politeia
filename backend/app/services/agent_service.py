@@ -944,10 +944,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         self.processed_message_ids.add(m_id)
                         
                     # Normalize Sender ID (Hex ID)
-                    sender_id = self._normalize_session_id(sender_id)
+                    sender_id = self._normalize_session_id(sender_id) or "unknown_sender"
                     
                     # Process based on type
-                    logger.info(f"Processing P2P message from {sender_id[:8]}...")
+                    sender_display = sender_id[:8] if sender_id else "unknown"
+                    logger.info(f"Processing P2P message from {sender_display}...")
                     
                     recipient_id = self._normalize_session_id(msg.get('recipient_id'))
                     
@@ -957,7 +958,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     if msg_type == "GROUP" and recipient_id:
                         effective_chat_id = recipient_id
                     
-                    effective_chat_id = self._normalize_session_id(effective_chat_id)
+                    effective_chat_id = self._normalize_session_id(effective_chat_id) or "unknown_chat"
 
                     # Use 'content' text if available
                     text_content = str(content)
@@ -972,7 +973,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                             
                             download_dir = "data/downloads"
                             os.makedirs(download_dir, exist_ok=True)
-                            file_path = os.path.join(download_dir, f"{sender_id[:8]}_{file_name}")
+                            s_id_short = sender_id[:8] if sender_id else "unknown"
+                            file_path = os.path.join(download_dir, f"{s_id_short}_{file_name}")
                             
                             with open(file_path, "wb") as f:
                                 f.write(file_data)
@@ -1035,10 +1037,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                             chat_id=effective_chat_id
                         ))
                         # Ensure Gateway knows processing is done
+                        s_id_short = sender_id[:8] if sender_id else "unknown"
                         await self.message_bus.publish_outbound(OutboundMessage(
                             channel="gateway",
                             chat_id=effective_chat_id,
-                            content=f"Agent processed P2P message from {sender_id[:8]}",
+                            content=f"Agent processed P2P message from {s_id_short}",
                             type="thought"
                         ))
                 except asyncio.CancelledError:
@@ -1049,12 +1052,19 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     logger.error(f"Error processing P2P message from {sender_id}: {e}")
                     # Optional: Push back to inbox or Dead Letter Queue?
                     # For now, just log to history so user sees something failed
+                    
+                    # Ensure effective_chat_id is defined for logging
+                    try:
+                        err_chat_id = effective_chat_id
+                    except UnboundLocalError:
+                        err_chat_id = sender_id or "unknown"
+
                     self.history.append(Message(
                         id=str(uuid.uuid4()),
                         content=f"Error processing P2P message: {e}",
                         sender="system",
                         timestamp=datetime.now(),
-                        chat_id=effective_chat_id
+                        chat_id=err_chat_id
                     ))
             
             # 6. Clear Disk Inbox after processing batch
