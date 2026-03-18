@@ -120,6 +120,15 @@ class SenseStage(PipelineStage):
         peer_id = context.input_message.sender_id
         memory_context = agent.resident_memory.get_full_context_text(peer_id=peer_id)
 
+        # Resolve Chat Name if it's a group
+        from .p2p_service import p2p_service
+        chat_id = context.input_message.chat_id
+        chat_name = "Unknown"
+        network_status = p2p_service.get_network_status()
+        if network_status and "groups" in network_status:
+            if chat_id in network_status["groups"]:
+                chat_name = network_status["groups"][chat_id].get("name", "Unknown Group")
+
         context.metadata["messages"] = agent.context_builder.build_messages(
             history=lc_history, 
             current_message=agent_query,
@@ -132,7 +141,9 @@ class SenseStage(PipelineStage):
             personality=agent.personality,
             agent_language=getattr(agent, 'agent_language', '中文'),
             channel=context.input_message.channel,
-            host_info=agent._get_host_info()
+            host_info=agent._get_host_info(),
+            chat_id=chat_id,
+            chat_name=chat_name
         )
 
 class PlanStage(PipelineStage):

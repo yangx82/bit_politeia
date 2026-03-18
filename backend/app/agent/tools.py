@@ -10,6 +10,10 @@ async def send_p2p_message(recipient_id: str, content: str, message_type: str = 
     """
     Send a P2P message to another node or group in the network.
     
+    IMPORTANT: 
+    - If you are in a GROUP CONVERSATION (check your system prompt context), use the Group ID as the 'recipient_id' and 'GROUP' as the 'message_type' to reply to all members.
+    - Only use 'DIRECT' if you want to send a private message to a specific node.
+    
     Args:
         recipient_id: The UUID of the target Node or Group.
         content: The text content of the message.

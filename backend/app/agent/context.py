@@ -27,7 +27,7 @@ class ContextBuilder:
         self.skill_manager = skill_manager
         self.task_manager = task_manager
     
-    def build_system_prompt(self, name: str = "Agent", personality: str = "Professional and helpful", channel: str = "resident", host_info: str = None) -> str:
+    def build_system_prompt(self, name: str = "Agent", personality: str = "Professional and helpful", channel: str = "resident", host_info: str = None, chat_id: str = None, chat_name: str = None) -> str:
         """
         Build the complete system prompt from core identity, memory, and skills.
         """
@@ -72,9 +72,34 @@ The current real-world local server time is: **{current_time_str}**.
 Use this absolute time for any date calculations or temporal awareness. Do not rely on time information mentioned casually in user chats unless explicitly requested."""
         parts.append(time_block)
 
-        # 1.7 Host Information
         if host_info:
             parts.append(host_info)
+            
+        # 1.8 Conversation Context Awareness (Group vs Direct)
+        if channel == "p2p":
+            if chat_id:
+                is_group = False
+                # Simple check for group ID if possible, or we trust the passed info
+                # Here we assume if chat_name is provided or chat_id is known, we label it.
+                if chat_name and chat_name != "Unknown":
+                    is_group = True
+                
+                if is_group:
+                    group_block = f"""# CONVERSATION CONTEXT: GROUP CHAT
+You are currently participating in a group conversation.
+- **Group Name**: {chat_name}
+- **Group ID**: {chat_id}
+- **IMPORTANT**: To reply to the entire group, you MUST use the `send_p2p_message` tool with:
+  - `recipient_id`: "{chat_id}" (the Group ID)
+  - `message_type`: "GROUP"
+- Do NOT reply only to the individual sender unless you specifically intend to have a private side-conversation."""
+                    parts.append(group_block)
+                else:
+                    direct_block = f"""# CONVERSATION CONTEXT: DIRECT MESSAGE
+You are in a private one-to-one conversation with a single peer.
+- **Peer ID**: {chat_id}
+- Use `message_type`: "DIRECT" (default) for your replies."""
+                    parts.append(direct_block)
         
         # 2. Skill Index (Progressive Disclosure)
         skill_index = self.skill_manager.get_skill_index()
@@ -107,7 +132,9 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
         personality: str = "Professional and helpful",
         agent_language: str = "中文",
         channel: str = "resident",
-        host_info: str = None
+        host_info: str = None,
+        chat_id: str = None,
+        chat_name: str = None
     ) -> List[BaseMessage]:
         """
         Build the complete message list for an LLM call.
@@ -115,7 +142,14 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
         messages: List[BaseMessage] = []
 
         # 1. System Prompt
-        system_content = self.build_system_prompt(name=name, personality=personality, channel=channel, host_info=host_info)
+        system_content = self.build_system_prompt(
+            name=name, 
+            personality=personality, 
+            channel=channel, 
+            host_info=host_info,
+            chat_id=chat_id,
+            chat_name=chat_name
+        )
         
         # Inject dynamic context (RAG + Network Identity) into System Prompt or as separate SystemMessages
         # To keep it clean, we add them as separate SystemMessages immediately after the main prompt
