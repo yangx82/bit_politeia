@@ -8,7 +8,7 @@ from pathlib import Path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(project_root, 'backend'))
 
-from app.services.resident_link import ResidentMemory
+from app.services.resident_memory_service import ResidentMemory
 
 def test_memory_read():
     print("Testing ResidentMemory read for GIT REPO...")

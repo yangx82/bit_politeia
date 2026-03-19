@@ -4,7 +4,7 @@ import shutil
 import json
 from pathlib import Path
 from datetime import datetime, timedelta
-from backend.app.services.resident_link import ResidentMemory
+from backend.app.services.resident_memory_service import ResidentMemory
 from backend.app.services.memory_store import memory_store
 from backend.app.services.consolidation import ConsolidationService
 

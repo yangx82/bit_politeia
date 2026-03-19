@@ -3,7 +3,7 @@ import os
 import json
 import asyncio
 from unittest.mock import MagicMock
-from app.services.resident_link import ResidentMemory, ResidentReporter, PRIVATE_MEMORY_FILE
+from app.services.resident_memory_service import ResidentMemory, ResidentReporter, PRIVATE_MEMORY_FILE
 
 @pytest.fixture
 def resident_memory():

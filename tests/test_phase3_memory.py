@@ -3,7 +3,7 @@ import os
 import shutil
 import json
 from pathlib import Path
-from backend.app.services.resident_link import ResidentMemory
+from backend.app.services.resident_memory_service import ResidentMemory
 from backend.app.services.memory_store import memory_store
 
 async def test_phase3_memory():

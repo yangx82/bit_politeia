@@ -33,7 +33,7 @@ class WebResearcher:
         encoded_query = urllib.parse.quote(formatted_query)
         logger.info(f"Searching web for: {query} (Encoded: {encoded_query})")
         print(f"\n[Search Run] Query: {query}")
-        results = []
+        search_results = []
         
         # 1. ArXiv Search
         try:
@@ -49,9 +49,9 @@ class WebResearcher:
             if response.status_code == 200:
                 root = ET.fromstring(response.text)
                 ns = {'atom': 'http://www.w3.org/2005/Atom'}
-                entries = root.findall('atom:entry', ns)
-                print(f"ArXiv Entries Found: {len(entries)}")
-                for entry in entries:
+                arxiv_entries = root.findall('atom:entry', ns)
+                print(f"ArXiv Entries Found: {len(arxiv_entries)}")
+                for entry in arxiv_entries:
                     title_elem = entry.find('atom:title', ns)
                     summary_elem = entry.find('atom:summary', ns)
                     id_elem = entry.find('atom:id', ns)
@@ -63,7 +63,7 @@ class WebResearcher:
                         paper_id = id_elem.text if id_elem is not None else "Unknown ID"
                         published = published_elem.text if published_elem is not None else ""
                         
-                        results.append({
+                        search_results.append({
                             "title": title,
                             "abstract": summary, # Keep full abstract for translation
                             "source": paper_id,
@@ -81,26 +81,26 @@ class WebResearcher:
             resp = httpx.get(biorxiv_url, timeout=12.0)
             print(f"BioRxiv Status: {resp.status_code}")
             if resp.status_code == 200:
-                data = resp.json()
-                if "collection" in data and isinstance(data["collection"], list):
+                biorxiv_data = resp.json()
+                if "collection" in biorxiv_data and isinstance(biorxiv_data["collection"], list):
                     q_lower = query.lower()
-                    count = 0
-                    for item in data["collection"]:
+                    match_count = 0
+                    for item in biorxiv_data["collection"]:
                         # Match any of the words if it's a multiple topic field
                         if q_lower in item["title"].lower() or q_lower in item["abstract"].lower():
-                            results.append({
+                            search_results.append({
                                 "title": item["title"],
                                 "abstract": item["abstract"][:300] + "...",
                                 "source": f"BioRxiv ({item['doi']})"
                             })
-                            count += 1
-                            if count >= 2: break
-                    print(f"BioRxiv Relevant Matches: {count}")
+                            match_count += 1
+                            if match_count >= 2: break
+                    print(f"BioRxiv Relevant Matches: {match_count}")
         except Exception as e:
             logger.error(f"BioRxiv search failed: {e}")
             print(f"BioRxiv Error: {e}")
 
-        return results
+        return search_results
 
 
 try:

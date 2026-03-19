@@ -3,7 +3,7 @@ import os
 import shutil
 import json
 from pathlib import Path
-from backend.app.services.resident_link import ResidentMemory
+from backend.app.services.resident_memory_service import ResidentMemory
 
 async def test_social_memory():
     # Setup temp memory dir
@@ -17,7 +17,7 @@ async def test_social_memory():
         from backend.app.services.memory_store import memory_store
         memory_store.memory_dir = temp_dir
         
-        from backend.app.services.resident_link import ResidentMemory
+        from backend.app.services.resident_memory_service import ResidentMemory
         
         # Initialize Memory
         mem = ResidentMemory()

@@ -90,9 +90,9 @@ class P2PService:
                 asyncio.create_task(self.local_node.receive_message(msg))
             self.early_messages.clear()
 
-    async def send_signaling_message(self, target_id: str, msg_type: str, content: Dict[str, Any]):
+    async def send_signaling_message(self, recipient_id: str, msg_type: str, content: Dict[str, Any]):
         """Callback for WebRTCManager to send signaling via Relay/HTTP."""
-        await self.send_message(target_id, content, msg_type)
+        await self.send_message(recipient_id, content, msg_type)
 
     async def handle_webrtc_message(self, peer_id: str, message: str):
         """Callback: Handle message received via WebRTC Data Channel."""
@@ -120,10 +120,16 @@ class P2PService:
             "timestamp": datetime.datetime.now().isoformat()
         }
         if isinstance(content, dict):
+            # Extract top-level protocol fields if they were packed into the JSON
+            if "message_id" in content:
+                msg_data["message_id"] = content["message_id"]
+            if "message_type" in content:
+                msg_data["message_type"] = content["message_type"]
+            if "recipient_id" in content:
+                msg_data["recipient_id"] = content["recipient_id"]
+
             if "text" in content or "data" in content:
                 msg_data["content"] = content
-                if "message_type" in content:
-                    msg_data["message_type"] = content["message_type"]
             
             
         if self.local_node:
@@ -140,9 +146,9 @@ class P2PService:
              
              # Determine effective chat_id (Group vs Direct)
              effective_chat_id = peer_id
-             if isinstance(content, dict):
-                 if str(content.get("message_type")).lower() == "group":
-                     effective_chat_id = content.get("target_id") or content.get("recipient_id") or peer_id
+             m_type = str(msg_data.get("message_type")).lower()
+             if m_type == "group":
+                 effective_chat_id = msg_data.get("recipient_id") or peer_id
              
              inbound = InboundMessage(
                  channel="p2p",
@@ -205,33 +211,27 @@ class P2PService:
             
         return False
 
-    async def send_message(self, target_id: str, content: Dict[str, Any], msg_type: str = MessageType.DIRECT.value, message_id: Optional[str] = None):
+    async def send_message(self, recipient_id: str, content: Dict[str, Any], msg_type: str = MessageType.DIRECT.value, message_id: Optional[str] = None):
         """
-        Send a message to a target (Node or Group).
+        Send a message to a recipient (Node or Group).
         """
         if not self.local_node:
             raise RuntimeError("P2PService not initialized")
             
-        return await self.local_node.send_message(target_id, content, msg_type, message_id=message_id)
+        return await self.local_node.send_message(recipient_id, content, msg_type, message_id=message_id)
 
-    async def broadcast_to_group(self, group_id: str, text: str, subject: str = None):
+    async def broadcast_to_group(self, group_id: str, text: str, subject: str = None, message_id: Optional[str] = None):
         """
         Helper to broadcast to a specific group.
         """
         if not self.local_node:
             raise RuntimeError("P2PService not initialized")
             
-        # We need to construct content directly here or use protocol helper?
-        # NetworkManager.send_signed_message handles the wrapping if we pass raw content + type,
-        # but protocol helper create_group_broadcast is nice to use.
-        # Let's stick to generic send_message for now which calls network_manager.send_signed_message
-        # which uses protocol.create_message.
-        
         content = {
             "text": text,
             "subject": subject
         }
-        return await self.local_node.send_message(group_id, content, MessageType.GROUP.value)
+        return await self.local_node.send_message(group_id, content, MessageType.GROUP.value, message_id=message_id)
 
     def get_network_status(self) -> Dict[str, Any]:
         return self.network_manager.get_network_structure()

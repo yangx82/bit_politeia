@@ -195,7 +195,7 @@ class ResidentMemory:
         sender: str, 
         content: str, 
         msg_type: str = "chat", 
-        chat_id: str = None,
+        session_id: str = None,
         status: str = None
     ):
         topic = msg_type if msg_type in self.topic_files else "chat"
@@ -206,7 +206,7 @@ class ResidentMemory:
             "sender": sender,
             "content": content,
             "type": msg_type,
-            "chat_id": chat_id,
+            "session_id": session_id,
             "status": status
         }
         try:

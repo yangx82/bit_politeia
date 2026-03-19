@@ -121,7 +121,6 @@ class SenseStage(PipelineStage):
         memory_context = agent.resident_memory.get_full_context_text(peer_id=peer_id)
 
         # Resolve Chat Name if it's a group
-        from .p2p_service import p2p_service
         chat_id = context.input_message.chat_id
         chat_name = "Unknown"
         network_status = p2p_service.get_network_status()

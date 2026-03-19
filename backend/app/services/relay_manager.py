@@ -24,23 +24,23 @@ class RelayManager:
             del self.active_connections[node_id]
             logger.info(f"Relay: Node {node_id} disconnected")
 
-    async def route_message(self, sender_id: str, target_id: str, payload: dict) -> bool:
+    async def route_message(self, sender_id: str, recipient_id: str, payload: dict) -> bool:
         """
-        Route a message to the target node's WebSocket.
+        Route a message to the recipient node's WebSocket.
         Payload is the full SignedMessage dict.
         """
-        if target_id not in self.active_connections:
-            logger.warning(f"Relay: Target {target_id} not connected via WebSocket")
+        if recipient_id not in self.active_connections:
+            logger.warning(f"Relay: Recipient {recipient_id} not connected via WebSocket")
             return False
             
         try:
-            target_ws = self.active_connections[target_id]
+            recipient_ws = self.active_connections[recipient_id]
             # Keeping it simple: Send exactly what was received.
-            await target_ws.send_text(json.dumps(payload))
+            await recipient_ws.send_text(json.dumps(payload))
             return True
         except Exception as e:
-            logger.error(f"Relay: Failed to send to {target_id}: {e}")
-            self.disconnect(target_id) # Assume broken link
+            logger.error(f"Relay: Failed to send to {recipient_id}: {e}")
+            self.disconnect(recipient_id) # Assume broken link
             return False
 
     async def broadcast_to_group(self, sender_id: str, group_id: str, payload: dict) -> bool:

@@ -33,7 +33,7 @@ import json
 from ..p2p_community.economy import Ledger, Transaction
 from ..p2p_community.reputation import ReputationManager, Evaluation
 from ..p2p_community.blockchain import ArchiveManager
-from .resident_link import ResidentMemory, ResidentReporter
+from .resident_memory_service import ResidentMemory, ResidentReporter
 from .memory_store import memory_store
 from .knowledge_base import knowledge_base
 
@@ -789,7 +789,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
              self._save_system_state()
 
         user_msg_obj = Message(
-            id=str(uuid.uuid4()),
+            id=msg.metadata.get("message_id") or str(uuid.uuid4()),
             content=msg.content,
             sender=formatted_sender,
             timestamp=datetime.now(),
@@ -813,6 +813,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         response_text, cont_req, cont_reason = await self._run_ralph_wiggum_loop(msg)
 
         # 3. Reply via Bus
+        reply_id = str(uuid.uuid4())
         if response_text and "[NO_RESPONSE_NEEDED]" in str(response_text):
             logger.info(f"P2P Logic: Conversation terminated by agent via [NO_RESPONSE_NEEDED] for chat_id={raw_chat_id}")
         elif response_text and str(response_text).strip() and response_text != "No response generated.":
@@ -820,7 +821,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 channel=msg.channel,
                 chat_id=raw_chat_id, # Must use RAW ID for transport
                 content=response_text,
-                reply_to=msg.metadata.get("message_id")
+                reply_to=msg.metadata.get("message_id"),
+                metadata={"message_id": reply_id}
             )
             await self.message_bus.publish_outbound(out_msg)
             
@@ -830,12 +832,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                      channel="gateway",
                      chat_id=history_chat_id,
                      content=response_text,
-                     type="chat"
+                     type="chat",
+                     metadata={"message_id": reply_id}
                  ))
 
         # 4. Log Reply to history
         agent_msg_obj = Message(
-             id=str(uuid.uuid4()),
+             id=reply_id,
              content=response_text,
              sender="agent",
              timestamp=datetime.now(),
@@ -959,17 +962,39 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     # Normalize Sender ID (Hex ID)
                     sender_id = self._normalize_session_id(sender_id) or "unknown_sender"
                     
+                    # 1.1 Self-Message Filtering
+                    if p2p_service.local_node and sender_id == p2p_service.local_node.node_id:
+                        logger.debug(f"Skipping self-received P2P message {m_id}")
+                        continue
+                        
+                    # 1.2 Identify Message Nature (Refactored)
+                    raw_type = str(msg.get('message_type', msg.get('type', ''))).lower()
+                    
+                    # Package Type: What is being sent? (chat, file, gossip, error)
+                    package_type = "chat"
+                    if raw_type == "file" or (isinstance(content, dict) and "data" in content):
+                        package_type = "file"
+                    elif raw_type == "gossip":
+                        package_type = "gossip"
+                    elif raw_type == "system_error":
+                        package_type = "error"
+                    
+                    # Recipient Type: How is it addressed? (direct, group)
+                    recipient_id = self._normalize_session_id(msg.get('recipient_id'))
+                    recipient_type = "direct"
+                    if raw_type == "group":
+                        recipient_type = "group"
+                    elif recipient_id and p2p_service.local_node:
+                        if recipient_id in p2p_service.local_node.group_ids:
+                            recipient_type = "group"
+                    
                     # Process based on type
                     sender_display = sender_id[:8] if sender_id else "unknown"
-                    logger.info(f"Processing P2P message from {sender_display}...")
+                    logger.info(f"Processing P2P {package_type} from {sender_display} (addressed to {recipient_type})...")
                     
-                    recipient_id = self._normalize_session_id(msg.get('recipient_id'))
-                    
-                    # Determine chat_id: Group ID if group message, else Sender ID
-                    # Standardize: Use normalized ID for session consistency
-                    # Support both 'group' and 'GROUP' for legacy consistency
+                    # Determine effective chat_id (The session key)
                     effective_chat_id = sender_id
-                    if msg_type and str(msg_type).lower() == "group" and recipient_id:
+                    if recipient_type == "group" and recipient_id:
                         effective_chat_id = recipient_id
                     
                     effective_chat_id = self._normalize_session_id(effective_chat_id) or "unknown_chat"
@@ -980,7 +1005,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         text_content = content['text']
                     
                     # Special Handling for FILE type
-                    if msg_type == "file" and isinstance(content, dict) and "data" in content:
+                    if package_type == "file" and isinstance(content, dict) and "data" in content:
                         try:
                             file_name = content.get("info", "downloaded_file")
                             file_data = base64.b64decode(content["data"])
@@ -1005,18 +1030,18 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         sender_id=sender_id,
                         content=text_content,
                         chat_id=effective_chat_id,
-                        metadata={"message_id": m_id, "message_type": msg_type}
+                        metadata={"message_id": m_id, "package_type": package_type, "recipient_type": recipient_type}
                     )
                     
                     # 2. Log Inbound Message to history
                     self.history.append(Message(
-                        id=str(uuid.uuid4()), 
+                        id=m_id or str(uuid.uuid4()), 
                         content=text_content, 
                         sender=sender_id, 
                         timestamp=datetime.now(),
                         chat_id=effective_chat_id
                     ))
-                    self.resident_memory.log_interaction(sender_id, text_content, msg_type="chat", chat_id=effective_chat_id)
+                    self.resident_memory.log_interaction(sender_id, text_content, msg_type=package_type, chat_id=effective_chat_id)
                     
                     # DUAL BROADCAST: Inform UI and other listeners
                     await self.message_bus.publish_outbound(OutboundMessage(
@@ -1326,7 +1351,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         """Get list of known groups from P2P service."""
         return p2p_service.get_groups()
 
-    async def _check_compliance(self, content: str, target_id: str) -> tuple[bool, str]:
+    async def _check_compliance(self, content: str, recipient_id: str) -> tuple[bool, str]:
         """Audit message content against community rules."""
         if not self.llm:
             return True, "" 
@@ -1336,7 +1361,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             "Audit the following message for community rule violations (impolite, hate speech, spam, illegal). "
             "Reply EXACTLY with 'APPROVED' if compliant, or 'REJECTED: <reason>' if not."
         )
-        msg_text = f"Target: {target_id}\nContent: {content}"
+        msg_text = f"Target: {recipient_id}\nContent: {content}"
         
         try:
             # We use a distinct invocation to avoid polluting the main context
@@ -1428,14 +1453,14 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             logger.error(f"Error processing incoming direct HTTP P2P message: {e}")
             return {"status": "error", "message": str(e)}
 
-    async def send_p2p_message(self, target_id: str, content: Any, **kwargs) -> dict:
+    async def send_p2p_message(self, recipient_id: str, content: Any, **kwargs) -> dict:
         """
         Send a P2P message to a specific peer.
         This method handles both WebRTC data channel (fast) and HTTP/Relay (reliable) paths.
         """
-        print(f"\n[DEBUG] send_p2p_message called for {target_id}, content: {str(content)[:50]}...", flush=True)
+        print(f"\n[DEBUG] send_p2p_message called for {recipient_id}, content: {str(content)[:50]}...", flush=True)
         if not p2p_service._initialized:
-             logger.error(f"P2P Message attempt failed: P2PService NOT INITIALIZED (target={target_id})")
+             logger.error(f"P2P Message attempt failed: P2PService NOT INITIALIZED (target={recipient_id})")
              return {"success": False, "error": "P2P not initialized"}
              
         # Normalize text for moderation and display
@@ -1446,7 +1471,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             text_to_check = str(content)
 
         # 1. Moderation Check
-        is_compliant, reason = await self._check_compliance(text_to_check, target_id)
+        is_compliant, reason = await self._check_compliance(text_to_check, recipient_id)
         if not is_compliant:
             msg = f"⚠️ Message Refused: {reason}"
             
@@ -1456,33 +1481,40 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 content=msg,
                 sender="agent",
                 timestamp=datetime.now(),
-                chat_id=target_id
+                chat_id=recipient_id
             ))
-            self.resident_memory.log_interaction("agent", msg, "moderation", chat_id=target_id)
+            self.resident_memory.log_interaction("agent", msg, "moderation", session_id=recipient_id)
             
-            return {"success": True, "status": "refused", "reason": reason}
+            return {"success": False, "status": "refused", "reason": reason}
              
-        # 2. Identify Message Type and Payload Early
-        # This is needed for the initial "pending" broadcast
-        explicit_type = kwargs.get("message_type")
-        if explicit_type:
-            custom_type = explicit_type
+        # 2. Identify Message Nature (Refactored)
+        # Package Type: What is being sent?
+        package_type = kwargs.get("package_type")
+        if not package_type:
+            # Fallback for legacy calls or tool-invoked calls
+            msg_type_kwarg = kwargs.get("message_type")
+            if msg_type_kwarg in ["file", "gossip", "chat"]:
+                package_type = msg_type_kwarg
+            elif isinstance(content, dict) and "data" in content:
+                package_type = "file"
+            else:
+                package_type = "chat"
+        
+        # Recipient Type: How is it addressed?
+        recipient_type = "direct"
+        if kwargs.get("message_type") == "group":
+            recipient_type = "group"
         else:
-            # Check content for type, then fallback to target_id identification
-            custom_type = content.get("type") if isinstance(content, dict) else None
-            if not custom_type:
-                # If target_id matches a known group, it's a group message
-                from .p2p_service import p2p_service as _p2p
-                local_node = _p2p.local_node
-                if local_node and target_id in local_node.group_ids:
-                    custom_type = "group"
-                else:
-                    custom_type = "direct"
+            from .p2p_service import p2p_service as _p2p
+            local_node = _p2p.local_node
+            if local_node and recipient_id in local_node.group_ids:
+                recipient_type = "group"
         
         # 3. Log Outbound Message (History)
-        # Normalize target_id for history and UI consistency
-        norm_target = self._normalize_session_id(target_id)
+        # Normalize recipient_id for history and UI consistency
+        norm_target = self._normalize_session_id(recipient_id)
         msg_id = str(uuid.uuid4())
+        self.processed_message_ids.add(msg_id) # Track our own messages to avoid loopback
         
         msg_obj = Message(
             id=msg_id,
@@ -1493,22 +1525,22 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             status="pending"
         )
         self.history.append(msg_obj)
-        self.resident_memory.log_interaction("agent", text_to_check, msg_type=custom_type.lower() if custom_type else "chat", chat_id=norm_target, status="pending")
+        self.resident_memory.log_interaction("agent", text_to_check, msg_type=package_type, session_id=norm_target, status="pending")
         
         # Dual broadcast to UI (Initial Pending)
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="gateway",
             chat_id=norm_target,
             content=f"{text_to_check}",
-            type=custom_type if custom_type == "file" else "chat",
+            type=package_type,
             sender="agent",
-            metadata={"message_id": msg_id, "status": "pending", "message_type": custom_type}
+            metadata={"message_id": msg_id, "status": "pending", "package_type": package_type, "recipient_type": recipient_type}
         ))
         
         # Publish to p2p for internal tracking if needed
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="p2p",
-            chat_id=target_id, # Use raw target for P2P routing
+            chat_id=recipient_id, # Use raw recipient for P2P routing
             content=f"{text_to_check}",
             type="chat",
             sender="agent"
@@ -1520,20 +1552,20 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         is_group = False
         
         # Check nodes first
-        target_node = p2p_service.network_manager.nodes.get(target_id)
+        target_node = p2p_service.network_manager.nodes.get(recipient_id)
         if target_node:
             peer_name = target_node.name
-            logger.info(f"Recipient {target_id} identified as peer '{peer_name}' in topology.")
+            logger.info(f"Recipient {recipient_id} identified as peer '{peer_name}' in topology.")
         # Check groups
-        elif target_id in p2p_service.network_manager.groups:
-            peer_name = p2p_service.network_manager.groups[target_id].name
+        elif recipient_id in p2p_service.network_manager.groups:
+            peer_name = p2p_service.network_manager.groups[recipient_id].name
             is_group = True
-            logger.info(f"Recipient {target_id} identified as group '{peer_name}'.")
+            logger.info(f"Recipient {recipient_id} identified as group '{peer_name}'.")
         else:
-            logger.warning(f"Recipient {target_id} NOT found in local topology nodes or groups. It might be an offline node or a new group.")
+            logger.warning(f"Recipient {recipient_id} NOT found in local topology nodes or groups. It might be an offline node or a new group.")
 
         target_label = f"Group: {peer_name}" if is_group else peer_name
-        logger.info(f"Transmitting P2P message to {target_id} ({target_label})...")
+        logger.info(f"Transmitting P2P message to {recipient_id} ({target_label})...")
         
         try:
             # Differentiate simple string vs complex dictionary payload
@@ -1553,36 +1585,34 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             
             # Map to protocol message types
             # GROUP messages should NOT use WebRTC (WebRTC is for peer-to-peer)
-            # Only use WebRTC for DIRECT messages
-            use_webrtc = custom_type not in ["group", "gossip", "file"]
+            # Only use WebRTC for DIRECT TEXT messages
+            use_webrtc = (recipient_type == "direct" and package_type == "chat")
             
             sent_via_webrtc = False
             if use_webrtc:
-                sent_via_webrtc = await p2p_service.webrtc_manager.send_message(target_id, webrtc_payload)
+                sent_via_webrtc = await p2p_service.webrtc_manager.send_message(recipient_id, webrtc_payload)
             
             if sent_via_webrtc:
-                logger.info(f"[{target_id}] Message transmitted via WebRTC: {text_to_check[:100]}...")
+                logger.info(f"[{recipient_id}] Message transmitted via WebRTC: {text_to_check[:100]}...")
                 success_final = True
                 mode = "webrtc"
             else:
                 # Fallback to HTTP/Relay (or direct for GROUP messages)
-                # Check for explicit 'file' type mappings
-                out_type = "file" if custom_type == "file" else custom_type
-                
                 # For GROUP messages, use broadcast_to_group if available, otherwise use send_message
-                if custom_type == "group":
+                if recipient_type == "group":
                     # Use the dedicated group broadcast method
                     success = await p2p_service.broadcast_to_group(
-                        target_id,
-                        text_to_check
+                        recipient_id,
+                        text_to_check,
+                        message_id=msg_id
                     )
                     mode = "group_broadcast"
                 else:
                     # Pass the unique business-level msg_id to the protocol layer
                     success = await p2p_service.send_message(
-                        target_id, 
+                        recipient_id, 
                         msg_content, 
-                        msg_type=out_type,
+                        msg_type=package_type,
                         message_id=msg_id
                     )
                     mode = "http_relay"
@@ -1590,17 +1620,17 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     success_final = True
                     # Log based on transmission mode
                     if mode == "group_broadcast":
-                        logger.info(f"[{target_id}] Group Broadcast successfully initiated: {text_to_check[:100]}...")
+                        logger.info(f"[{recipient_id}] Group Broadcast successfully initiated: {text_to_check[:100]}...")
                     else:
-                        logger.info(f"[{target_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
+                        logger.info(f"[{recipient_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
                     # Trigger Upgrade if simple text and not already connected/connecting
                     # CRITICAL: Only for DIRECT messages!
-                    if not isinstance(content, dict) and custom_type == "direct":
-                        pc = p2p_service.webrtc_manager.pcs.get(target_id.lower())
+                    if not isinstance(content, dict) and recipient_type == "direct":
+                        pc = p2p_service.webrtc_manager.pcs.get(recipient_id.lower())
                         if not pc or (pc.signalingState == "stable" and pc.connectionState not in ["connecting", "connected"]):
-                            asyncio.create_task(p2p_service.webrtc_manager.initiate_connection(target_id))
+                            asyncio.create_task(p2p_service.webrtc_manager.initiate_connection(recipient_id))
                 else:
-                    logger.error(f"[{target_id}] FINAL FAILURE: Failed to transmit P2P message via ANY path (target={target_id})")
+                    logger.error(f"[{recipient_id}] FINAL FAILURE: Failed to transmit P2P message via ANY path (target={recipient_id})")
                     success_final = False
 
             # 4. Update Status and Notify Gateway
@@ -1622,7 +1652,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 return {"success": False, "error": "All transport paths failed"}
 
         except Exception as e:
-            logger.error(f"Failed to transmit P2P message to {target_id}: {e}")
+            logger.error(f"Failed to transmit P2P message to {recipient_id}: {e}")
             return {"success": False, "error": str(e)}
 
     async def handle_remote_delivery_error(self, message_id: str, error_content: Any):
@@ -1916,11 +1946,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         
         # 1. Internal Log
         await self.message_bus.publish_outbound(OutboundMessage(
-            id=str(uuid.uuid4()),
+            channel="gateway",
+            chat_id="system", 
             content=f"Delegated Task Received: {task}",
-            sender=sender_id,
-            timestamp=datetime.now(),
-            type="thought"
+            type="thought",
+            metadata={"handoff_id": handoff_id, "sender_id": sender_id}
         ))
 
         # 2. Resolve Task using standard Agent Flow
@@ -1987,11 +2017,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         
         msg = f"Task Result ({handoff_id}): {output}" if not error else f"Task Error ({handoff_id}): {error}"
         await self.message_bus.publish_outbound(OutboundMessage(
-            id=str(uuid.uuid4()),
+            channel="gateway",
+            chat_id="system",
             content=msg,
-            sender=sender_id,
-            timestamp=datetime.now(),
-            type="thought"
+            type="thought",
+            metadata={"handoff_id": handoff_id, "sender_id": sender_id}
         ))
 
 

@@ -13,7 +13,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 os.environ["OPENAI_API_KEY"] = "sk-mock"
 
 from backend.app.services.consolidation import ConsolidationService
-from backend.app.services.resident_link import ResidentMemory, ResidentReporter
+from backend.app.services.resident_memory_service import ResidentMemory, ResidentReporter
 from backend.app.services.memory_store import memory_store
 
 async def test_periodic_reporting_flow():
