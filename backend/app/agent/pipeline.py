@@ -212,7 +212,7 @@ class PlanStage(PipelineStage):
                 sender="agent",
                 content=str(display_thought),
                 msg_type="agent",
-                chat_id=context.input_message.chat_id
+                session_id=context.input_message.chat_id
             )
 
             # CRITICAL FIX: Thoughts are internal monologue.

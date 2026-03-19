@@ -796,7 +796,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             chat_id=history_chat_id
         )
         self.history.append(user_msg_obj)
-        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", chat_id=history_chat_id)
+        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", session_id=history_chat_id)
 
         # 1.5 DUAL BROADCAST: Inform Gateway of inbound P2P message
         if msg.channel == "p2p":
@@ -845,7 +845,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
              chat_id=history_chat_id # Log with Prefix so it merges
         )
         self.history.append(agent_msg_obj)
-        self.resident_memory.log_interaction("agent", response_text, msg_type="chat", chat_id=history_chat_id)
+        self.resident_memory.log_interaction("agent", response_text, msg_type="chat", session_id=history_chat_id)
     async def notify_resident(self, content: str, type: str = "agent_message", chat_id: str = "resident", broadcast: bool = True, media: list = None):
         """
         Notify the resident. 
@@ -863,7 +863,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             timestamp=datetime.now(),
             chat_id=chat_id
         ))
-        self.resident_memory.log_interaction("agent", content, msg_type="chat", chat_id=chat_id)
+        self.resident_memory.log_interaction("agent", content, msg_type="chat", session_id=chat_id)
         
         # 2. Broadcast or Targeted Send
         if broadcast:
@@ -899,7 +899,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             chat_id="resident"
         )
         self.history.append(user_msg)
-        self.resident_memory.log_interaction("resident", content, msg_type="chat", chat_id="resident") # Log to private memory
+        self.resident_memory.log_interaction("resident", content, msg_type="chat", session_id="resident") # Log to private memory
         
         # 2. Agent response via Pipeline
         msg_obj = InboundMessage(
@@ -1041,7 +1041,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         timestamp=datetime.now(),
                         chat_id=effective_chat_id
                     ))
-                    self.resident_memory.log_interaction(sender_id, text_content, msg_type=package_type, chat_id=effective_chat_id)
+                    self.resident_memory.log_interaction(sender_id, text_content, msg_type=package_type, session_id=effective_chat_id)
                     
                     # DUAL BROADCAST: Inform UI and other listeners
                     await self.message_bus.publish_outbound(OutboundMessage(

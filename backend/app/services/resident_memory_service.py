@@ -412,7 +412,7 @@ class ResidentReporter:
         ))
         
         # Log to resident memory as well
-        self.agent.resident_memory.log_interaction("agent_report", report_text, "report", chat_id="resident")
+        self.agent.resident_memory.log_interaction("agent_report", report_text, "report", session_id="resident")
         logger.info("Sent daily community report to resident.")
 
     async def generate_community_brief(self) -> str:
