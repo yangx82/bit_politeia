@@ -659,7 +659,7 @@ const Chat = () => {
                                             <div className="text-sm whitespace-pre-wrap leading-relaxed">{displayContent}</div>
                                             <div className={`text-[10px] mt-1 flex items-center justify-end gap-1 ${timeClass}`}>
                                                 {formatTime(msg.timestamp)}
-                                                {isAgent && (
+                                                {isAgent && activeSessionId !== 'resident' && (
                                                     <span title={msg.status || 'pending'}>
                                                         {(msg.status === 'pending' || !msg.status) && (
                                                             <Loader2 size={12} className="animate-spin text-blue-400" />
