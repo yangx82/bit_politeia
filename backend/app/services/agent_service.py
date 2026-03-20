@@ -145,15 +145,17 @@ class AgentService:
         logger.info("Starting automatic retry for failed/pending P2P messages...")
         
         # 1. Find candidates (last 2 hours for safety, but focus on the 10min window)
+        # focus on the 10min window
         now = datetime.now()
         ten_minutes_ago = now - timedelta(minutes=10)
+        one_minute_ago = now - timedelta(minutes=1)
         
-        # We only retry messages that are at least 10 minutes old OR explicitly failed
-        # to avoid double-sending while a message might still be in relay tranmistting.
+        # We only retry messages that failed recently (within the last 10 mins).
+        # We use a 1-minute grace period to avoid double-sending messages that are still connecting.
         retry_candidates = []
         for msg in self.history:
             if msg.sender == "agent" and msg.status in ["failed", "pending", None]:
-                if msg.timestamp <= ten_minutes_ago:
+                if ten_minutes_ago <= msg.timestamp <= one_minute_ago:
                     retry_candidates.append(msg)
         
         if not retry_candidates:

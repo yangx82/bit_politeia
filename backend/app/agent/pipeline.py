@@ -212,7 +212,8 @@ class PlanStage(PipelineStage):
                 sender="agent",
                 content=str(display_thought),
                 msg_type="agent",
-                session_id=context.input_message.session_id
+                session_id=context.input_message.session_id,
+                status="sent"
             )
 
             # CRITICAL FIX: Thoughts are internal monologue.
@@ -384,7 +385,8 @@ class RetrospectiveStage(PipelineStage):
                     agent.resident_memory.log_interaction(
                         sender="system",
                         content=f"Retrospective for '{task.goal}': {task.lessons_learned}",
-                        msg_type="moderation"
+                        msg_type="moderation",
+                        status="sent"
                     )
             except Exception as e:
                 logger.error(f"Retrospective generation failed: {e}")
