@@ -211,6 +211,23 @@ class P2PService:
             
         return False
 
+    async def warmup_webrtc(self, peer_id: str):
+        """
+        Proactively initiate WebRTC connection with a peer to reduce latency.
+        """
+        if not self._initialized or not self.webrtc_manager:
+            return
+            
+        # Standardize ID
+        peer_id = peer_id.lower() if hasattr(peer_id, 'lower') else str(peer_id).lower()
+        
+        # Guard: Don't warmup if it's ourselves
+        if self.local_node and peer_id == self.local_node.node_id:
+            return
+
+        logger.info(f"ICE Warmup: Proactively initiating WebRTC connection with {peer_id}")
+        asyncio.create_task(self.webrtc_manager.initiate_connection(peer_id))
+
     async def send_message(self, recipient_id: str, content: Dict[str, Any], msg_type: str = MessageType.DIRECT.value, message_id: Optional[str] = None):
         """
         Send a message to a recipient (Node or Group).

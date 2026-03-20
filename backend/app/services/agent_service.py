@@ -479,7 +479,12 @@ class AgentService:
         
         # 0. Get or Create Session
         session = session_manager.get_session(msg.sender_id, msg.channel)
-          # Refactored P2P Delay: Move delay to cognitive layer (Pipeline Start)
+        
+        # [ICE WARMUP] Start handshake in background during reasoning/delay
+        if msg.sender_id and msg.channel == "p2p":
+            asyncio.create_task(p2p_service.warmup_webrtc(msg.sender_id))
+
+        # Refactored P2P Delay: Move delay to cognitive layer (Pipeline Start)
         delay_val = getattr(self, 'p2p_reply_delay', 60)
         
         if msg.channel == "p2p" and delay_val > 0:
@@ -966,6 +971,10 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     if p2p_service.local_node and sender_id == p2p_service.local_node.node_id:
                         logger.debug(f"Skipping self-received P2P message {m_id}")
                         continue
+                    
+                    # [ICE WARMUP] Proactively initiate WebRTC if message is direct
+                    if sender_id and sender_id != "unknown_sender":
+                        asyncio.create_task(p2p_service.warmup_webrtc(sender_id))
                         
                     # 1.2 Identify Message Nature (Refactored)
                     raw_type = str(msg.get('message_type', msg.get('type', ''))).lower()
