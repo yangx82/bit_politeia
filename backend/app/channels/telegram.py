@@ -143,7 +143,7 @@ class TelegramChannel(BaseChannel):
             return
         
         try:
-            chat_id = int(msg.chat_id)
+            chat_id = int(msg.session_id)
             html_content = _markdown_to_telegram_html(msg.content)
             
             # 1. Send text content if present (or if there is no media)
@@ -173,7 +173,7 @@ class TelegramChannel(BaseChannel):
             logger.error(f"Error sending Telegram message: {e}")
             try:
                  # Fallback
-                 await self._app.bot.send_message(chat_id=int(msg.chat_id), text=msg.content)
+                 await self._app.bot.send_message(chat_id=int(msg.session_id), text=msg.content)
             except Exception as e2:
                  logger.error(f"Fallback send failed: {e2}")
 
@@ -188,7 +188,7 @@ class TelegramChannel(BaseChannel):
         
         message = update.message
         user = update.effective_user
-        chat_id = message.chat_id
+        session_id = message.chat_id
         
         # ID format: "userid"
         sender_id = str(user.id)
@@ -258,7 +258,7 @@ class TelegramChannel(BaseChannel):
         logger.info(f"Received Telegram message from {sender_id}: {content[:50]}...")
         await self._handle_message(
             sender_id=sender_id,
-            chat_id=str(chat_id),
+            session_id=str(session_id),
             content=content,
             media=media_items, # Pass media up to the base class handler
             metadata={

@@ -215,7 +215,7 @@ class FeishuChannel(BaseChannel):
             return
         
         try:
-            if msg.chat_id.startswith("oc_"):
+            if msg.session_id.startswith("oc_"):
                 receive_id_type = "chat_id"
             else:
                 receive_id_type = "open_id"
@@ -227,7 +227,7 @@ class FeishuChannel(BaseChannel):
                     .receive_id_type(receive_id_type) \
                     .request_body(
                         CreateMessageRequestBody.builder()
-                        .receive_id(msg.chat_id)
+                        .receive_id(msg.session_id)
                         .msg_type("text")
                         .content(content)
                         .build()
@@ -266,7 +266,7 @@ class FeishuChannel(BaseChannel):
                                 .receive_id_type(receive_id_type) \
                                 .request_body(
                                     CreateMessageRequestBody.builder()
-                                    .receive_id(msg.chat_id)
+                                    .receive_id(msg.session_id)
                                     .msg_type(file_type)
                                     .content(media_content)
                                     .build()
@@ -340,7 +340,7 @@ class FeishuChannel(BaseChannel):
                 return
             
             sender_id = sender.sender_id.open_id if sender.sender_id else "unknown"
-            chat_id = message.chat_id
+            session_id = message.chat_id
             chat_type = message.chat_type  # "p2p" or "group"
             msg_type = message.message_type
             
@@ -387,13 +387,13 @@ class FeishuChannel(BaseChannel):
                 return
             
             # Forward to message bus
-            reply_to = chat_id 
+            reply_to = session_id 
             
             logger.info(f"Received Feishu message from {sender_id}: {content[:30]}...")
             
             await self._handle_message(
                 sender_id=sender_id,
-                chat_id=reply_to,
+                session_id=session_id,
                 content=content,
                 media=media_items, # Pass media up to the base class handler
                 metadata={

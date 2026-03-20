@@ -42,7 +42,7 @@ async def get_history():
     history = await agent_service.get_history()
     # DEBUG: Print last few messages to check chat_id/sender format
     if history:
-        print(f"\n[DEBUG-HISTORY] Last message: sender={history[-1].sender}, chat_id={history[-1].chat_id}")
+        print(f"\n[DEBUG-HISTORY] Last message: sender={history[-1].sender}, session_id={history[-1].session_id}")
     return history
 
 @router.get("/history/search", response_model=list[Message])

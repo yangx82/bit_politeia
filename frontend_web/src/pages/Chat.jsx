@@ -191,8 +191,8 @@ const Chat = () => {
         const query = searchQuery.toLowerCase().trim()
 
         messages.forEach(msg => {
-            // Use chat_id if available (new backend), fallback to sender (old logic)
-            let sessionId = msg.chat_id || (isInternalSender(msg.sender) ? 'resident' : msg.sender)
+            // Use session_id if available (new backend), fallback to sender (old logic)
+            let sessionId = msg.session_id || msg.chat_id || (isInternalSender(msg.sender) ? 'resident' : msg.sender)
 
             // Merge Bridge messages into resident session
             if (
@@ -294,11 +294,11 @@ const Chat = () => {
 
                 // 1. Explicitly EXCLUDE any outgoing P2P messages from polluting the Resident console
                 // This MUST happen before isInternalSender(msg.sender) check because agent is an internal sender.
-                if (msg.chat_id && msg.chat_id !== 'resident' && !msg.chat_id.startsWith('[')) {
+                if (msg.session_id && msg.session_id !== 'resident' && !msg.session_id.startsWith('[')) {
                     return false;
                 }
 
-                if (msg.chat_id === 'resident') return true;
+                if (msg.session_id === 'resident') return true;
 
                 return isInternalSender(msg.sender) ||
                     (msg.sender && (
@@ -306,16 +306,16 @@ const Chat = () => {
                         msg.sender.startsWith('[telegram]') ||
                         msg.sender.startsWith('[gateway]')
                     )) ||
-                    (msg.chat_id && (
-                        msg.chat_id.startsWith('[feishu]') ||
-                        msg.chat_id.startsWith('[telegram]') ||
-                        msg.chat_id.startsWith('[gateway]')
+                    (msg.session_id && (
+                        msg.session_id.startsWith('[feishu]') ||
+                        msg.session_id.startsWith('[telegram]') ||
+                        msg.session_id.startsWith('[gateway]')
                     ))
             }
 
             // Normal Sessions (P2P, Groups, or specific unmerged sessions)
-            if (msg.chat_id) {
-                return msg.chat_id === activeSessionId
+            if (msg.session_id) {
+                return msg.session_id === activeSessionId
             }
             return msg.sender === activeSessionId
         }).filter(msg => {
@@ -642,8 +642,8 @@ const Chat = () => {
                                 }
 
                                 // Tag: To Target
-                                if (isAgent && msg.chat_id && msg.chat_id.startsWith('[')) {
-                                    const match = msg.chat_id.match(/^\[(.*?)\].*/)
+                                if (isAgent && msg.session_id && msg.session_id.startsWith('[')) {
+                                    const match = msg.session_id.match(/^\[(.*?)\].*/)
                                     if (match && match[1] !== 'p2p') {
                                         displayContent = (
                                             <span>

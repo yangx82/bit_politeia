@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 async def test_queue_size():
     bus = MessageBus(maxsize=2)
-    msg = OutboundMessage(channel="test", chat_id="1", content="hello")
+    msg = OutboundMessage(channel="test", session_id="1", content="hello")
     
     await bus.publish_outbound(msg)
     await bus.publish_outbound(msg)
@@ -48,7 +48,7 @@ async def test_concurrent_dispatch():
 
     await bus.start()
     
-    msg = OutboundMessage(channel="chat", chat_id="1", content="msg1")
+    msg = OutboundMessage(channel="chat", session_id="1", content="msg1")
     await bus.publish_outbound(msg)
     
     # Wait a bit to let the fast one finish

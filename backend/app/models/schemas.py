@@ -7,7 +7,7 @@ class Message(BaseModel):
     content: str
     sender: str  # "user" or "agent"
     timestamp: datetime
-    chat_id: Optional[str] = None
+    session_id: Optional[str] = None
     status: Optional[str] = None
   # pending, sent, failed
 

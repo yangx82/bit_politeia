@@ -489,11 +489,11 @@ class AgentService:
         
         if msg.channel == "p2p" and delay_val > 0:
             # 1. Notify Gateway that we are thinking (so UI shows status)
-            # Ensure chat_id is normalized for UI
-            ui_chat_id = self._normalize_session_id(msg.chat_id)
+            # Ensure session_id is normalized for UI
+            ui_session_id = self._normalize_session_id(msg.session_id)
             await self.message_bus.publish_outbound(OutboundMessage(
                 channel="gateway",
-                chat_id=ui_chat_id,
+                session_id=ui_session_id,
                 content=f"... (Simulating {delay_val}s human-like research delay) ...",
                 type="thought"
             ))
@@ -562,12 +562,12 @@ class AgentService:
             if not getattr(self, 'ralph_wiggum_mode', False) or not cont_req:
                 return response_text, cont_req, cont_reason
                 
-            logger.warning(f"Ralph Wiggum Mode: Triggering Epoch {epoch+1}/{max_epochs} for {msg.chat_id} due to {cont_reason}")
+            logger.warning(f"Ralph Wiggum Mode: Triggering Epoch {epoch+1}/{max_epochs} for {msg.session_id} due to {cont_reason}")
             
             # Send status update to Gateway so user sees it's auto-recovering
             await self.message_bus.publish_outbound(OutboundMessage(
                 channel="gateway",
-                chat_id=msg.sender_id,
+                session_id=msg.sender_id,
                 content=f"[Ralph Wiggum Auto-Heal Activated] Re-initiating loop {epoch+1}/{max_epochs} due to: {cont_reason}",
                 type="thought"
             ))
@@ -582,7 +582,7 @@ class AgentService:
             current_msg = InboundMessage(
                 channel=msg.channel,
                 sender_id="system", 
-                chat_id=msg.chat_id,
+                session_id=msg.session_id,
                 content=prompt,
                 metadata={"epoch": epoch}
             )
@@ -668,7 +668,7 @@ class AgentService:
                     logger.info(f"Agent Thought: {str(display_thought)[:200]}...")
                     thought_msg = OutboundMessage(
                         channel="gateway",
-                        chat_id="global", 
+                        session_id="global", 
                         content=str(display_thought),
                         type="thought"
                     )
@@ -687,7 +687,7 @@ class AgentService:
                         # Emit Tool Call Event
                         await self.message_bus.publish_outbound(OutboundMessage(
                             channel="gateway",
-                            chat_id="global",
+                            session_id="global",
                             content=f"Invoking {tool_name} with {args}",
                             type="tool_call",
                             metadata={"tool": tool_name, "args": args}
@@ -730,7 +730,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                             # Emit Tool Result Event
                             out_msg = OutboundMessage(
                                 channel="gateway",
-                                chat_id="global",
+                                session_id="global",
                                 content=f"Result: {output_str[:200]}...",
                                 type="tool_result",
                                 metadata={"tool": tool_name, "result": output_str}
@@ -774,11 +774,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         """Process an inbound message from a channel."""
         # 1. Log to history (Frontend Sync)
         # Standardize ID: P2P messages use Hex ID consistently
-        raw_chat_id = self._normalize_session_id(msg.chat_id)
+        raw_session_id = self._normalize_session_id(msg.session_id)
         formatted_sender = msg.sender_id # Default
         
         # Identity Normalization for History
-        history_chat_id = raw_chat_id
+        history_session_id = raw_session_id
         if msg.channel == "p2p":
              # Try to find name for sender formatting
              if p2p_service._initialized:
@@ -787,10 +787,10 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                        formatted_sender = node.name
         elif msg.channel != "resident":
              # Other channels keep prefix for now (Legacy)
-             history_chat_id = f"[{msg.channel}] {raw_chat_id}"
+             history_session_id = f"[{msg.channel}] {raw_session_id}"
              formatted_sender = f"[{msg.channel}] {msg.sender_id}"
              # Update Resident Bridges registry for proactive notifications
-             self.resident_bridges[msg.channel] = raw_chat_id
+             self.resident_bridges[msg.channel] = raw_session_id
              self._save_system_state()
 
         user_msg_obj = Message(
@@ -798,16 +798,16 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             content=msg.content,
             sender=formatted_sender,
             timestamp=datetime.now(),
-            chat_id=history_chat_id
+            session_id=history_session_id
         )
         self.history.append(user_msg_obj)
-        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", session_id=history_chat_id)
+        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", session_id=history_session_id)
 
         # 1.5 DUAL BROADCAST: Inform Gateway of inbound P2P message
         if msg.channel == "p2p":
              await self.message_bus.publish_outbound(OutboundMessage(
                  channel="gateway",
-                 chat_id=history_chat_id,
+                 session_id=history_session_id,
                  content=msg.content,
                  sender=formatted_sender,
                  type="chat"
@@ -820,11 +820,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         # 3. Reply via Bus
         reply_id = str(uuid.uuid4())
         if response_text and "[NO_RESPONSE_NEEDED]" in str(response_text):
-            logger.info(f"P2P Logic: Conversation terminated by agent via [NO_RESPONSE_NEEDED] for chat_id={raw_chat_id}")
+            logger.info(f"P2P Logic: Conversation terminated by agent via [NO_RESPONSE_NEEDED] for session_id={raw_session_id}")
         elif response_text and str(response_text).strip() and response_text != "No response generated.":
             out_msg = OutboundMessage(
                 channel=msg.channel,
-                chat_id=raw_chat_id, # Must use RAW ID for transport
+                session_id=raw_session_id, # Must use RAW ID for transport
                 content=response_text,
                 reply_to=msg.metadata.get("message_id"),
                 metadata={"message_id": reply_id}
@@ -835,7 +835,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             if msg.channel == "p2p":
                  await self.message_bus.publish_outbound(OutboundMessage(
                      channel="gateway",
-                     chat_id=history_chat_id,
+                     session_id=history_session_id,
                      content=response_text,
                      type="chat",
                      metadata={"message_id": reply_id}
@@ -847,11 +847,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
              content=response_text,
              sender="agent",
              timestamp=datetime.now(),
-             chat_id=history_chat_id # Log with Prefix so it merges
+             session_id=history_session_id # Log with Prefix so it merges
         )
         self.history.append(agent_msg_obj)
-        self.resident_memory.log_interaction("agent", response_text, msg_type="chat", session_id=history_chat_id)
-    async def notify_resident(self, content: str, type: str = "agent_message", chat_id: str = "resident", broadcast: bool = True, media: list = None):
+        self.resident_memory.log_interaction("agent", response_text, msg_type="chat", session_id=history_session_id)
+    async def notify_resident(self, content: str, type: str = "agent_message", session_id: str = "resident", broadcast: bool = True, media: list = None):
         """
         Notify the resident. 
         If broadcast=True, sends to all known bridges (Feishu, etc.).
@@ -866,9 +866,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             content=content,
             sender="agent",
             timestamp=datetime.now(),
-            chat_id=chat_id
+            session_id=session_id
         ))
-        self.resident_memory.log_interaction("agent", content, msg_type="chat", session_id=chat_id)
+        self.resident_memory.log_interaction("agent", content, msg_type="chat", session_id=session_id)
         
         # 2. Broadcast or Targeted Send
         if broadcast:
@@ -883,7 +883,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             try:
                 out_msg = OutboundMessage(
                     channel=channel,
-                    chat_id=cid,
+                    session_id=cid,
                     content=content,
                     type=type,
                     media=media or []
@@ -901,7 +901,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             content=content,
             sender="user",
             timestamp=datetime.now(),
-            chat_id="resident"
+            session_id="resident"
         )
         self.history.append(user_msg)
         self.resident_memory.log_interaction("resident", content, msg_type="chat", session_id="resident") # Log to private memory
@@ -911,13 +911,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             channel="resident",
             sender_id="resident",
             content=content,
-            chat_id="resident"
+            session_id="resident"
         )
         # Pass through the pipeline with Ralph Wiggum loop wrapping
         response_text, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
         
         # 3. Notify Resident (Targeted or Broadcast depending on caller)
-        await self.notify_resident(response_text, chat_id="resident", broadcast=broadcast)
+        await self.notify_resident(response_text, session_id="resident", broadcast=broadcast)
         
         # Return the last Message object from history
         return self.history[-1] if self.history else None
@@ -1001,12 +1001,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     sender_display = sender_id[:8] if sender_id else "unknown"
                     logger.info(f"Processing P2P {package_type} from {sender_display} (addressed to {recipient_type})...")
                     
-                    # Determine effective chat_id (The session key)
-                    effective_chat_id = sender_id
+                    # Determine effective session_id (The session key)
+                    effective_session_id = sender_id
                     if recipient_type == "group" and recipient_id:
-                        effective_chat_id = recipient_id
+                        effective_session_id = recipient_id
                     
-                    effective_chat_id = self._normalize_session_id(effective_chat_id) or "unknown_chat"
+                    effective_session_id = self._normalize_session_id(effective_session_id) or "unknown_session"
 
                     # Use 'content' text if available
                     text_content = str(content)
@@ -1038,7 +1038,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         channel="p2p",
                         sender_id=sender_id,
                         content=text_content,
-                        chat_id=effective_chat_id,
+                        session_id=effective_session_id,
                         metadata={"message_id": m_id, "package_type": package_type, "recipient_type": recipient_type}
                     )
                     
@@ -1048,14 +1048,14 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         content=text_content, 
                         sender=sender_id, 
                         timestamp=datetime.now(),
-                        chat_id=effective_chat_id
+                        session_id=effective_session_id
                     ))
-                    self.resident_memory.log_interaction(sender_id, text_content, msg_type=package_type, session_id=effective_chat_id)
+                    self.resident_memory.log_interaction(sender_id, text_content, msg_type=package_type, session_id=effective_session_id)
                     
                     # DUAL BROADCAST: Inform UI and other listeners
                     await self.message_bus.publish_outbound(OutboundMessage(
                         channel="gateway",
-                        chat_id=effective_chat_id,
+                        session_id=effective_session_id,
                         content=text_content,
                         type="chat",
                         sender=sender_id
@@ -1063,7 +1063,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     # Also publish to p2p for internal listeners
                     await self.message_bus.publish_outbound(OutboundMessage(
                         channel="p2p",
-                        chat_id=effective_chat_id,
+                        session_id=effective_session_id,
                         content=text_content,
                         type="chat",
                         sender=sender_id
@@ -1082,13 +1082,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                             content=f"[Agent completed P2P task]: {response_text}",
                             sender="agent",
                             timestamp=datetime.now(),
-                            chat_id=effective_chat_id
+                            session_id=effective_session_id
                         ))
                         # Ensure Gateway knows processing is done
                         s_id_short = sender_id[:8] if sender_id else "unknown"
                         await self.message_bus.publish_outbound(OutboundMessage(
                             channel="gateway",
-                            chat_id=effective_chat_id,
+                            session_id=effective_session_id,
                             content=f"Agent processed P2P message from {s_id_short}",
                             type="thought"
                         ))
@@ -1101,18 +1101,18 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     # Optional: Push back to inbox or Dead Letter Queue?
                     # For now, just log to history so user sees something failed
                     
-                    # Ensure effective_chat_id is defined for logging
+                    # Ensure effective_session_id is defined for logging
                     try:
-                        err_chat_id = effective_chat_id
+                        err_session_id = effective_session_id
                     except UnboundLocalError:
-                        err_chat_id = sender_id or "unknown"
+                        err_session_id = sender_id or "unknown"
 
                     self.history.append(Message(
                         id=str(uuid.uuid4()),
                         content=f"Error processing P2P message: {e}",
                         sender="system",
                         timestamp=datetime.now(),
-                        chat_id=err_chat_id
+                        session_id=err_session_id
                     ))
             
             # 6. Clear Disk Inbox after processing batch
@@ -1139,7 +1139,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 channel="system",
                 sender_id="scheduler",
                 content="Generate a brief daily summary for the resident.",
-                chat_id="system"
+                session_id="system"
              )
              summary, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
         else:
@@ -1167,7 +1167,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             "system", 
             f"Received {reward_amount} STATER as Participation Reward.", 
             "income",
-            chat_id="resident"
+            session_id="resident"
         )
         
         # Push a visual notice to history AND broadcast to bridges
@@ -1201,7 +1201,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 content=entry.get('content', ''),
                 sender=entry.get('sender', 'unknown'),
                 timestamp=datetime.fromisoformat(entry.get('timestamp')) if entry.get('timestamp') else datetime.now(),
-                chat_id=entry.get('chat_id'),
+                session_id=entry.get('session_id') or entry.get('chat_id'),
                 status=entry.get('status')
             ))
         logger.info(f"AgentService: Loaded {len(self.history)} messages from persistent storage.")
@@ -1324,7 +1324,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 content=entry.get('content', ''),
                 sender=entry.get('sender', 'unknown'),
                 timestamp=datetime.fromisoformat(entry.get('timestamp')),
-                chat_id=entry.get('chat_id')
+                session_id=entry.get('session_id') or entry.get('chat_id')
             ))
         return messages
 
@@ -1490,7 +1490,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 content=msg,
                 sender="agent",
                 timestamp=datetime.now(),
-                chat_id=recipient_id
+                session_id=recipient_id
             ))
             self.resident_memory.log_interaction("agent", msg, "moderation", session_id=recipient_id)
             
@@ -1530,7 +1530,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             content=f"{text_to_check}",
             sender="agent",
             timestamp=datetime.now(),
-            chat_id=norm_target,
+            session_id=norm_target,
             status="pending"
         )
         self.history.append(msg_obj)
@@ -1539,7 +1539,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         # Dual broadcast to UI (Initial Pending)
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="gateway",
-            chat_id=norm_target,
+            session_id=norm_target,
             content=f"{text_to_check}",
             type=package_type,
             sender="agent",
@@ -1549,7 +1549,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         # Publish to p2p for internal tracking if needed
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="p2p",
-            chat_id=recipient_id, # Use raw recipient for P2P routing
+            session_id=recipient_id, # Use raw recipient for P2P routing
             content=f"{text_to_check}",
             type="chat",
             sender="agent"
@@ -1649,7 +1649,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             
             await self.message_bus.publish_outbound(OutboundMessage(
                 channel="gateway",
-                chat_id=norm_target,
+                session_id=norm_target,
                 content=msg_id,
                 type="status_update",
                 metadata={"message_id": msg_id, "status": new_status}
@@ -1685,16 +1685,16 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         self.resident_memory.update_message_status(message_id, "failed")
         
         # 3. Notify Gateway/UI
-        # Find target chat_id for this message if possible to keep UI scoped
-        chat_id = "resident" # Default
+        # Find target session_id for this message if possible to keep UI scoped
+        session_id = "resident" # Default
         for msg in self.history:
             if msg.id == message_id:
-                chat_id = msg.chat_id
+                session_id = msg.session_id
                 break
                 
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="gateway",
-            chat_id=chat_id,
+            session_id=session_id,
             content=message_id,
             type="status_update",
             metadata={"message_id": message_id, "status": "failed", "error": str(error_content)}
@@ -1889,8 +1889,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         # Gathering P2P messages exclusively
         p2p_messages = []
         for msg in self.history:
-            # Exclude resident-agent chat and system notifications
-            if msg.chat_id != "resident" and msg.sender != "system":
+            # ONLY log messages that are part of an actual conversation (ignore system pings)
+            if msg.session_id != "resident" and msg.sender != "system":
                 p2p_messages.append(msg.dict())
 
         # Create Block
@@ -1928,7 +1928,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     poke_msg = InboundMessage(
                         channel="internal",
                         sender_id="system",
-                        chat_id="resident", # Direct to user context or dedicated internal?
+                        session_id="resident", # Direct to user context or dedicated internal?
                         content=f"[INTERNAL MONITOR]: 正在推进长期任务 \"{task.goal}\"。当前状态: {task.status}。请检查 Checkpoint 并决定下一步行动。"
                     )
                     
@@ -1956,7 +1956,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         # 1. Internal Log
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="gateway",
-            chat_id="system", 
+            session_id="system", 
             content=f"Delegated Task Received: {task}",
             type="thought",
             metadata={"handoff_id": handoff_id, "sender_id": sender_id}
@@ -2027,7 +2027,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         msg = f"Task Result ({handoff_id}): {output}" if not error else f"Task Error ({handoff_id}): {error}"
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="gateway",
-            chat_id="system",
+            session_id="system",
             content=msg,
             type="thought",
             metadata={"handoff_id": handoff_id, "sender_id": sender_id}

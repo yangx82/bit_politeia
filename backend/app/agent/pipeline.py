@@ -87,7 +87,7 @@ class SenseStage(PipelineStage):
             effective_history.pop()
             
         # a) Extract Session-Specific History (The Core Dialogue)
-        session_history = [msg for msg in effective_history if msg.chat_id == context.input_message.chat_id]
+        session_history = [msg for msg in effective_history if msg.session_id == context.input_message.session_id]
         recent_session_history = session_history[-8:] if session_history else []
         
         lc_history = []
@@ -101,7 +101,7 @@ class SenseStage(PipelineStage):
         
         # b) Extract Global Recent Events (The Periphery / Awareness)
         # Get the most recent events that DO NOT belong to this session
-        global_events_raw = [msg for msg in effective_history if msg.chat_id != context.input_message.chat_id][-5:]
+        global_events_raw = [msg for msg in effective_history if msg.session_id != context.input_message.session_id][-5:]
         recent_global_events = ""
         if global_events_raw:
             events_formatted = []
@@ -109,7 +109,7 @@ class SenseStage(PipelineStage):
                 sender_label = "Me" if msg.sender == "agent" else msg.sender
                 timestamp_str = msg.timestamp.strftime("%Y-%m-%d %H:%M:%S")
                 # Format: [2024-xx-xx] Me in chat_xyz: Hello
-                events_formatted.append(f"[{timestamp_str}] {sender_label} in {msg.chat_id}: {msg.content}")
+                events_formatted.append(f"[{timestamp_str}] {sender_label} in {msg.session_id}: {msg.content}")
             recent_global_events = "\n".join(events_formatted)
 
         # Build initial messages for Plan stage
@@ -121,12 +121,12 @@ class SenseStage(PipelineStage):
         memory_context = agent.resident_memory.get_full_context_text(peer_id=peer_id)
 
         # Resolve Chat Name if it's a group
-        chat_id = context.input_message.chat_id
+        session_id = context.input_message.session_id
         chat_name = "Unknown"
         network_status = p2p_service.get_network_status()
         if network_status and "groups" in network_status:
-            if chat_id in network_status["groups"]:
-                chat_name = network_status["groups"][chat_id].get("name", "Unknown Group")
+            if session_id in network_status["groups"]:
+                chat_name = network_status["groups"][session_id].get("name", "Unknown Group")
 
         context.metadata["messages"] = agent.context_builder.build_messages(
             history=lc_history, 
@@ -141,7 +141,7 @@ class SenseStage(PipelineStage):
             agent_language=getattr(agent, 'agent_language', '中文'),
             channel=context.input_message.channel,
             host_info=agent._get_host_info(),
-            chat_id=chat_id,
+            session_id=session_id,
             chat_name=chat_name
         )
 
@@ -212,7 +212,7 @@ class PlanStage(PipelineStage):
                 sender="agent",
                 content=str(display_thought),
                 msg_type="agent",
-                session_id=context.input_message.chat_id
+                session_id=context.input_message.session_id
             )
 
             # CRITICAL FIX: Thoughts are internal monologue.
@@ -220,7 +220,7 @@ class PlanStage(PipelineStage):
             logger.info(f"Pipeline: Publishing thought to gateway: {str(display_thought)[:50]}...")
             out_msg = OutboundMessage(
                 channel="gateway", 
-                chat_id=context.input_message.sender_id,
+                session_id=context.input_message.session_id,
                 content=str(display_thought),
                 type="thought"
             )
@@ -251,7 +251,7 @@ class ExecuteStage(PipelineStage):
             # Emit Tool Call Event - Internal Log
             out_msg = OutboundMessage(
                 channel="gateway",
-                chat_id=context.input_message.sender_id,
+                session_id=context.input_message.session_id,
                 content=f"Invoking {tool_name} with {args}",
                 type="tool_call",
                 metadata={"tool": tool_name, "args": args}
@@ -307,7 +307,7 @@ class NotifyStage(PipelineStage):
             # 1. Always mirror to Gateway for Observability (Neural Gateway / UI Debugging)
             await agent.message_bus.publish_outbound(OutboundMessage(
                 channel="gateway",
-                chat_id=context.input_message.sender_id,
+                session_id=context.input_message.session_id,
                 content=context.final_answer,
                 type="agent_message"
             ))
@@ -315,11 +315,11 @@ class NotifyStage(PipelineStage):
             # 2. Publish to source channel - DISABLED
             # Reason: The caller (agent_service.process_bus_message) already handles the reply.
             # Doing it here causes Duplicate Messages.
-            # Also, this logic used sender_id instead of chat_id, which was buggy for groups.
+            # Also, this logic used sender_id instead of session_id, which was buggy for groups.
             # if context.input_message.channel != "resident":
             #     await agent.message_bus.publish_outbound(OutboundMessage(
             #         channel=context.input_message.channel,
-            #         chat_id=context.input_message.sender_id,
+            #         session_id=context.input_message.sender_id,
             #         content=context.final_answer
             #     ))
 

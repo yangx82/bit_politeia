@@ -24,8 +24,8 @@ async def test_social_memory():
         
         # 1. Test Working Memory
         print("Testing Working Memory...")
-        mem.log_interaction("user", "Hello agent!", chat_id="session_1")
-        mem.log_interaction("agent", "Hello user!", chat_id="session_1")
+        mem.log_interaction("user", "Hello agent!", session_id="session_1")
+        mem.log_interaction("agent", "Hello user!", session_id="session_1")
         working = mem.get_working_context()
         print(f"Working context length: {len(working)}")
         assert len(working) == 2
@@ -48,7 +48,7 @@ async def test_social_memory():
         print("Testing Hierarchical Context...")
         mem2.update_semantic_fact("User is a developer")
         # Log to mem2 since working memory is not persistent across instances
-        mem2.log_interaction("user", "Testing hierarchy!", chat_id="session_2")
+        mem2.log_interaction("user", "Testing hierarchy!", session_id="session_2")
         context = mem2.get_full_context_text(peer_id=peer_id)
         print(f"Full Context:\n{context}")
         

@@ -114,7 +114,7 @@ async def websocket_gateway(
                     inbound = InboundMessage(
                         channel="gateway",
                         sender_id=payload.get("id", "anonymous_node"),
-                        chat_id="global",  # Simplified for now
+                        session_id="global",  # Simplified for now
                         content=str(payload.get("payload", "")),
                         metadata=payload
                     )
@@ -166,7 +166,7 @@ async def stream_outbound_to_socket(websocket: WebSocket):
                 # msg.type defaults to 'message', but can be 'thought', 'tool_call', etc.
                 
                 event = GatewayEvent(
-                    id="srv_" + str(msg.chat_id), # Ensure string
+                    id="srv_" + str(msg.session_id), # Ensure string
                     timestamp=0, # TODO: use msg timestamp if available
                     event_type=f"agent_{msg.type}", # e.g. agent_message, agent_thought
                     payload={

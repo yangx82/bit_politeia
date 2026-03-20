@@ -36,7 +36,7 @@ async def test_history():
             content="Debug Message",
             sender="peer_debug",
             timestamp=datetime.now(),
-            chat_id="peer_debug"
+            session_id="peer_debug"
         )
         agent_service.history.append(mock_msg)
         history = [mock_msg]
@@ -48,12 +48,12 @@ async def test_history():
         json_data = [m.model_dump() if hasattr(m, 'model_dump') else m.dict() for m in history]
         print(json.dumps(json_data[:2], default=str, indent=2))
         
-        # 4. Check chat_id specifically
+        # 4. Check session_id specifically
         first_msg = json_data[0]
-        if 'chat_id' in first_msg:
-            print(f"\nSUCCESS: chat_id found: {first_msg['chat_id']}")
+        if 'session_id' in first_msg:
+            print(f"\nSUCCESS: session_id found: {first_msg['session_id']}")
         else:
-            print("\nFAILURE: chat_id MISSING in JSON output!")
+            print("\nFAILURE: session_id MISSING in JSON output!")
             
     except Exception as e:
         print(f"Serialization Error: {e}")

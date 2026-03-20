@@ -13,16 +13,16 @@ class Message(BaseModel):
     content: str
     sender: str
     timestamp: datetime
-    chat_id: Optional[str] = None
+    session_id: Optional[str] = None
     status: str = "sent"
 
-def log_interaction_logic(file_path, sender, content, chat_id, status):
+def log_interaction_logic(file_path, sender, content, session_id, status):
     entry = {
         "id": str(uuid.uuid4()),
         "timestamp": datetime.now().isoformat(),
         "sender": sender,
         "content": content,
-        "chat_id": chat_id,
+        "session_id": session_id,
         "status": status
     }
     with open(file_path, 'a', encoding='utf-8') as f:

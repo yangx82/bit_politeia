@@ -27,7 +27,7 @@ class ContextBuilder:
         self.skill_manager = skill_manager
         self.task_manager = task_manager
     
-    def build_system_prompt(self, name: str = "Agent", personality: str = "Professional and helpful", channel: str = "resident", host_info: str = None, chat_id: str = None, chat_name: str = None) -> str:
+    def build_system_prompt(self, name: str = "Agent", personality: str = "Professional and helpful", channel: str = "resident", host_info: str = None, session_id: str = None, chat_name: str = None) -> str:
         """
         Build the complete system prompt from core identity, memory, and skills.
         """
@@ -77,7 +77,7 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
             
         # 1.8 Conversation Context Awareness (Group vs Direct)
         if channel == "p2p":
-            if chat_id:
+            if session_id:
                 is_group = False
                 # Simple check for group ID if possible, or we trust the passed info
                 # Here we assume if chat_name is provided or chat_id is known, we label it.
@@ -88,16 +88,16 @@ Use this absolute time for any date calculations or temporal awareness. Do not r
                     group_block = f"""# CONVERSATION CONTEXT: GROUP CHAT
 You are currently participating in a group conversation.
 - **Group Name**: {chat_name}
-- **Group ID**: {chat_id}
+- **Group ID**: {session_id}
 - **IMPORTANT**: To reply to the entire group, you MUST use the `send_p2p_message` tool with:
-  - `recipient_id`: "{chat_id}" (the Group ID)
+  - `recipient_id`: "{session_id}" (the Group ID)
   - `message_type`: "GROUP"
 - Do NOT reply only to the individual sender unless you specifically intend to have a private side-conversation."""
                     parts.append(group_block)
                 else:
                     direct_block = f"""# CONVERSATION CONTEXT: DIRECT MESSAGE
 You are in a private one-to-one conversation with a single peer.
-- **Peer ID**: {chat_id}
+- **Peer ID**: {session_id}
 - Use `message_type`: "DIRECT" (default) for your replies."""
                     parts.append(direct_block)
         
@@ -133,7 +133,7 @@ You are in a private one-to-one conversation with a single peer.
         agent_language: str = "中文",
         channel: str = "resident",
         host_info: str = None,
-        chat_id: str = None,
+        session_id: str = None,
         chat_name: str = None
     ) -> List[BaseMessage]:
         """
@@ -147,7 +147,7 @@ You are in a private one-to-one conversation with a single peer.
             personality=personality, 
             channel=channel, 
             host_info=host_info,
-            chat_id=chat_id,
+            session_id=session_id,
             chat_name=chat_name
         )
         

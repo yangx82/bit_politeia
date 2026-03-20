@@ -64,8 +64,8 @@ class TestLongTermTasks(unittest.IsolatedAsyncioTestCase):
         from backend.app.models.session import Session
         from backend.app.bus.events import InboundMessage
         
-        test_session = Session(user_id="test_user", channel="resident")
-        test_msg = InboundMessage(sender_id="test_user", chat_id="test_user", content="hello", channel="resident")
+        test_session = Session(session_id="test_user", channel="resident", entity_id="test_user")
+        test_msg = InboundMessage(sender_id="test_user", session_id="test_user", content="hello", channel="resident")
         
         context = PipelineContext(
             session=test_session,

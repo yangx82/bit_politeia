@@ -406,7 +406,7 @@ class ResidentReporter:
         # Publish as a 'message' so it's visible in the main feed.
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="gateway",
-            chat_id="resident",
+            session_id="resident",
             content=report_text,
             type="message"
         ))

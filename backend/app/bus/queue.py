@@ -36,7 +36,7 @@ class MessageBus:
     async def publish_outbound(self, msg: OutboundMessage) -> None:
         """Publish a response from the agent to channels."""
         await self.outbound.put(msg)
-        logger.debug(f"Published outbound message to {msg.channel}:{msg.chat_id}")
+        logger.debug(f"Published outbound message to {msg.channel}:{msg.session_id}")
     
     async def consume_outbound(self) -> OutboundMessage:
         """Consume the next outbound message (blocks until available)."""
