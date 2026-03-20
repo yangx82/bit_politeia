@@ -197,12 +197,13 @@ class ResidentMemory:
         msg_type: str = "chat", 
         session_id: str = None,
         status: str = None,
-        timestamp: datetime = None
+        timestamp: datetime = None,
+        msg_id: str = None
     ):
         topic = msg_type if msg_type in self.topic_files else "chat"
         file_path = self.topic_files[topic]
         entry = {
-            "id": str(uuid.uuid4()),
+            "id": msg_id if msg_id else str(uuid.uuid4()),
             "timestamp": timestamp.isoformat() if timestamp else datetime.now().isoformat(),
             "sender": sender,
             "content": content,
@@ -413,7 +414,7 @@ class ResidentReporter:
         ))
         
         # Log to resident memory as well
-        self.agent.resident_memory.log_interaction("agent_report", report_text, "report", session_id="resident")
+        self.agent.resident_memory.log_interaction("agent_report", report_text, "report", session_id="resident", status="sent")
         logger.info("Sent daily community report to resident.")
 
     async def generate_community_brief(self) -> str:

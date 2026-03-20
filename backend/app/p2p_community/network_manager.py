@@ -381,11 +381,12 @@ class NetworkManager:
                     return await self._send_via_relay(group_id, message)
                 return True
             else:
-                # If we don't know the members but we are the sender, push to relay
                 if not from_relay:
                     logger.info(f"[Network] Group {group_id} not found locally. Pushing to Relay for broadcast.")
                     return await self._send_via_relay(group_id, message)
-                return True
+                else:
+                    # If it came from relay and we don't know the group, we've done our best
+                    return True
         
         return await send_to_node(message.recipient_id, message)
 

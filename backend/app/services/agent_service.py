@@ -1562,7 +1562,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     timestamp=datetime.now(),
                     session_id=recipient_id
                 ))
-                self.resident_memory.log_interaction("agent", msg, "moderation", session_id=recipient_id)
+                self.resident_memory.log_interaction("agent", msg, "moderation", session_id=recipient_id, status="failed")
                 
                 return {"success": False, "status": "refused", "reason": reason}
         else:
@@ -1607,7 +1607,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 status="pending"
             )
             self.history.append(msg_obj)
-            self.resident_memory.log_interaction("agent", text_to_check, msg_type=package_type, session_id=norm_target, status="pending")
+            self.resident_memory.log_interaction("agent", text_to_check, msg_type=package_type, session_id=norm_target, status="pending", msg_id=msg_id)
         else:
             logger.info(f"Retrying message {msg_id} - skipping duplicate history log.")
         
