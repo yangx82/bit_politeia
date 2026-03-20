@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import api from '../services/api'
-import { Send, Search, Users, User, MessageSquare, Clock, CheckCircle2, AlertCircle } from 'lucide-react'
+import { Send, Search, Users, User, MessageSquare, Clock, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react'
 
 // Helper to format time
 const formatTime = (isoString) => {
@@ -659,11 +659,17 @@ const Chat = () => {
                                             <div className="text-sm whitespace-pre-wrap leading-relaxed">{displayContent}</div>
                                             <div className={`text-[10px] mt-1 flex items-center justify-end gap-1 ${timeClass}`}>
                                                 {formatTime(msg.timestamp)}
-                                                {isAgent && msg.status && (
-                                                    <span title={msg.status}>
-                                                        {msg.status === 'pending' && <Clock size={10} className="animate-pulse" />}
-                                                        {msg.status === 'sent' && <CheckCircle2 size={10} />}
-                                                        {msg.status === 'failed' && <AlertCircle size={10} className="text-red-400" />}
+                                                {isAgent && (
+                                                    <span title={msg.status || 'pending'}>
+                                                        {(msg.status === 'pending' || !msg.status) && (
+                                                            <Loader2 size={12} className="animate-spin text-blue-400" />
+                                                        )}
+                                                        {msg.status === 'sent' && (
+                                                            <CheckCircle2 size={12} className="text-emerald-500 fill-emerald-50" />
+                                                        )}
+                                                        {msg.status === 'failed' && (
+                                                            <AlertCircle size={12} className="text-rose-500" />
+                                                        )}
                                                     </span>
                                                 )}
                                             </div>
