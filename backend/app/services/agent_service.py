@@ -1730,7 +1730,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             if target_msg:
                 target_msg.status = new_status
             
-            self.resident_memory.update_message_status(msg_id, new_status)
+            self.resident_memory.update_message_status(msg_id, new_status, topic="agent")
             
             await self.message_bus.publish_outbound(OutboundMessage(
                 channel="gateway",
