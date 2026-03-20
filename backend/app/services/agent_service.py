@@ -2,7 +2,7 @@ import asyncio
 from typing import Any, Dict
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from ..models.schemas import Message, AgentStatus, P2PMessage
 from .crypto_service import crypto_service
 from .transaction_manager import transaction_manager
@@ -111,6 +111,11 @@ class AgentService:
         self.context_builder = ContextBuilder(task_manager=self.task_manager)
         self.consolidation_service = ConsolidationService(self)
         
+        # Identity Defaults
+        self.name = "Anonym"
+        self.personality = "Professional and helpful"
+        self.agent_language = "中文"
+
         # Hydrate History and System State from Disk
         self._hydrate_history()
         self._hydrate_system_state()
@@ -126,6 +131,7 @@ class AgentService:
                 self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', minutes=2, id="sync_network_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=30, next_run_time=datetime.now(), id="task_monitor_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, id="retry_messages_job", replace_existing=True)
 
                 self.scheduler.start()
                 logger.info("Scheduler started successfully with background jobs.")
@@ -133,6 +139,50 @@ class AgentService:
                 logger.info("Scheduler already running.")
         except Exception as e:
             logger.error(f"Failed to start scheduler/jobs: {e}")
+
+    async def _retry_failed_messages(self):
+        """10-minute automatic retry for failed/pending P2P messages."""
+        logger.info("Starting automatic retry for failed/pending P2P messages...")
+        
+        # 1. Find candidates (last 2 hours for safety, but focus on the 10min window)
+        now = datetime.now()
+        ten_minutes_ago = now - timedelta(minutes=10)
+        
+        # We only retry messages that are at least 10 minutes old OR explicitly failed
+        # to avoid double-sending while a message might still be in relay tranmistting.
+        retry_candidates = []
+        for msg in self.history:
+            if msg.sender == "agent" and msg.status in ["failed", "pending"]:
+                if msg.timestamp <= ten_minutes_ago:
+                    retry_candidates.append(msg)
+        
+        if not retry_candidates:
+            logger.info("No candidates for P2P retry found.")
+            return
+
+        logger.info(f"Found {len(retry_candidates)} messages for P2P retry.")
+        
+        for msg in retry_candidates:
+            try:
+                # session_id in history is normalized, but send_p2p_message handles it
+                # We use is_retry=True to skip moderation and history duplication
+                # We pass original_msg_id to ensure the P2P network deduplicates if needed
+                recipient_id = msg.session_id
+                # Avoid retrying if it's not a P2P session (resident or system)
+                if recipient_id in ["resident", "system"] or "[" in recipient_id:
+                    continue
+                    
+                logger.info(f"Triggering automatic retry for message {msg.id} to {recipient_id}")
+                await self.send_p2p_message(
+                    recipient_id=recipient_id,
+                    content=msg.content,
+                    is_retry=True,
+                    original_msg_id=msg.id
+                )
+            except Exception as e:
+                logger.error(f"Failed to retry message {msg.id}: {e}")
+
+    # ... remaining of file ...
 
     def _get_host_info(self) -> str:
         """Detect current host environment (OS, Shell, CWD) for the agent."""
@@ -793,15 +843,25 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
              self.resident_bridges[msg.channel] = raw_session_id
              self._save_system_state()
 
+        # Use original timestamp if available in metadata
+        msg_ts = msg.metadata.get('timestamp')
+        try:
+            if isinstance(msg_ts, str):
+                msg_ts = datetime.fromisoformat(msg_ts)
+            elif not msg_ts:
+                msg_ts = datetime.now()
+        except:
+            msg_ts = datetime.now()
+
         user_msg_obj = Message(
             id=msg.metadata.get("message_id") or str(uuid.uuid4()),
             content=msg.content,
             sender=formatted_sender,
-            timestamp=datetime.now(),
+            timestamp=msg_ts,
             session_id=history_session_id
         )
         self.history.append(user_msg_obj)
-        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", session_id=history_session_id)
+        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", session_id=history_session_id, timestamp=msg_ts)
 
         # 1.5 DUAL BROADCAST: Inform Gateway of inbound P2P message
         if msg.channel == "p2p":
@@ -1043,14 +1103,23 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     )
                     
                     # 2. Log Inbound Message to history
+                    msg_ts = msg.get('timestamp') or msg.get('metadata', {}).get('timestamp')
+                    try:
+                        if isinstance(msg_ts, str):
+                            msg_ts = datetime.fromisoformat(msg_ts)
+                        elif not msg_ts:
+                            msg_ts = datetime.now()
+                    except:
+                        msg_ts = datetime.now()
+
                     self.history.append(Message(
                         id=m_id or str(uuid.uuid4()), 
                         content=text_content, 
                         sender=sender_id, 
-                        timestamp=datetime.now(),
+                        timestamp=msg_ts,
                         session_id=effective_session_id
                     ))
-                    self.resident_memory.log_interaction(sender_id, text_content, msg_type=package_type, session_id=effective_session_id)
+                    self.resident_memory.log_interaction(sender_id, text_content, msg_type=package_type, session_id=effective_session_id, timestamp=msg_ts)
                     
                     # DUAL BROADCAST: Inform UI and other listeners
                     await self.message_bus.publish_outbound(OutboundMessage(
@@ -1462,7 +1531,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             logger.error(f"Error processing incoming direct HTTP P2P message: {e}")
             return {"status": "error", "message": str(e)}
 
-    async def send_p2p_message(self, recipient_id: str, content: Any, **kwargs) -> dict:
+    async def send_p2p_message(self, recipient_id: str, content: Any, is_retry: bool = False, original_msg_id: str = None, **kwargs) -> dict:
         """
         Send a P2P message to a specific peer.
         This method handles both WebRTC data channel (fast) and HTTP/Relay (reliable) paths.
@@ -1479,22 +1548,25 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         elif not isinstance(content, str):
             text_to_check = str(content)
 
-        # 1. Moderation Check
-        is_compliant, reason = await self._check_compliance(text_to_check, recipient_id)
-        if not is_compliant:
-            msg = f"⚠️ Message Refused: {reason}"
-            
-            # Log refusal to history so user sees it in chat
-            self.history.append(Message(
-                id=str(uuid.uuid4()),
-                content=msg,
-                sender="agent",
-                timestamp=datetime.now(),
-                session_id=recipient_id
-            ))
-            self.resident_memory.log_interaction("agent", msg, "moderation", session_id=recipient_id)
-            
-            return {"success": False, "status": "refused", "reason": reason}
+        # 1. Moderation Check - Skip if retry
+        if not is_retry:
+            is_compliant, reason = await self._check_compliance(text_to_check, recipient_id)
+            if not is_compliant:
+                msg = f"⚠️ Message Refused: {reason}"
+                
+                # Log refusal to history so user sees it in chat
+                self.history.append(Message(
+                    id=str(uuid.uuid4()),
+                    content=msg,
+                    sender="agent",
+                    timestamp=datetime.now(),
+                    session_id=recipient_id
+                ))
+                self.resident_memory.log_interaction("agent", msg, "moderation", session_id=recipient_id)
+                
+                return {"success": False, "status": "refused", "reason": reason}
+        else:
+            logger.info(f"Retrying message {original_msg_id} - skipping compliance check.")
              
         # 2. Identify Message Nature (Refactored)
         # Package Type: What is being sent?
@@ -1519,22 +1591,25 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             if local_node and recipient_id in local_node.group_ids:
                 recipient_type = "group"
         
-        # 3. Log Outbound Message (History)
+        # 3. Log Outbound Message (History) - Skip if retry (we update status later)
         # Normalize recipient_id for history and UI consistency
         norm_target = self._normalize_session_id(recipient_id)
-        msg_id = str(uuid.uuid4())
-        self.processed_message_ids.add(msg_id) # Track our own messages to avoid loopback
+        msg_id = original_msg_id if is_retry and original_msg_id else str(uuid.uuid4())
         
-        msg_obj = Message(
-            id=msg_id,
-            content=f"{text_to_check}",
-            sender="agent",
-            timestamp=datetime.now(),
-            session_id=norm_target,
-            status="pending"
-        )
-        self.history.append(msg_obj)
-        self.resident_memory.log_interaction("agent", text_to_check, msg_type=package_type, session_id=norm_target, status="pending")
+        if not is_retry:
+            self.processed_message_ids.add(msg_id) # Track our own messages to avoid loopback
+            msg_obj = Message(
+                id=msg_id,
+                content=f"{text_to_check}",
+                sender="agent",
+                timestamp=datetime.now(),
+                session_id=norm_target,
+                status="pending"
+            )
+            self.history.append(msg_obj)
+            self.resident_memory.log_interaction("agent", text_to_check, msg_type=package_type, session_id=norm_target, status="pending")
+        else:
+            logger.info(f"Retrying message {msg_id} - skipping duplicate history log.")
         
         # Dual broadcast to UI (Initial Pending)
         await self.message_bus.publish_outbound(OutboundMessage(
@@ -1644,7 +1719,17 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
             # 4. Update Status and Notify Gateway
             new_status = "sent" if success_final else "failed"
-            msg_obj.status = new_status
+            
+            # Find the message object to update status
+            target_msg = None
+            for m in reversed(self.history):
+                if m.id == msg_id:
+                    target_msg = m
+                    break
+            
+            if target_msg:
+                target_msg.status = new_status
+            
             self.resident_memory.update_message_status(msg_id, new_status)
             
             await self.message_bus.publish_outbound(OutboundMessage(
@@ -2069,6 +2154,11 @@ async def check_tasks_monitor_proxy():
     """Proxy for agent_service.check_tasks_monitor"""
     if agent_service:
         await agent_service.check_tasks_monitor()
+
+async def retry_failed_messages_proxy():
+    """Proxy for agent_service._retry_failed_messages"""
+    if agent_service:
+        await agent_service._retry_failed_messages()
 
 
 agent_service = AgentService()

@@ -127,6 +127,8 @@ class P2PService:
                 msg_data["message_type"] = content["message_type"]
             if "recipient_id" in content:
                 msg_data["recipient_id"] = content["recipient_id"]
+            if "timestamp" in content:
+                msg_data["timestamp"] = content["timestamp"]
 
             if "text" in content or "data" in content:
                 msg_data["content"] = content
