@@ -131,7 +131,7 @@ class AgentService:
                 self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', minutes=2, id="sync_network_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=30, next_run_time=datetime.now(), id="task_monitor_job", replace_existing=True)
-                self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, id="retry_messages_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, next_run_time=datetime.now(), id="retry_messages_job", replace_existing=True)
 
                 self.scheduler.start()
                 logger.info("Scheduler started successfully with background jobs.")
@@ -152,7 +152,7 @@ class AgentService:
         # to avoid double-sending while a message might still be in relay tranmistting.
         retry_candidates = []
         for msg in self.history:
-            if msg.sender == "agent" and msg.status in ["failed", "pending"]:
+            if msg.sender == "agent" and msg.status in ["failed", "pending", None]:
                 if msg.timestamp <= ten_minutes_ago:
                     retry_candidates.append(msg)
         
