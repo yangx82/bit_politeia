@@ -863,7 +863,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             session_id=history_session_id
         )
         self.history.append(user_msg_obj)
-        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", session_id=history_session_id, timestamp=msg_ts)
+        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", session_id=history_session_id, timestamp=msg_ts, msg_id=msg.metadata.get("message_id"))
 
         # 1.5 DUAL BROADCAST: Inform Gateway of inbound P2P message
         if msg.channel == "p2p":
@@ -881,8 +881,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         # 3. Reply via Bus
         reply_id = str(uuid.uuid4())
+        is_internal_report = False
+        
         if response_text and "[NO_RESPONSE_NEEDED]" in str(response_text):
             logger.info(f"P2P Logic: Conversation terminated by agent via [NO_RESPONSE_NEEDED] for session_id={raw_session_id}")
+            is_internal_report = True
         elif response_text and str(response_text).strip() and response_text != "No response generated.":
             out_msg = OutboundMessage(
                 channel=msg.channel,
@@ -904,15 +907,19 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                  ))
 
         # 4. Log Reply to history
+        target_session = "resident" if is_internal_report else history_session_id
+        target_status = None if is_internal_report else "sent"
+        
         agent_msg_obj = Message(
              id=reply_id,
              content=response_text,
              sender="agent",
              timestamp=datetime.now(),
-             session_id=history_session_id # Log with Prefix so it merges
+             session_id=target_session,
+             status=target_status
         )
         self.history.append(agent_msg_obj)
-        self.resident_memory.log_interaction("agent", response_text, msg_type="chat", session_id=history_session_id)
+        self.resident_memory.log_interaction("agent", response_text, msg_type="chat", session_id=target_session, status=target_status)
     async def notify_resident(self, content: str, type: str = "agent_message", session_id: str = "resident", broadcast: bool = True, media: list = None):
         """
         Notify the resident. 
@@ -1121,7 +1128,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         timestamp=msg_ts,
                         session_id=effective_session_id
                     ))
-                    self.resident_memory.log_interaction(sender_id, text_content, msg_type=package_type, session_id=effective_session_id, timestamp=msg_ts)
+                    self.resident_memory.log_interaction(sender_id, text_content, msg_type=package_type, session_id=effective_session_id, timestamp=msg_ts, msg_id=m_id)
                     
                     # DUAL BROADCAST: Inform UI and other listeners
                     await self.message_bus.publish_outbound(OutboundMessage(
@@ -2002,12 +2009,25 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         logger.info(f"Task Monitor: Checking {len(active_tasks)} active tasks...")
         
         for task in active_tasks:
-            # Logic: If active and no progress for 30 mins, or just a periodic check
-            # For this MVP, we log it and then trigger a 'self-poke' message to the agent.
-            if task.status == "active":
+            # Logic: If pending, move to active and poke immediately
+            if task.status == TaskStatus.PENDING:
+                logger.info(f"Task Monitor: Activating pending task '{task.goal}'")
+                task.update_status(TaskStatus.ACTIVE)
+                self.task_manager.save_tasks()
+                
+                poke_msg = InboundMessage(
+                    channel="internal",
+                    sender_id="system",
+                    session_id="resident",
+                    content=f"[INTERNAL MONITOR]: 发现一个待处理的新任务 \"{task.goal}\"。请开始执行并更新 Checkpoint。"
+                )
+                asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
+                
+            elif task.status == TaskStatus.ACTIVE:
                 last_update = task.updated_at
                 now = datetime.now()
-                # If no update for 30 mins, or if it's a fresh start
+                # If no update for 30 mins, or if it's a fresh start check
+                # Note: On a fresh reboot, this might still be > 1800s if the task was saved long ago
                 if (now - last_update).total_seconds() > 1800:
                     logger.info(f"Task Monitor: Task '{task.goal}' seems idle. Triggering self-poke.")
                     
@@ -2015,16 +2035,16 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     poke_msg = InboundMessage(
                         channel="internal",
                         sender_id="system",
-                        session_id="resident", # Direct to user context or dedicated internal?
+                        session_id="resident",
                         content=f"[INTERNAL MONITOR]: 正在推进长期任务 \"{task.goal}\"。当前状态: {task.status}。请检查 Checkpoint 并决定下一步行动。"
                     )
                     
                     # Run the loop in the background
                     asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
                 else:
-                    logger.debug(f"Task '{task.goal}' is ongoing. Checkpoint: {task.checkpoint}")
-            elif task.status == "blocked":
-                 logger.info(f"Task '{task.goal}' is BLOCKED. Waiting for resumption condition.")
+                    logger.info(f"Task Monitor: Task '{task.goal}' is ongoing (Updated {(now-last_update).total_seconds()/60:.1f}m ago).")
+            elif task.status == TaskStatus.BLOCKED:
+                 logger.info(f"Task Monitor: Task '{task.goal}' is BLOCKED. Waiting for resumption condition.")
 
     async def get_latest_archive_report(self) -> dict:
         if not self.archive_manager:

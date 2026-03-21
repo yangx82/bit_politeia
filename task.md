@@ -201,8 +201,8 @@
     - [x] **Client**: Update `BootstrapClient` to support HTTPS and custom CA/verify selection.
     - [x] **Verify**: Create `tests/verify_https.py` to test secure connection.
 
-- [ ] **Architecture Evolution: OpenClaw Analysis**
-    - [ ] **Research**: Analyze OpenClaw's Gateway and Node architecture.
-    - [ ] **Compare**: Document differences with current Bit Politeia (Nanobot) architecture.
-    - [ ] **Design**: Create ADR 0006 proposing "Neural Gateway" pattern.
-    - [ ] **Plan**: Create implementation plan for Gateway/Node integration.
+- [x] **Phase 13: Verify Timestamp Origin**
+    - [x] Check if `send_p2p_message` uses original generation time
+    - [x] Check if `receive_p2p_message` (via inbox) uses sender's timestamp
+    - [x] Verify `agent.jsonl` contains the correct `timestamp`
+    - [x] Verify frontend `Chat.jsx` displays the `timestamp` field without overriding

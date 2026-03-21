@@ -58,6 +58,18 @@ Adopted Nanobot's memory architecture for better context management.
 - Addressed an issue where the agent would parrot the last user message ("What did I just ask?").
 - **Solution**: Implemented recursive removal of trailing duplicate messages in `AgentService._think_and_act` history slice.
 - **Result**: Agent now correctly looks past repeated meta-questions to find the actual conversational context.
+- Modify `ResidentMemory.log_interaction` to handle explicit timestamps.
+- Update `process_network_inbox` backwards-compatibility loops to avoid dropping real timestamps during queue un-marshaling.
+
+### Resolution of Perpetual "Pending" UI Status
+- **Root Cause**: An earlier architectural change mistakenly routed the Agent's internal "thought" summaries (such as confirming `[NO_RESPONSE_NEEDED]`) to the P2P connection `session_id`, meaning these logs correctly showed up in the frontend's P2P conversation views. However, because they are internal agent thoughts, they lacked a network `status` (such as `sent` or `failed`), appearing as `null` in the payload. The `Chat.jsx` frontend falls back to displaying a spinning pending loader for any `activeSessionId !== 'resident'` message that lacks a `status`.
+- **Fix Applied**: 
+### Resolution of Stalled Task Monitor
+- **Root Cause**: The background task monitor (`check_tasks_monitor`) only parsed tasks with an explicit `active` status. Newly created tasks with a `pending` status were ignored. Additionally, the 30-minute idle threshold meant that even active tasks appeared "stalled" to users who expected immediate action after a reboot.
+- **Fix Applied**: 
+  - Updated `check_tasks_monitor` to automatically detect and activate `pending` tasks, triggering an immediate "self-poke" to the agent.
+  - Improved logging levels from `DEBUG` to `INFO` for better visibility in the backend console during task monitoring.
+  - Confirmed that a system restart will now correctly pick up and prioritize these tasks via the scheduler's `next_run_time=datetime.now()` configuration.
 
 ## 5. Agent ReAct Loop & ContextBuilder
 - **ContextBuilder**: Implemented `backend/app/agent/context.py` to centrally manage system prompts, memory injection, and skill definitions, adopting the Nanobot architecture.
