@@ -2019,7 +2019,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     channel="internal",
                     sender_id="system",
                     session_id="resident",
-                    content=f"[INTERNAL MONITOR]: 发现一个待处理的新任务 \"{task.goal}\"。请开始执行并更新 Checkpoint。"
+                    content=(
+                        f"[INTERNAL MONITOR]: 发现一个待处理的新任务 \"{task.goal}\"。请立刻开始执行任务并更新 Checkpoint。\n"
+                        f"[CRITICAL INSTRUCTION: You are awakened by an automated background loop. You MUST take action by calling a tool. "
+                        f"Do NOT output conversational text just to acknowledge this message. If you have no tools to call, output exactly [NO_RESPONSE_NEEDED].]"
+                    )
                 )
                 asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
                 
@@ -2036,7 +2040,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         channel="internal",
                         sender_id="system",
                         session_id="resident",
-                        content=f"[INTERNAL MONITOR]: 正在推进长期任务 \"{task.goal}\"。当前状态: {task.status}。请检查 Checkpoint 并决定下一步行动。"
+                        content=(
+                            f"[INTERNAL MONITOR]: 正在推进长期任务 \"{task.goal}\"。当前状态: {task.status}。请检查 Checkpoint 并决定下一步行动。\n"
+                            f"[CRITICAL INSTRUCTION: You are awakened by an automated background loop. You MUST take action by calling a tool. "
+                            f"Do NOT output conversational text just to acknowledge this message. If you have no tools to call, output exactly [NO_RESPONSE_NEEDED].]"
+                        )
                     )
                     
                     # Run the loop in the background

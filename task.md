@@ -215,3 +215,4 @@
     - [x] Identify silent `TaskStatus` missing import failure causing internal queue monitor proxy to crash on launch.
     - [x] Migrate `APScheduler` from `SQLAlchemyJobStore` to `MemoryJobStore` to purge corrupt cached triggers and guarantee instantaneous boot-time trigger evaluation.
     - [x] Resolve LLM initialisation race condition: Task Monitor now waits/reschedules if `agent.llm` isn't established upon early boot triggers rather than aborting silently.
+    - [x] Append strict system instructions to `check_tasks_monitor`'s poke message dictating that the LLM must execute a tool call, preventing it from emitting conversational non-actionable confirmations.
