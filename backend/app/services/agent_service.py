@@ -49,6 +49,13 @@ class AgentService:
         self.message_bus = message_bus
         self.resident_bridges: Dict[str, str] = {} # Bridge Name -> Chat/OpenID
         
+        # Resolve absolute path to backend/data
+        from pathlib import Path
+        current_file = Path(__file__).resolve()
+        self.backend_dir = current_file.parent.parent.parent
+        self.data_dir = self.backend_dir / "data"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        
         # Scheduler (Memory-only to avoid DB trigger persistence conflicts with hardcoded boot jobs)
         try:
             job_defaults = {
