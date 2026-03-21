@@ -1990,6 +1990,18 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         if not self.task_manager:
             return
             
+        if not self.llm:
+            logger.info("Task Monitor: Agent LLM not yet configured. Postponing startup task check by 5 seconds...")
+            from datetime import timedelta
+            self.scheduler.add_job(
+                "app.services.agent_service:check_tasks_monitor_proxy", 
+                trigger='date', 
+                run_date=datetime.now() + timedelta(seconds=5), 
+                id="task_monitor_startup_retry", 
+                replace_existing=True
+            )
+            return
+            
         active_tasks = self.task_manager.get_active_tasks()
         if not active_tasks:
             return

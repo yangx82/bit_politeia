@@ -214,3 +214,4 @@
     - [x] Resolve a race condition where `configure_agent` booting the scheduler preemptively caused `start_scheduler` to abandon adding background jobs.
     - [x] Identify silent `TaskStatus` missing import failure causing internal queue monitor proxy to crash on launch.
     - [x] Migrate `APScheduler` from `SQLAlchemyJobStore` to `MemoryJobStore` to purge corrupt cached triggers and guarantee instantaneous boot-time trigger evaluation.
+    - [x] Resolve LLM initialisation race condition: Task Monitor now waits/reschedules if `agent.llm` isn't established upon early boot triggers rather than aborting silently.
