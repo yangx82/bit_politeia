@@ -216,36 +216,50 @@ class ResidentMemory:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:
             logger.error(f"Failed to log to {topic}: {e}")
-    def update_message_status(self, message_id: str, status: str, topic: str = "chat"):
-        """Update the status of a specific message in the JSONL log."""
-        file_path = self.topic_files.get(topic, self.topic_files["chat"])
-        if not file_path.exists():
-            return
+    def update_message_status(self, message_id: str, status: str, topic: str = None):
+        """Update the status of a specific message in the JSONL log. Searches all topics if not found."""
+        topics_to_search = []
+        if topic and topic in self.topic_files:
+            topics_to_search.append(topic)
+        
+        # Add all other topics as fallbacks
+        for t in self.topic_files:
+            if t not in topics_to_search:
+                topics_to_search.append(t)
+        
+        updated_on_disk = False
+        for current_topic in topics_to_search:
+            file_path = self.topic_files[current_topic]
+            if not file_path.exists():
+                continue
 
-        temp_path = file_path.with_suffix(".tmp")
-        updated = False
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f_in, \
-                 open(temp_path, 'w', encoding='utf-8') as f_out:
-                for line in f_in:
-                    try:
-                        data = json.loads(line)
-                        if data.get("id") == message_id:
-                            data["status"] = status
-                            updated = True
-                        f_out.write(json.dumps(data, ensure_ascii=False) + "\n")
-                    except:
-                        f_out.write(line)
-            
-            if updated:
-                os.replace(temp_path, file_path)
-            else:
-                os.remove(temp_path)
-        except Exception as e:
-            logger.error(f"Failed to update message status in {topic}: {e}")
-            if temp_path.exists():
-                os.remove(temp_path)
-
+            temp_path = file_path.with_suffix(".tmp")
+            found_in_file = False
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f_in, \
+                     open(temp_path, 'w', encoding='utf-8') as f_out:
+                    for line in f_in:
+                        try:
+                            data = json.loads(line)
+                            if data.get("id") == message_id:
+                                data["status"] = status
+                                found_in_file = True
+                                updated_on_disk = True
+                            f_out.write(json.dumps(data, ensure_ascii=False) + "\n")
+                        except:
+                            f_out.write(line)
+                
+                if found_in_file:
+                    os.replace(temp_path, file_path)
+                    break # Found and updated
+                else:
+                    if temp_path.exists():
+                        os.remove(temp_path)
+            except Exception as e:
+                logger.error(f"Failed to update message status in {current_topic}: {e}")
+                if temp_path.exists():
+                    os.remove(temp_path)
+        
         # Update working memory if present
         for msg in self._working_memory:
             if msg.get("id") == message_id:

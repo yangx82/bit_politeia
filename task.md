@@ -218,3 +218,4 @@
     - [x] Append strict system instructions to `check_tasks_monitor`'s poke message dictating that the LLM must execute an action tool, explicitly forbidding the passive fallback of calling `ask_resident` for permission.
     - [x] Fix Task Monitor 30-minute interval race condition by decoupling the APScheduler polling rate (5 minutes) from the idle threshold (>30 minutes) and actively refreshing the `updated_at` timeout upon dispatch.
     - [x] Fortify `update_task_status` tool with strict technical constraints resolving the 'attempted but failed = completed' semantic hallucination by demanding absolute success for `completed` usage, directing failures to the `blocked` or `failed` enumerations instead.
+    - [x] Resolve P2P message status persistence bug by making `ResidentMemory.update_message_status` topic-agnostic, ensuring 'sent' status is correctly written to `chat.jsonl` even when triggered via `agent` service context.
