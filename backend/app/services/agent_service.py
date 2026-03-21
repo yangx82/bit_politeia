@@ -49,39 +49,17 @@ class AgentService:
         self.message_bus = message_bus
         self.resident_bridges: Dict[str, str] = {} # Bridge Name -> Chat/OpenID
         
-        # Scheduler with Persistence
+        # Scheduler (Memory-only to avoid DB trigger persistence conflicts with hardcoded boot jobs)
         try:
-            from pathlib import Path
-            import os
-            
-            # Resolve absolute path to backend/data
-            # app/services/agent_service.py -> app/services -> app -> backend
-            current_file = Path(__file__).resolve()
-            self.backend_dir = current_file.parent.parent.parent
-            self.data_dir = self.backend_dir / "data"
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            
-            db_path = self.data_dir / "jobs.sqlite"
-            
-            from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
-            from apscheduler.executors.pool import ThreadPoolExecutor
-            
-            jobstores = {
-                # Use 4 slashes for absolute path in unix/windows
-                'default': SQLAlchemyJobStore(url=f'sqlite:///{db_path}')
-            }
-            executors = {} # Default: AsyncIOExecutor() handles coroutines
             job_defaults = {
                 'coalesce': True, # Merge multiple missed runs into one
-                'max_instances': 3
+                'max_instances': 3,
+                'misfire_grace_time': 60 # Generous grace time to prevent skipping on boot load
             }
-            self.scheduler = AsyncIOScheduler(jobstores=jobstores, job_defaults=job_defaults)
-            logger.info(f"Scheduler initialized with SQLite persistence at {db_path}.")
-        except ImportError:
-            logger.warning("SQLAlchemy not found, using MemoryJobStore (No persistence).")
-            self.scheduler = AsyncIOScheduler()
+            self.scheduler = AsyncIOScheduler(job_defaults=job_defaults)
+            logger.info(f"Scheduler initialized with Memory persistence.")
         except Exception as e:
-            logger.error(f"Failed to init persistent scheduler: {e}. Fallback to Memory.")
+            logger.error(f"Failed to init scheduler: {e}")
             self.scheduler = AsyncIOScheduler()
 
         # Scheduler will be started in start_scheduler() called by main.py lifespan

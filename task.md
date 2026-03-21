@@ -212,3 +212,5 @@
     - [x] Update `check_tasks_monitor` to parse `pending` tasks and poke the agent immediately.
     - [x] Increase visibility by changing debug logging to `INFO` for idle task status updates.
     - [x] Resolve a race condition where `configure_agent` booting the scheduler preemptively caused `start_scheduler` to abandon adding background jobs.
+    - [x] Identify silent `TaskStatus` missing import failure causing internal queue monitor proxy to crash on launch.
+    - [x] Migrate `APScheduler` from `SQLAlchemyJobStore` to `MemoryJobStore` to purge corrupt cached triggers and guarantee instantaneous boot-time trigger evaluation.
