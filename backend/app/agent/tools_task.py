@@ -23,6 +23,13 @@ def update_task_status(task_id: str, status: str, result: Optional[str] = None) 
     """
     Update the status of a long-term task or subtask.
     
+    CRITICAL STATUS DEFINITIONS - YOU MUST OBEY THESE:
+    - "pending": Not started yet.
+    - "active": Currently being worked on.
+    - "blocked": You are unable to proceed because you are waiting on an external dependency (e.g., waiting for a peer to reply, waiting for a resident to upload a file). DO NOT mark as completed if you are just waiting!
+    - "failed": The goal is permanently impossible to achieve (e.g., repeated fatal errors or dead ends).
+    - "completed": The goal has been 100% SUCCESSFULLY ACHIEVED. DO NOT use "completed" if you merely "tried" but did not succeed. If you tried but the goal wasn't achieved, use "failed" or "blocked".
+
     Args:
         task_id: The UUID of the task.
         status: One of [pending, active, blocked, completed, failed].

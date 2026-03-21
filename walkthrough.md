@@ -75,6 +75,7 @@ Adopted Nanobot's memory architecture for better context management.
   - Added an LLM initialization guard into `check_tasks_monitor`. If the LLM isn't hooked up yet during the swift boot schedule, it logs the delay and correctly spawns a precise 5-second delayed `date` job to try again.
   - Injected an un-ignorable `[CRITICAL INSTRUCTION]` directly into the monitor's trigger message bounding the LLM to explicitly execute an action framework tool proactively, explicitly forbidding the passive fallback of calling `ask_resident` for permission or instructions unless critically blocked.
   - Rectified a >30-minute idle threshold sub-second race condition by decoupling the APScheduler polling frequency (now 5 minutes) from the evaluation threshold (>1800s), combined with an explicitly injected timestamp bump during dispatch to thwart rapid-fire agent spam.
+  - Fortified `update_task_status` tool definitions and global system prompts with strict technical constraints, defining absolute 100% success for `completed` usage to categorically eliminate the LLM 'tried and gave up -> completed' semantic semantic hallucination, rigidly enforcing the adoption of `failed` or `blocked` instead.
 
 ## 5. Agent ReAct Loop & ContextBuilder
 - **ContextBuilder**: Implemented `backend/app/agent/context.py` to centrally manage system prompts, memory injection, and skill definitions, adopting the Nanobot architecture.
