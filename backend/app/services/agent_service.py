@@ -124,19 +124,22 @@ class AgentService:
     def start_scheduler(self):
         """Start the scheduler and add background jobs."""
         try:
-            if not self.scheduler.running:
-                # 1. Add background jobs using string references for robustness
+            # Add jobs only once
+            if not getattr(self, '_jobs_added', False):
                 self.scheduler.add_job("app.services.agent_service:trigger_scheduled_task_proxy", 'interval', hours=12, misfire_grace_time=60, id="periodic_brief_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=30, misfire_grace_time=15, id="network_inbox_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', minutes=2, id="sync_network_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=30, next_run_time=datetime.now(), id="task_monitor_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, next_run_time=datetime.now(), id="retry_messages_job", replace_existing=True)
+                self._jobs_added = True
+                logger.info("Scheduler background jobs registered successfully.")
 
+            if not self.scheduler.running:
                 self.scheduler.start()
-                logger.info("Scheduler started successfully with background jobs.")
+                logger.info("Scheduler started successfully.")
             else:
-                logger.info("Scheduler already running.")
+                logger.info("Scheduler already running, jobs ensured.")
         except Exception as e:
             logger.error(f"Failed to start scheduler/jobs: {e}")
 

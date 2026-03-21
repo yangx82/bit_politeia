@@ -201,8 +201,14 @@
     - [x] **Client**: Update `BootstrapClient` to support HTTPS and custom CA/verify selection.
     - [x] **Verify**: Create `tests/verify_https.py` to test secure connection.
 
-- [x] **Phase 13: Verify Timestamp Origin**
-    - [x] Check if `send_p2p_message` uses original generation time
-    - [x] Check if `receive_p2p_message` (via inbox) uses sender's timestamp
-    - [x] Verify `agent.jsonl` contains the correct `timestamp`
-    - [x] Verify frontend `Chat.jsx` displays the `timestamp` field without overriding
+- [x] **Phase 14: Debuging Status Indicator Regression**
+    - [x] Trace agent message handling through `agent_service.process_bus_message`
+    - [x] Uncover session ID pollution allowing internal summary thoughts into P2P histories with missing statuses
+    - [x] Fix `agent_service.py` to restrict `[NO_RESPONSE_NEEDED]` to the `"resident"` session
+    - [x] Assign correct `status="sent"` defaults for natively replied P2P bus message returns
+    - [x] Re-tag historically erroneous `pending` instances in `chat.jsonl`
+
+- [x] **Phase 15: Fix Task Monitor and Scheduler Registration**
+    - [x] Update `check_tasks_monitor` to parse `pending` tasks and poke the agent immediately.
+    - [x] Increase visibility by changing debug logging to `INFO` for idle task status updates.
+    - [x] Resolve a race condition where `configure_agent` booting the scheduler preemptively caused `start_scheduler` to abandon adding background jobs.
