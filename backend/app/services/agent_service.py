@@ -38,7 +38,7 @@ from .memory_store import memory_store
 from .knowledge_base import knowledge_base
 
 from .consolidation import ConsolidationService
-from .task_manager import TaskManager
+from .task_manager import TaskManager, TaskStatus
 
 class AgentService:
     def __init__(self):
