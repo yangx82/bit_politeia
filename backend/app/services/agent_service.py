@@ -2021,8 +2021,10 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     session_id="resident",
                     content=(
                         f"[INTERNAL MONITOR]: 发现一个待处理的新任务 \"{task.goal}\"。请立刻开始执行任务并更新 Checkpoint。\n"
-                        f"[CRITICAL INSTRUCTION: You are awakened by an automated background loop. You MUST take action by calling a tool. "
-                        f"Do NOT output conversational text just to acknowledge this message. If you have no tools to call, output exactly [NO_RESPONSE_NEEDED].]"
+                        f"[CRITICAL INSTRUCTION: You are awakened by an automated background loop. You are an AUTONOMOUS agent. "
+                        f"You MUST proactively take action by calling a tool (e.g. send_p2p_message, execute_shell_command) to push the task forward. "
+                        f"Do NOT ask the resident for permission or instructions on how to proceed unless completely blocked. "
+                        f"Do NOT output conversational text just to acknowledge this message. If you have absolutely nothing to do, output exactly [NO_RESPONSE_NEEDED].]"
                     )
                 )
                 asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
@@ -2042,8 +2044,10 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         session_id="resident",
                         content=(
                             f"[INTERNAL MONITOR]: 正在推进长期任务 \"{task.goal}\"。当前状态: {task.status}。请检查 Checkpoint 并决定下一步行动。\n"
-                            f"[CRITICAL INSTRUCTION: You are awakened by an automated background loop. You MUST take action by calling a tool. "
-                            f"Do NOT output conversational text just to acknowledge this message. If you have no tools to call, output exactly [NO_RESPONSE_NEEDED].]"
+                            f"[CRITICAL INSTRUCTION: You are awakened by an automated background loop. You are an AUTONOMOUS agent. "
+                            f"You MUST proactively take action by calling a tool (e.g. send_p2p_message, execute_shell_command) to push the task forward. "
+                            f"Do NOT ask the resident for permission or instructions on how to proceed unless completely blocked. "
+                            f"Do NOT output conversational text just to acknowledge this message. If you have absolutely nothing to do, output exactly [NO_RESPONSE_NEEDED].]"
                         )
                     )
                     
