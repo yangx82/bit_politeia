@@ -115,7 +115,7 @@ class AgentService:
                 self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=30, misfire_grace_time=15, id="network_inbox_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', minutes=2, id="sync_network_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
-                self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=30, next_run_time=datetime.now(), id="task_monitor_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=5, next_run_time=datetime.now(), id="task_monitor_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, next_run_time=datetime.now(), id="retry_messages_job", replace_existing=True)
                 self._jobs_added = True
                 logger.info("Scheduler background jobs registered successfully.")
@@ -2053,6 +2053,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     
                     # Run the loop in the background
                     asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
+                    
+                    # Explicitly bump the updated_at timestamp to reset the 30-minute idle clock
+                    # This prevents the monitor from spamming the agent if the monitor interval is shorter than 30 mins
+                    task.updated_at = datetime.now()
+                    self.task_manager.save_tasks()
                 else:
                     logger.info(f"Task Monitor: Task '{task.goal}' is ongoing (Updated {(now-last_update).total_seconds()/60:.1f}m ago).")
             elif task.status == TaskStatus.BLOCKED:
