@@ -78,7 +78,12 @@ Adopted Nanobot's memory architecture for better context management.
   - Fortified `update_task_status` tool definitions and global system prompts with strict technical constraints, defining absolute 100% success for `completed` usage to categorically eliminate the LLM 'tried and gave up -> completed' semantic semantic hallucination, rigidly enforcing the adoption of `failed` or `blocked` instead.
   - Fixed a P2P message status persistence mismatch where status updates were being sent to the `agent` topic (mapping to `agent.jsonl`) while original messages were logged to `chat` topic (mapping to `chat.jsonl`). Refactored `ResidentMemory.update_message_status` to be topic-agnostic, ensuring 'sent' status correctly overwrites 'pending' across all JSONL logs.
 
-## 5. Agent ReAct Loop & ContextBuilder
+## 5. Agent Self-Awareness & Maintenance
+- **Architecture Mapping**: Created `backend/CODEBASE_MAP.md` as a persistent "Internal Anatomy" reference for the agent.
+- **Constitutional Update**: Added `LAYER 4: SELF-AWARENESS` to `AGENT_SYSTEM_PROMPT`, formally authorizing the agent to inspect its own source code.
+- **Autonomous Maintenance**: Instructed the agent to use its file tools to diagnose internal logic flaws and propose technical fixes rather than generic apologies.
+
+## 6. Agent ReAct Loop & ContextBuilder
 - **ContextBuilder**: Implemented `backend/app/agent/context.py` to centrally manage system prompts, memory injection, and skill definitions, adopting the Nanobot architecture.
 - **ReAct Loop**: Refactored `AgentService._think_and_act` to use a `while` loop (max 5 iterations). This allows the agent to:
     - Execute a tool.
