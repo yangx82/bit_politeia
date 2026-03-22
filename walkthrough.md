@@ -91,11 +91,18 @@ Adopted Nanobot's memory architecture for better context management.
     - Decide on the next action (or finish) based on that output.
 - **Verification**: Created and ran `verify_react.py`, confirming multi-turn reasoning capabilities.
 
-## 6. Python Code Execution Capability
-- **Tool**: Implemented `execute_shell_command` (ported from Nanobot's `ExecTool`).
-- **Capability**: Agent can now run shell commands, including `python script.py` or `python -c "..."`.
-- **Safety**: Includes basic guardrails against destructive commands (`rm -rf`, `format`, etc.).
-- **Verification**: Verified via `test_exec_tool.py`.
+### 7. Agent Self-Awareness & WebRTC Self-Correction (Phase 16 & 17)
+The agent now possesses "Internal Anatomy" awareness via `CODEBASE_MAP.md` and is authorized to inspect its own code. Based on the agent's own analysis, we implemented:
+- **ICE Candidate Buffering**: Prevents race conditions during connection establishment.
+- **Negotiation Timeouts**: Prevents "negotiating" state locks.
+- **DataChannel Heartbeats**: Detects zombie connections via periodic ping/pong.
+- **Verification**: Validated via `tests/test_webrtc_logic.py`.
+
+### 8. Deceptive Hallucination Fix (Phase 18)
+Addressed the issue where the agent reports success before tool execution:
+- **Pipeline Refactor**: `PlanStage` now labels premature responses as `[计划执行中]`.
+- **Result-Aware Notify**: `NotifyStage` provides definitive confirmation based on `tool_results`.
+- **Strict Protocol**: Updated `AGENT_SYSTEM_PROMPT` to forbid reporting "sent" in the same turn as tool invocation.
 
 ### Troubleshooting PDF Capability
 If the agent fails to read a PDF, use the diagnostic script:

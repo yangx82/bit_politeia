@@ -216,13 +216,19 @@ class PlanStage(PipelineStage):
                 status="sent"
             )
 
-            # CRITICAL FIX: Thoughts are internal monologue.
-            # 1. ALWAYS send to "gateway" for UI observability.
-            logger.info(f"Pipeline: Publishing thought to gateway: {str(display_thought)[:50]}...")
+            # CRITICAL FIX: Distinguish between internal reasoning and premature intents.
+            # If tool calls are present, the non-reasoning content is an 'Intent' (e.g., "I will send it").
+            # Label it so the user knows it's currently in progress.
+            is_intent_only = len(context.tool_calls) > 0 and not thought_content
+            content_to_publish = str(display_thought)
+            if is_intent_only:
+                content_to_publish = f"**[计划执行中]**: {content_to_publish}"
+            
+            logger.info(f"Pipeline: Publishing thought to gateway: {content_to_publish[:50]}...")
             out_msg = OutboundMessage(
                 channel="gateway", 
                 session_id=context.input_message.session_id,
-                content=str(display_thought),
+                content=content_to_publish,
                 type="thought"
             )
             await agent.message_bus.publish_outbound(out_msg)
@@ -304,14 +310,34 @@ class NotifyStage(PipelineStage):
     """Stage 5: Communication (Sending response)."""
     async def run(self, context: PipelineContext, agent: Any):
         logger.info(f"[{context.session.session_id}] Stage: Notify")
-        if context.final_answer:
-            # 1. Always mirror to Gateway for Observability (Neural Gateway / UI Debugging)
-            await agent.message_bus.publish_outbound(OutboundMessage(
-                channel="gateway",
-                session_id=context.input_message.session_id,
-                content=context.final_answer,
-                type="agent_message"
-            ))
+        if context.final_answer or context.tool_results:
+            # 1. Generate factual confirmation if tools were executed
+            confirmation = context.final_answer or ""
+            if context.tool_results:
+                success_list = [r["tool"] for r in context.tool_results if "error" not in r or not r.get("error")]
+                error_list = [f"{r['tool']} ({r.get('error')})" for r in context.tool_results if r.get("error")]
+                
+                status_suffix = ""
+                if success_list:
+                    status_suffix += f"\n\n**[✓ 执行成功]**: 已完成 {', '.join(success_list)}"
+                if error_list:
+                    status_suffix += f"\n\n**[✗ 执行失败]**: {'; '.join(error_list)}"
+                
+                # Append to agent's final answer if it's too brief or empty
+                if not confirmation or len(confirmation) < 10:
+                    confirmation = (confirmation + status_suffix).strip()
+                else:
+                    # Just mirror the status for visibility if the answer is already descriptive
+                    pass
+
+            # 2. Always mirror to Gateway for Observability
+            if confirmation:
+                await agent.message_bus.publish_outbound(OutboundMessage(
+                    channel="gateway",
+                    session_id=context.input_message.session_id,
+                    content=confirmation,
+                    type="agent_message"
+                ))
 
             # 2. Publish to source channel - DISABLED
             # Reason: The caller (agent_service.process_bus_message) already handles the reply.
