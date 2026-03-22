@@ -32,6 +32,8 @@ class WebRTCManager:
         self.message_callback = message_callback # Function to handle received data channel messages
         self.negotiating: set[str] = set() # peer_ids currently in handshake
         self.last_init_times: Dict[str, float] = {} # peer_id -> timestamp of last initiation
+        self.pending_candidates: Dict[str, List[Dict[str, Any]]] = {} # peer_id -> list of buffered candidates
+        self.heartbeat_tasks: Dict[str, asyncio.Task] = {} # peer_id -> heartbeat task
         self.loop = None
 
     def set_loop(self, loop):
@@ -92,15 +94,26 @@ class WebRTCManager:
             else:
                 logger.info(f"[{peer_id}] No more ICE candidates.")
 
+        # Apply buffered candidates if any
+        if peer_id_lower in self.pending_candidates:
+            candidates = self.pending_candidates.pop(peer_id_lower)
+            logger.info(f"[{peer_id}] Flushing {len(candidates)} buffered ICE candidates.")
+            for cand_data in candidates:
+                asyncio.create_task(self.handle_candidate(peer_id, cand_data))
+
         return pc
 
     async def handle_candidate(self, peer_id: str, candidate_data: Any):
         """Handle incoming ICE Candidate from remote peer."""
-        if peer_id not in self.pcs:
-            logger.warning(f"[{peer_id}] Received ICE candidate for unknown peer connection")
+        peer_id_lower = peer_id.lower()
+        if peer_id_lower not in self.pcs:
+            logger.info(f"[{peer_id}] PC not ready. Buffering ICE candidate.")
+            if peer_id_lower not in self.pending_candidates:
+                self.pending_candidates[peer_id_lower] = []
+            self.pending_candidates[peer_id_lower].append(candidate_data)
             return
             
-        pc = self.pcs[peer_id]
+        pc = self.pcs[peer_id_lower]
         try:
             # Parse candidate data
             # candidate_data usually looks like {"candidate": "...", "sdpMid": "...", "sdpMLineIndex": ...}
@@ -123,24 +136,41 @@ class WebRTCManager:
         logger.info(f"[{peer_id}] Setting up data channel '{channel.label}' (State: {channel.readyState})")
         self.data_channels[peer_id.lower()] = channel
         
+        def on_open():
+            logger.info(f"[{peer_id}] !!! DATA CHANNEL '{channel.label}' IS OPEN !!!")
+            print(f"\n[!!!] WebRTC DATA CHANNEL OPEN WITH {peer_id} [!!!]\n", flush=True)
+            # Start heartbeat
+            if peer_id_lower not in self.heartbeat_tasks:
+                self.heartbeat_tasks[peer_id_lower] = asyncio.create_task(self._heartbeat_loop(peer_id, channel))
+
         @channel.on("message")
         def on_message(message):
+            # Check for heartbeat ping/pong
+            try:
+                msg_data = json.loads(message)
+                if isinstance(msg_data, dict):
+                    if msg_data.get("type") == "ping":
+                        channel.send(json.dumps({"type": "pong"}))
+                        return
+                    if msg_data.get("type") == "pong":
+                        # Heartbeat received
+                        return
+            except:
+                pass
+
             logger.info(f"[{peer_id}] >>> RECEIVED VIA WEBRTC: {message[:100]}...")
             # Handle received data
             if self.message_callback:
                 if self.loop:
                     asyncio.run_coroutine_threadsafe(self.message_callback(peer_id, message), self.loop)
                 else:
-                    # Fallback: Try to get running loop (might fail if in thread)
+                    # Fallback
                     try:
-                        loop = asyncio.get_running_loop()
-                        asyncio.run_coroutine_threadsafe(self.message_callback(peer_id, message), loop)
-                    except RuntimeError:
-                         logger.error(f"[{peer_id}] WebRTC Message Error: No event loop available to schedule callback.")
-
-        def on_open():
-            logger.info(f"[{peer_id}] !!! DATA CHANNEL '{channel.label}' IS OPEN !!!")
-            print(f"\n[!!!] WebRTC DATA CHANNEL OPEN WITH {peer_id} [!!!]\n", flush=True)
+                        import asyncio as _asyncio
+                        loop = _asyncio.get_running_loop()
+                        _asyncio.run_coroutine_threadsafe(self.message_callback(peer_id, message), loop)
+                    except:
+                         logger.error(f"[{peer_id}] WebRTC Message Error: No event loop available.")
 
         if channel.readyState == "open":
             on_open()
@@ -182,18 +212,22 @@ class WebRTCManager:
             channel = pc.createDataChannel("chat")
             self.setup_data_channel(peer_id, channel)
             
-            # Create Offer
-            offer = await pc.createOffer()
-            await pc.setLocalDescription(offer)
+            # Create Offer with Timeout
+            async with asyncio.timeout(30.0):
+                offer = await pc.createOffer()
+                await pc.setLocalDescription(offer)
             
             # Send Offer via Signaling (Simple dict, avoids double stringify)
             await self.signaling_callback(peer_id, "sdp_offer", {
                 "sdp": pc.localDescription.sdp,
                 "type": pc.localDescription.type
             })
+        except asyncio.TimeoutError:
+             logger.error(f"[{peer_id}] Connection initiation TIMEOUT (30s).")
+             self.negotiating.discard(peer_id_lower)
         except Exception as e:
             logger.error(f"[{peer_id}] Failed to initiate connection: {e}")
-            self.negotiating.discard(peer_id)
+            self.negotiating.discard(peer_id_lower)
 
     async def handle_offer(self, peer_id: str, sdp_data: Any):
         """Handle incoming SDP Offer."""
@@ -244,21 +278,25 @@ class WebRTCManager:
                     return
 
             logger.info(f"[{peer_id}] Setting remote offer SDP...")
-            await pc.setRemoteDescription(offer)
-            logger.info(f"[{peer_id}] Remote offer set successfully. State: {pc.signalingState}")
-            
-            # Create Answer
-            answer = await pc.createAnswer()
-            await pc.setLocalDescription(answer)
+            async with asyncio.timeout(30.0):
+                await pc.setRemoteDescription(offer)
+                logger.info(f"[{peer_id}] Remote offer set successfully. State: {pc.signalingState}")
+                
+                # Create Answer
+                answer = await pc.createAnswer()
+                await pc.setLocalDescription(answer)
             
             # Send Answer via Signaling
             await self.signaling_callback(peer_id, "sdp_answer", {
                 "sdp": pc.localDescription.sdp,
                 "type": pc.localDescription.type
             })
+        except asyncio.TimeoutError:
+            logger.error(f"[{peer_id}] SDP Offer handling TIMEOUT (30s).")
+            self.negotiating.discard(peer_id_lower)
         except Exception as e:
             logger.error(f"[{peer_id}] Failed to handle offer: {e}")
-            self.negotiating.discard(peer_id)
+            self.negotiating.discard(peer_id_lower)
 
     async def handle_answer(self, peer_id: str, sdp_data: Any):
         """Handle incoming SDP Answer."""
@@ -312,3 +350,23 @@ class WebRTCManager:
                 logger.error(f"Failed to send via DataChannel: {e}")
                 return False
         return False
+
+    async def _heartbeat_loop(self, peer_id: str, channel):
+        """Background loop to send pings and keep connection alive."""
+        peer_id_lower = peer_id.lower()
+        logger.info(f"[{peer_id}] Starting WebRTC Heartbeat loop.")
+        try:
+            while channel.readyState == "open":
+                await asyncio.sleep(30)
+                if channel.readyState == "open":
+                    try:
+                        channel.send(json.dumps({"type": "ping"}))
+                    except Exception as e:
+                        logger.warning(f"[{peer_id}] Heartbeat PING failed: {e}")
+                        break
+        except asyncio.CancelledError:
+            pass
+        finally:
+            logger.info(f"[{peer_id}] WebRTC Heartbeat loop stopped.")
+            if peer_id_lower in self.heartbeat_tasks:
+                del self.heartbeat_tasks[peer_id_lower]

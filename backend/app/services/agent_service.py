@@ -1753,39 +1753,43 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         """
         logger.warning(f"Handling remote delivery error for message {message_id}: {error_content}")
         
-        # 1. Update status in history
-        found = False
+        # 1. Update status in local memory history
+        found_in_history = False
+        target_session_id = "resident" # Default to main resident chat
+        
         for msg in self.history:
-            # Match against P2P network ID stored in metadata
+            # Check both internal UUID (msg.id) and P2P network ID (msg.metadata.message_id)
             p2p_msg_id = msg.metadata.get("message_id") if msg.metadata else None
-            if p2p_msg_id == message_id:
+            if msg.id == message_id or p2p_msg_id == message_id:
                 msg.status = "failed"
-                found = True
+                if not msg.metadata: msg.metadata = {}
+                msg.metadata["delivery_error"] = str(error_content)
+                target_session_id = msg.session_id
+                found_in_history = True
+                logger.info(f"Updated message {msg.id} status to 'failed' in active history.")
                 break
         
-        # 2. Update status in persistent resident memory
+        # 2. Update status in persistent resident memory (JSONL logs)
         self.resident_memory.update_message_status(message_id, "failed")
         
-        # 3. Notify Gateway/UI
-        # Find target session_id for this message if possible to keep UI scoped
-        session_id = "resident" # Default
-        for msg in self.history:
-            if msg.id == message_id:
-                session_id = msg.session_id
-                break
-                
+        # 3. Notify Gateway/UI via Message Bus
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="gateway",
-            session_id=session_id,
+            session_id=target_session_id,
             content=message_id,
             type="status_update",
-            metadata={"message_id": message_id, "status": "failed", "error": str(error_content)}
+            metadata={
+                "message_id": message_id,
+                "status": "failed",
+                "error": str(error_content),
+                "timestamp": datetime.datetime.now().isoformat()
+            }
         ))
         
-        if found:
+        if found_in_history:
             logger.info(f"Successfully updated status to 'failed' for message {message_id}")
         else:
-            logger.warning(f"Message ID {message_id} not found in current history buffer for status update.")
+            logger.debug(f"Message ID {message_id} not found in current history buffer. Still updated disk logs.")
 
     async def get_chat_history_with_peer(self, peer_id: str, limit: int = 20) -> str:
         """

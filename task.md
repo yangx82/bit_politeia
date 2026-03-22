@@ -225,3 +225,9 @@
     - [x] Inject `LAYER 4: SELF-AWARENESS` into the global `AGENT_SYSTEM_PROMPT` to authorize internal code analysis.
     - [x] Explicitly permit file tools to access `backend/app/` source code for autonomous debugging.
 
+- [/] **Phase 17: Execute Agent Self-Correction (WebRTC)**
+    - [ ] Implement ICE Candidate Buffering in `webrtc_service.py` to prevent race condition drops.
+    - [ ] Add Negotiation Timeout and state cleanup to prevent stuck handshake locks.
+    - [ ] Implement a basic DataChannel Heartbeat (Ping/Pong) to detect zombie connections.
+    - [ ] refactor `handle_remote_delivery_error` to be more robust.
+
