@@ -62,6 +62,7 @@ class Node:
         self.inbox: List[dict] = []
         self.message_handler: Optional[Callable[[Dict[str, Any]], Any]] = None
         self.last_seen: Optional[datetime.datetime] = None
+        self.recent_inbox_ids: Set[str] = set() # Runtime deduplication for in-flight messages
 
     @property
     def is_online(self) -> bool:
@@ -157,9 +158,30 @@ class Node:
         else:
             msg_data = message
             
+        # 0. Deduplication (Write-level)
+        m_id = msg_data.get('message_id')
+        if m_id:
+            if m_id in self.recent_inbox_ids:
+                logger.debug(f"Duplicate P2P message {m_id} ignored at receive stage.")
+                return
+            self.recent_inbox_ids.add(m_id)
+            
+            # Keep set size reasonable
+            if len(self.recent_inbox_ids) > 1000:
+                # Remove oldest (roughly)
+                it = iter(self.recent_inbox_ids)
+                for _ in range(100):
+                    try:
+                        next(it)
+                        # We can't easily pop from set by order, but we can clear or convert.
+                        # For a simple sliding window in a set, we just want to avoid memory leak.
+                        # Better to use a list if order matters, but here set is fine for fast lookup.
+                    except StopIteration: break
+                # Simple strategy: just clear if it gets too big, or use a list based queue.
+                if len(self.recent_inbox_ids) > 2000:
+                    self.recent_inbox_ids.clear()
+        
         logger.info(f"[{msg_data.get('sender_id', 'unknown')}] <<< RECEIVED via {msg_data.get('message_type', 'P2P')}: {str(msg_data.get('content'))[:100]}...")
-        if msg_data.get("message_type") == "DIRECT":
-             print(f"\n[<<<] INCOMING P2P MESSAGE from {msg_data.get('sender_id')}: {str(msg_data.get('content'))[:100]} [<<<]\n", flush=True)
         
         # Allow external handler to intercept (e.g., for WebRTC Signaling)
         if self.message_handler:

@@ -261,11 +261,17 @@ class KnowledgeBase:
         embeddings = []
         
         count = 0
+        seen_ids = set()
         for msg in history:
             text = msg.get("content", "")
             if text:
                 # Use message ID or hash as ID
                 msg_id = msg.get("id") or str(hash(text + str(msg.get("timestamp"))))
+                
+                # Deduplicate within batch to prevent ChromaDB DuplicateIDError
+                if msg_id in seen_ids:
+                    continue
+                seen_ids.add(msg_id)
                 
                 # Metadata
                 meta = {
@@ -312,11 +318,17 @@ class KnowledgeBase:
         ids = []
         embeddings = []
         
+        seen_ids = set()
         for text in insights:
             if text:
                 # Use hash as ID
                 import hashlib
                 doc_id = hashlib.md5(text.encode()).hexdigest()
+                
+                # Deduplicate within batch
+                if doc_id in seen_ids:
+                    continue
+                seen_ids.add(doc_id)
                 
                 meta = {
                     "source": "core_memory",

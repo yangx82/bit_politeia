@@ -1185,8 +1185,22 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             # We don't delete here anymore; hydration handles renaming to .processing
             # CRITICAL: Save system state after processing messages to persist deduplication IDs
             self._save_system_state()
-            pass
-        
+            
+            # 3. Post-Process: Clear disk inbox
+            # Since we already pop(0) from in-memory inbox, and p2p_service.local_node.save_message
+            # appends to the file, we can safely clear the file now that this specific batch is done.
+            # (Actually better to only clear what we processed, but for simplicity, clearing the file
+            # is effective since any NEW messages during processing will be in the next batch or appended after this clearing).
+            node_id = p2p_service.local_node.node_id
+            inbox_path = self.data_dir / "p2p" / f"inbox_{node_id}.jsonl"
+            if inbox_path.exists():
+                try:
+                    with open(inbox_path, 'w', encoding='utf-8') as f:
+                        pass # Truncate file
+                    logger.debug(f"Cleared disk inbox {inbox_path.name}")
+                except Exception as e:
+                    logger.error(f"Failed to clear disk inbox: {e}")
+
         finally:
             self._is_processing_inbox = False
 
@@ -1281,15 +1295,21 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             system_dir = self.data_dir / "system"
             system_dir.mkdir(parents=True, exist_ok=True)
             
+            # SLIDING WINDOW: Limit to 10,000 IDs to prevent JSON file bloat and memory pressure
+            id_list = list(self.processed_message_ids)
+            if len(id_list) > 10000:
+                id_list = id_list[-10000:]
+            
             state = {
-                "processed_message_ids": list(self.processed_message_ids),
-                "last_sync": datetime.now().isoformat(),
-                "resident_bridges": self.resident_bridges
+                "processed_message_ids": id_list,
+                "resident_bridges": self.resident_bridges,
+                "last_updated": datetime.now().isoformat()
             }
             state_path = system_dir / "agent_state.json"
             
             with open(state_path, 'w', encoding='utf-8') as f:
-                json.dump(state, f, indent=2)
+                json.dump(state, f, ensure_ascii=False, indent=2)
+            # logger.debug(f"Saved system state: {len(self.processed_message_ids)} IDs.")
         except Exception as e:
             logger.error(f"Failed to save system state: {e}")
 
@@ -1304,7 +1324,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             if os.path.exists(state_path):
                 with open(state_path, 'r', encoding='utf-8') as f:
                     state = json.load(f)
-                    self.processed_message_ids = set(state.get("processed_message_ids", []))
+                    all_ids = state.get("processed_message_ids", [])
+                    # Limit to 10,000 recent IDs on load
+                    self.processed_message_ids = set(all_ids[-10000:])
                     self.resident_bridges = state.get("resident_bridges", {})
                     logger.info(f"Hydrated {len(self.processed_message_ids)} de-dup IDs and {len(self.resident_bridges)} resident bridges.")
             
