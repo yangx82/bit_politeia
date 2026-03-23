@@ -315,9 +315,13 @@ class NetworkManager:
 
     async def _send_via_relay(self, target_id: str, message: SignedMessage):
         """Fallback: Send message via Bootstrap Relay."""
+        return await self._send_via_relay_dict(target_id, message.to_dict())
+
+    async def _send_via_relay_dict(self, target_id: str, msg_dict: Dict):
+        """Send raw msg_dict via Bootstrap Relay (supports targeted broadcast)."""
         if hasattr(self, 'relay_client') and self.relay_client.websocket:
             self._log_throttled("info", f"Fallback: Sending message to {target_id} via RELAY")
-            return await self.relay_client.send(message.to_dict())
+            return await self.relay_client.send(msg_dict)
         return False
 
     async def route_message(self, message: SignedMessage, from_relay: bool = False) -> bool:
@@ -360,33 +364,58 @@ class NetworkManager:
         elif message.message_type == MessageType.GROUP:
             group_id = message.recipient_id
             
-            # Local Delivery Check: Deliver to self if we are a member (even if group metadata not synced)
+            # 1. Local Delivery: Deliver to self if we are a member
             if self.local_node_id in self.nodes:
                 if group_id in self.nodes[self.local_node_id].group_ids:
                     if message.sender_id != self.local_node_id:
                         await self.nodes[self.local_node_id].receive_message(message)
             
-            # Broadcast to other known members
+            # 2. Peer Delivery strategy: Parallel Direct HTTP + Partial Relay Fallback
             if group_id in self.groups:
-                members = self.groups[group_id].members
-                results = []
-                for member_id in members:
-                    if member_id == self.local_node_id:
-                        continue
-                    results.append(await send_to_node(member_id, message))
+                members = list(self.groups[group_id].members)
                 
-                # If we couldn't reach anyone locally AND we are the original sender,
-                # fallback to Relay to reach others (the Relay now has group awareness)
-                if not from_relay and not any(results):
-                    return await self._send_via_relay(group_id, message)
-                return True
+                # Filter out ourselves
+                targets = [m_id for m_id in members if m_id != self.local_node_id]
+                
+                if not targets:
+                    return True
+                
+                logger.info(f"[Network] Group Broadcast: Initiating parallel direct delivery to {len(targets)} members.")
+                
+                # Parallel Task: Attempt direct HTTP for each member
+                async def attempt_direct(m_id: str):
+                    if m_id in self.nodes:
+                        target_node = self.nodes[m_id]
+                        if target_node.endpoint:
+                            success = await self._send_http_message(target_node.endpoint, message)
+                            return m_id if not success else None
+                    return m_id # No endpoint or unknown node = Failure for direct
+
+                direct_tasks = [attempt_direct(m_id) for m_id in targets]
+                failed_ids = await asyncio.gather(*direct_tasks)
+                
+                # Filter out Nones (successes)
+                failed_ids = [fid for fid in failed_ids if fid is not None]
+                
+                if not failed_ids:
+                    logger.info(f"[Network] Group Broadcast: All {len(targets)} members reached via direct HTTP.")
+                    return True
+                
+                # 3. Partial Relay Fallback: Only send to relay for nodes that failed direct delivery
+                if from_relay:
+                    # Prevent relay loops
+                    return True
+                
+                logger.info(f"[Network] Group Broadcast: {len(failed_ids)} members unreachable directly. Requesting Partial Relay Broadcast.")
+                msg_dict = message.to_dict()
+                msg_dict["target_node_ids"] = failed_ids # Signal to relay to only send to these
+                
+                return await self._send_via_relay_dict(group_id, msg_dict)
             else:
                 if not from_relay:
-                    logger.info(f"[Network] Group {group_id} not found locally. Pushing to Relay for broadcast.")
+                    logger.info(f"[Network] Group {group_id} not found locally. Pushing to Relay for full broadcast.")
                     return await self._send_via_relay(group_id, message)
-                else:
-                    # If it came from relay and we don't know the group, we've done our best
-                    return True
+                return True
         
         return await send_to_node(message.recipient_id, message)
 

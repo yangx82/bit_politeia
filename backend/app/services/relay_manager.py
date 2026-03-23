@@ -45,43 +45,54 @@ class RelayManager:
 
     async def broadcast_to_group(self, sender_id: str, group_id: str, payload: dict) -> bool:
         """
-        Broadcast a message to all members of a group who are connected via WebSocket.
+        Broadcast a message to members of a group who are connected via WebSocket.
+        Supports 'Partial Broadcast' if target_node_ids is present in payload.
         """
         from .bootstrap_service import bootstrap_service
         
-        # Get members from global topology
-        members = bootstrap_service._group_members.get(group_id, set())
-        connected_nodes = list(self.active_connections.keys())
-        logger.info(f"Relay: broadcast_to_group called. group_id={group_id}, sender={sender_id}")
-        logger.info(f"Relay: Known group members for {group_id}: {members}")
-        logger.info(f"Relay: All connected WebSocket nodes: {connected_nodes}")
-        logger.info(f"Relay: All known groups: {list(bootstrap_service._group_members.keys())}")
+        # 1. Resolve members
+        all_members = bootstrap_service._group_members.get(group_id, set())
         
+        # 2. Support Partial Broadcast if requested by sender
+        target_ids = payload.get("target_node_ids")
+        if target_ids:
+            if isinstance(target_ids, list):
+                members = set(target_ids).intersection(all_members)
+                logger.info(f"Relay: Partial Broadcast requested for {len(members)} specific members.")
+            else:
+                members = all_members
+        else:
+            members = all_members
+
         if not members:
-            logger.warning(f"Relay: Attempted broadcast to unknown or empty group {group_id}. "
-                         f"Known groups: {list(bootstrap_service._group_members.keys())}")
+            logger.warning(f"Relay: No valid members to broadcast to for group {group_id}")
             return False
             
-        logger.info(f"Relay: Group Broadcast from {sender_id} to Group {group_id} ({len(members)} members)")
+        logger.info(f"Relay: Parallel Group Broadcast from {sender_id} to {group_id} ({len(members)} target members)")
         
-        success_count = 0
-        for member_id in members:
+        async def send_to_member(member_id: str):
             if member_id == sender_id:
-                logger.info(f"Relay: Skipping sender {member_id}")
-                continue
+                return 0
                 
             if member_id in self.active_connections:
                 try:
+                    # Parallel write to WebSocket
                     await self.active_connections[member_id].send_text(json.dumps(payload))
-                    success_count += 1
-                    logger.info(f"Relay: Successfully sent to member {member_id}")
+                    return 1
                 except Exception as e:
                     logger.error(f"Relay: Failed to broadcast to {member_id}: {e}")
                     self.disconnect(member_id)
+                    return 0
             else:
-                logger.warning(f"Relay: Member {member_id} is NOT connected via WebSocket")
+                logger.debug(f"Relay: Member {member_id} is NOT connected via WebSocket")
+                return 0
+
+        # 3. CONCURRENT EXECUTION
+        tasks = [send_to_member(m_id) for m_id in members]
+        results = await asyncio.gather(*tasks)
         
-        logger.info(f"Relay: Broadcast complete. Delivered to {success_count}/{len(members)-1} members (excluding sender)")
+        success_count = sum(results)
+        logger.info(f"Relay: Parallel Broadcast complete. Delivered to {success_count} members.")
         return success_count > 0
 
 relay_manager = RelayManager()

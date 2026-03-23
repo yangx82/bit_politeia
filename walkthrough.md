@@ -104,6 +104,12 @@ Addressed the issue where the agent reports success before tool execution:
 - **Result-Aware Notify**: `NotifyStage` provides definitive confirmation based on `tool_results`.
 - **Strict Protocol**: Updated `AGENT_SYSTEM_PROMPT` to forbid reporting "sent" in the same turn as tool invocation.
 
+### 9. Group Broadcast Optimization (Phase 19)
+Massively reduced group messaging latency and redundancy:
+- **Parallel Relay**: `RelayManager` now uses `asyncio.gather` for concurrent WebSocket writes.
+- **Direct-First Policy**: `NetworkManager` prioritizes parallel direct HTTP delivery to known members.
+- **Partial Relay Broadcast**: Introduced `target_node_ids` support in the relay server. Only members that fail direct delivery are targeted by the relay, eliminating redundant traffic for others.
+
 ### Troubleshooting PDF Capability
 If the agent fails to read a PDF, use the diagnostic script:
 ```powershell
