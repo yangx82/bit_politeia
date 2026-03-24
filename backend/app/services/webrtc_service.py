@@ -43,7 +43,13 @@ class WebRTCManager:
         # Use case-insensitive lookup
         peer_id_lower = peer_id.lower() if hasattr(peer_id, 'lower') else str(peer_id).lower()
         if peer_id_lower in self.pcs:
-            return self.pcs[peer_id_lower]
+            pc = self.pcs[peer_id_lower]
+            if pc.signalingState != "closed":
+                return pc
+            logger.info(f"[{peer_id}] Existing PeerConnection is CLOSED. Cleaning up and recreating.")
+            del self.pcs[peer_id_lower]
+            if peer_id_lower in self.data_channels:
+                del self.data_channels[peer_id_lower]
         
         # Configure STUN server for NAT traversal
         # This helps resolve the public IP and avoids binding errors on some local interfaces
@@ -233,6 +239,7 @@ class WebRTCManager:
 
     async def handle_offer(self, peer_id: str, sdp_data: Any):
         """Handle incoming SDP Offer."""
+        peer_id_lower = peer_id.lower()
         pc = await self.get_or_create_pc(peer_id)
         logger.info(f"[{peer_id}] Received SDP Offer. Current state: signaling={pc.signalingState}, connection={pc.connectionState}")
         
