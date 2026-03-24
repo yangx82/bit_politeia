@@ -2,7 +2,7 @@ import logging
 import json
 import asyncio
 import os
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration, RTCIceServer
 from aiortc.contrib.signaling import object_to_string, object_from_string
 
@@ -136,7 +136,9 @@ class WebRTCManager:
         logger.info(f"[{peer_id}] Setting up data channel '{channel.label}' (State: {channel.readyState})")
         self.data_channels[peer_id.lower()] = channel
         
+        @channel.on("open")
         def on_open():
+            peer_id_lower = peer_id.lower()
             logger.info(f"[{peer_id}] !!! DATA CHANNEL '{channel.label}' IS OPEN !!!")
             print(f"\n[!!!] WebRTC DATA CHANNEL OPEN WITH {peer_id} [!!!]\n", flush=True)
             # Start heartbeat
