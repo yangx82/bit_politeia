@@ -25,6 +25,32 @@ class Proposal:
     status: str = "discussed" # discussed, voting, passed, failed
     pdf_hash: Optional[str] = None # For research proposals
 
+    def to_dict(self) -> dict:
+        return {
+            "proposal_id": self.proposal_id,
+            "initiator_id": self.initiator_id,
+            "group_id": self.group_id,
+            "content": self.content,
+            "timestamp": self.timestamp if isinstance(self.timestamp, str) else self.timestamp.isoformat(),
+            "scope": self.scope,
+            "status": self.status,
+            "pdf_hash": self.pdf_hash
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        return cls(
+            proposal_id=data["proposal_id"],
+            initiator_id=data["initiator_id"],
+            group_id=data["group_id"],
+            content=data["content"],
+            # Support both datetime object and ISO string
+            timestamp=datetime.fromisoformat(data["timestamp"]) if isinstance(data["timestamp"], str) else data["timestamp"],
+            scope=data.get("scope", "group"),
+            status=data.get("status", "discussed"),
+            pdf_hash=data.get("pdf_hash")
+        )
+
 @dataclass
 class Vote:
     voter_id: str
@@ -34,6 +60,29 @@ class Vote:
     approval: bool = True # True=Approve/Yes, False=Reject/No
     reason: str = "" # Mandatory for proposal votes
     reward_amount: float = 0.0 # For research evaluation
+
+    def to_dict(self) -> dict:
+        return {
+            "voter_id": self.voter_id,
+            "candidate_id": self.candidate_id,
+            "timestamp": self.timestamp if isinstance(self.timestamp, str) else self.timestamp.isoformat(),
+            "signature": self.signature,
+            "approval": self.approval,
+            "reason": self.reason,
+            "reward_amount": self.reward_amount
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        return cls(
+            voter_id=data["voter_id"],
+            candidate_id=data.get("candidate_id"),
+            timestamp=datetime.fromisoformat(data["timestamp"]) if isinstance(data["timestamp"], str) else data["timestamp"],
+            signature=data.get("signature", ""),
+            approval=data.get("approval", True),
+            reason=data.get("reason", ""),
+            reward_amount=data.get("reward_amount", 0.0)
+        )
 
 @dataclass
 class Election:
@@ -124,7 +173,7 @@ class Election:
             for vote in ballot:
                 if vote.candidate_id and vote.candidate_id in counts:
                      if vote.approval:
-                         counts[vote.candidate_id] += 1
+                          counts[vote.candidate_id] += 1
         
         winners = []
         sorted_candidates = sorted(counts.items(), key=lambda x: x[1], reverse=True)
@@ -168,8 +217,8 @@ class Election:
             group_id=data["group_id"],
             election_type=ElectionType(data["election_type"]),
             initiator_id=data["initiator_id"],
-            start_time=datetime.fromisoformat(data["start_time"]),
-            end_time=datetime.fromisoformat(data["end_time"]),
+            start_time=datetime.fromisoformat(data["start_time"]) if isinstance(data["start_time"], str) else data["start_time"],
+            end_time=datetime.fromisoformat(data["end_time"]) if isinstance(data["end_time"], str) else data["end_time"],
             candidates=data.get("candidates", []),
             proposal_id=data.get("proposal_id"),
             eligible_voters=set(data.get("eligible_voters", [])),
@@ -178,65 +227,8 @@ class Election:
             excluded_voters=set(data.get("excluded_voters", []))
         )
         if "votes" in data:
-            e.votes = {k: [Vote(**v) for v in val] for k, val in data["votes"].items()}
+            e.votes = {k: [Vote.from_dict(v) for v in val] for k, val in data["votes"].items()}
         return e
-
-@dataclass
-class Proposal:
-    proposal_id: str
-    initiator_id: str
-    group_id: str
-    content: str
-    timestamp: datetime = field(default_factory=datetime.now)
-    scope: str = "group"
-    status: str = "discussed"
-    pdf_hash: Optional[str] = None
-
-    def to_dict(self) -> dict:
-        return {
-            "proposal_id": self.proposal_id,
-            "initiator_id": self.initiator_id,
-            "group_id": self.group_id,
-            "content": self.content,
-            "timestamp": self.timestamp if isinstance(self.timestamp, str) else self.timestamp.isoformat(),
-            "scope": self.scope,
-            "status": self.status,
-            "pdf_hash": self.pdf_hash
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict):
-        return cls(
-            proposal_id=data["proposal_id"],
-            initiator_id=data["initiator_id"],
-            group_id=data["group_id"],
-            content=data["content"],
-            timestamp=datetime.fromisoformat(data["timestamp"]),
-            scope=data.get("scope", "group"),
-            status=data.get("status", "discussed"),
-            pdf_hash=data.get("pdf_hash")
-        )
-
-@dataclass
-class Vote:
-    voter_id: str
-    candidate_id: Optional[str] = None
-    timestamp: datetime = field(default_factory=datetime.now)
-    signature: str = ""
-    approval: bool = True
-    reason: str = ""
-    reward_amount: float = 0.0
-
-    def to_dict(self) -> dict:
-        return {
-            "voter_id": self.voter_id,
-            "candidate_id": self.candidate_id,
-            "timestamp": self.timestamp if isinstance(self.timestamp, str) else self.timestamp.isoformat(),
-            "signature": self.signature,
-            "approval": self.approval,
-            "reason": self.reason,
-            "reward_amount": self.reward_amount
-        }
 
 class GovernanceManager:
     """Manages elections and proposals for a node."""
@@ -398,3 +390,56 @@ class GovernanceManager:
         election.votes[voter_id] = votes
         self.save_state()
         return True
+
+    def receive_p2p_event(self, event_type: str, content: dict) -> bool:
+        """
+        Ingest governance events from the P2P network.
+        """
+        try:
+            if event_type == "proposal":
+                # Check for election data in proposal message
+                election_data = content.get("election")
+                proposal_data = content.get("proposal")
+                
+                if not election_data or not proposal_data:
+                    logger.warning("Governance P2P: Malformed proposal/election message.")
+                    return False
+                
+                election_id = election_data.get("election_id")
+                if election_id in self.active_elections:
+                    logger.debug(f"Governance P2P: Election {election_id} already exists locally.")
+                    return True
+                
+                # Ingest Proposal
+                proposal = Proposal.from_dict(proposal_data)
+                self.proposals[proposal.proposal_id] = proposal
+                
+                # Ingest Election
+                election = Election.from_dict(election_data)
+                self.active_elections[election.election_id] = election
+                
+                logger.info(f"Governance P2P: Successfully ingested remote proposal {proposal.proposal_id}")
+                self.save_state()
+                return True
+                
+            elif event_type == "vote":
+                election_id = content.get("election_id")
+                vote_data = content.get("vote")
+                
+                if not election_id or not vote_data:
+                    logger.warning("Governance P2P: Malformed vote message.")
+                    return False
+                
+                if election_id not in self.active_elections:
+                    # Should we buffer votes? For now, we only accept votes for known elections.
+                    logger.warning(f"Governance P2P: Received vote for unknown election {election_id}")
+                    return False
+                
+                # Ingest Vote
+                vote = Vote.from_dict(vote_data)
+                return self.receive_ballot(election_id, [vote])
+                
+            return False
+        except Exception as e:
+            logger.error(f"Governance P2P Error: {e}")
+            return False

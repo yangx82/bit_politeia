@@ -188,29 +188,19 @@ class P2PService:
                 if len(self.processed_signaling_ids) > 1000:
                      self.processed_signaling_ids.clear() 
 
-        if msg_type == MessageType.SDP_OFFER.value:
-            await self.webrtc_manager.handle_offer(sender_id, content)
+        elif msg_type == MessageType.PROPOSAL.value:
+            # Import here to avoid circular dependency
+            from .agent_service import agent_service
+            if agent_service.governance_manager:
+                agent_service.governance_manager.receive_p2p_event("proposal", content)
             return True
             
-        elif msg_type == MessageType.SDP_ANSWER.value:
-            await self.webrtc_manager.handle_answer(sender_id, content)
+        elif msg_type == MessageType.VOTE.value:
+            from .agent_service import agent_service
+            if agent_service.governance_manager:
+                agent_service.governance_manager.receive_p2p_event("vote", content)
             return True
-            
-        elif msg_type == MessageType.ICE_CANDIDATE.value:
-            # Handle ICE candidate to support NAT traversal
-            await self.webrtc_manager.handle_candidate(sender_id, content)
-            return True
-            
-        elif msg_type == "SYSTEM_ERROR":
-            # Asynchronous delivery failure from the relay
-            m_id = message.get("message_id")
-            if m_id:
-                logger.warning(f"P2P Delivery Failure for message {m_id}: {content}")
-                # Import here to avoid circular dependency
-                from .agent_service import agent_service
-                asyncio.create_task(agent_service.handle_remote_delivery_error(m_id, content))
-            return True
-            
+
         return False
 
     async def warmup_webrtc(self, peer_id: str):
@@ -239,7 +229,7 @@ class P2PService:
             
         return await self.local_node.send_message(recipient_id, content, msg_type, message_id=message_id)
 
-    async def broadcast_to_group(self, group_id: str, text: str, subject: str = None, message_id: Optional[str] = None):
+    async def broadcast_to_group(self, group_id: str, text: str, subject: Optional[str] = None, message_id: Optional[str] = None):
         """
         Helper to broadcast to a specific group.
         """
@@ -251,6 +241,16 @@ class P2PService:
             "subject": subject
         }
         return await self.local_node.send_message(group_id, content, MessageType.GROUP.value, message_id=message_id)
+
+    async def broadcast_governance_event(self, group_id: str, event_type: str, data: dict):
+        """
+        Broadcast a governance event (proposal or vote) to a group.
+        """
+        if not self.local_node:
+             raise RuntimeError("P2PService not initialized")
+             
+        msg_type = MessageType.PROPOSAL if event_type == "proposal" else MessageType.VOTE
+        return await self.local_node.send_message(group_id, data, msg_type.value)
 
     def get_network_status(self) -> Dict[str, Any]:
         return self.network_manager.get_network_structure()

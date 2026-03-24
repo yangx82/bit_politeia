@@ -1485,6 +1485,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             return {"error": "Governance Manager not initialized"}
         
         proposal, election = self.governance_manager.initiate_proposal(group_id, content, duration_minutes)
+        # Broadcast via P2P
+        asyncio.create_task(p2p_service.broadcast_governance_event(
+            group_id, 
+            "proposal", 
+            {"proposal": proposal.to_dict(), "election": election.to_dict()}
+        ))
         return {
             "proposal": proposal.to_dict(),
             "election": election.to_dict()
@@ -1527,6 +1533,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         
         success = self.governance_manager.receive_ballot(election_id, [vote])
         if success:
+            # Broadcast via P2P
+            election = self.governance_manager.active_elections[election_id]
+            asyncio.create_task(p2p_service.broadcast_governance_event(
+                election.group_id, 
+                "vote", 
+                {"election_id": election_id, "vote": vote.to_dict()}
+            ))
             return {"status": "success", "election_id": election_id}
         else:
              return {"status": "failed", "reason": "Vote rejected (invalid or closed)"}
@@ -1886,6 +1899,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
              group = p2p_service.local_node.network_manager.groups[group_id]
              election.eligible_voters = group.members.copy()
         
+        # Broadcast via P2P
+        asyncio.create_task(p2p_service.broadcast_governance_event(
+            group_id, 
+            "proposal", 
+            {"proposal": {"proposal_id": "", "content": "Election"}, "election": election.to_dict()} # Minimal proposal for election
+        ))
+        
         return str(election.election_id)
 
     async def submit_proposal(self, group_id: str, content: str) -> str:
@@ -1903,6 +1923,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
              group = p2p_service.local_node.network_manager.groups[group_id]
              election.eligible_voters = group.members.copy()
              
+        # Broadcast via P2P
+        asyncio.create_task(p2p_service.broadcast_governance_event(
+            group_id, 
+            "proposal", 
+            {"proposal": proposal.to_dict(), "election": election.to_dict()}
+        ))
+             
         return f"Proposal {proposal.proposal_id} initiated. Voting ID: {election.election_id}"
 
     async def publish_research(self, group_id: str, content: str, pdf_hash: str) -> str:
@@ -1915,6 +1942,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
          if p2p_service.local_node and group_id in p2p_service.local_node.network_manager.groups:
              group = p2p_service.local_node.network_manager.groups[group_id]
              election.eligible_voters = group.members.copy()
+             
+         # Broadcast via P2P
+         asyncio.create_task(p2p_service.broadcast_governance_event(
+            group_id, 
+            "proposal", 
+            {"proposal": proposal.to_dict(), "election": election.to_dict()}
+         ))
              
          return f"Research published {proposal.pdf_hash}. Evaluation ID: {election.election_id}"
 
@@ -1939,6 +1973,14 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         
         success = self.governance_manager.receive_ballot(election_id, ballot)
         if success:
+             # Broadcast via P2P
+             election = self.governance_manager.active_elections[election_id]
+             for v in ballot:
+                 asyncio.create_task(p2p_service.broadcast_governance_event(
+                     election.group_id, 
+                     "vote", 
+                     {"election_id": election_id, "vote": v.to_dict()}
+                 ))
              return "Ballot registered locally"
         else:
              return "Ballot rejected (invalid, closed, or validation failed)"
