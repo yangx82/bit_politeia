@@ -2,19 +2,9 @@ import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import api from '../services/api'
 import { Send, Search, Users, User, MessageSquare, Clock, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react'
+import { formatTime } from '../utils/date'
 
-// Helper to format time
-const formatTime = (isoString) => {
-    if (!isoString) return ''
-    const date = new Date(isoString);
-    const now = new Date();
-    const isToday = date.toDateString() === now.toDateString();
 
-    if (isToday) {
-        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-}
 
 const Chat = () => {
     // URL Params
