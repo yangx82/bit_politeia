@@ -292,7 +292,7 @@ class GovernanceManager:
         self.save_state()
         return election
 
-    def initiate_proposal(self, group_id: str, content: str, duration_minutes: int = 60) -> tuple[Proposal, Election]:
+    def initiate_proposal(self, group_id: str, content: str, duration_minutes: int = 60, eligible_voters: Optional[Set[str]] = None) -> tuple[Proposal, Election]:
         proposal_id = str(uuid.uuid4())
         proposal = Proposal(
             proposal_id=proposal_id,
@@ -312,13 +312,13 @@ class GovernanceManager:
             start_time=datetime.now(),
             end_time=datetime.now() + timedelta(minutes=duration_minutes),
             proposal_id=proposal_id,
-            eligible_voters=set()
+            eligible_voters=eligible_voters if eligible_voters is not None else set()
         )
         self.active_elections[election_id] = election
         self.save_state()
         return proposal, election
 
-    def initiate_research_publication(self, group_id: str, content: str, pdf_hash: str, duration_minutes: int = 60) -> tuple[Proposal, Election]:
+    def initiate_research_publication(self, group_id: str, content: str, pdf_hash: str, duration_minutes: int = 60, eligible_voters: Optional[Set[str]] = None) -> tuple[Proposal, Election]:
         proposal_id = str(uuid.uuid4())
         proposal = Proposal(
             proposal_id=proposal_id,
@@ -338,7 +338,7 @@ class GovernanceManager:
             start_time=datetime.now(),
             end_time=datetime.now() + timedelta(minutes=duration_minutes),
             proposal_id=proposal_id,
-            eligible_voters=set(),
+            eligible_voters=eligible_voters if eligible_voters is not None else set(),
             excluded_voters={self.node_id} # Exclude author from quorum/voting
         )
         self.active_elections[election_id] = election
@@ -390,6 +390,33 @@ class GovernanceManager:
         election.votes[voter_id] = votes
         self.save_state()
         return True
+
+    def delete_proposal(self, proposal_id: str) -> bool:
+        """Remove a proposal and its associated election from the store."""
+        removed = False
+        if proposal_id in self.proposals:
+            del self.proposals[proposal_id]
+            removed = True
+            
+        # Also remove associated election if exists
+        elections_to_remove = [eid for eid, e in self.active_elections.items() if e.proposal_id == proposal_id]
+        for eid in elections_to_remove:
+            del self.active_elections[eid]
+            removed = True
+            
+        if removed:
+            self.save_state()
+            logger.info(f"Governance: Removed proposal {proposal_id} and its elections.")
+        return removed
+
+    def delete_election(self, election_id: str) -> bool:
+        """Remove a specific election from the store."""
+        if election_id in self.active_elections:
+            del self.active_elections[election_id]
+            self.save_state()
+            logger.info(f"Governance: Removed election {election_id}.")
+            return True
+        return False
 
     def receive_p2p_event(self, event_type: str, content: dict) -> bool:
         """

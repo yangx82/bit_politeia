@@ -1492,7 +1492,14 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         if not self.governance_manager:
             return {"error": "Governance Manager not initialized"}
         
-        proposal, election = self.governance_manager.initiate_proposal(group_id, content, duration_minutes)
+        # Fetch eligible voters from group members
+        eligible_voters = set()
+        if p2p_service.local_node and group_id in p2p_service.local_node.network_manager.groups:
+             group = p2p_service.local_node.network_manager.groups[group_id]
+             eligible_voters = group.members.copy()
+             
+        proposal, election = self.governance_manager.initiate_proposal(group_id, content, duration_minutes, eligible_voters=eligible_voters)
+        
         # Broadcast via P2P
         asyncio.create_task(p2p_service.broadcast_governance_event(
             group_id, 
@@ -1510,6 +1517,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         # Return list of proposals
         return [p.to_dict() for p in self.governance_manager.proposals.values()]
 
+    async def delete_proposal(self, proposal_id: str) -> bool:
+        """Remove a proposal and its associated election."""
+        if self.governance_manager:
+            return self.governance_manager.delete_proposal(proposal_id)
+        return False
+
     async def get_elections(self) -> list[dict]:
         if not self.governance_manager:
             return []
@@ -1521,6 +1534,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             data["tally"] = e.tally()
             elections.append(data)
         return elections
+
+    async def delete_election(self, election_id: str) -> bool:
+        """Remove a specific election."""
+        if self.governance_manager:
+            return self.governance_manager.delete_election(election_id)
+        return False
 
     async def cast_vote(self, election_id: str, approval: bool, reason: str = "", candidate_id: str = None) -> dict:
         if not self.governance_manager:
@@ -1917,39 +1936,23 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         return str(election.election_id)
 
     async def submit_proposal(self, group_id: str, content: str) -> str:
-        if not self.governance_manager:
-            return "Governance Manager not initialized"
-            
-        proposal, election = self.governance_manager.initiate_proposal(group_id, content)
-        
-        # Determine scope (mock behavior: if content implies sub-groups, set scope)
-        if "all groups" in content.lower():
-            proposal.scope = "inclusive_subgroups"
-        
-        # Mock eligible voters
-        if p2p_service.local_node and group_id in p2p_service.local_node.network_manager.groups:
-             group = p2p_service.local_node.network_manager.groups[group_id]
-             election.eligible_voters = group.members.copy()
-             
-        # Broadcast via P2P
-        asyncio.create_task(p2p_service.broadcast_governance_event(
-            group_id, 
-            "proposal", 
-            {"proposal": proposal.to_dict(), "election": election.to_dict()}
-        ))
-             
-        return f"Proposal {proposal.proposal_id} initiated. Voting ID: {election.election_id}"
+        """Alias for create_proposal returning string for tool compatibility."""
+        result = await self.create_proposal(group_id, content)
+        if "error" in result:
+            return result["error"]
+        return f"Proposal {result['proposal']['proposal_id']} initiated. Voting ID: {result['election']['election_id']}"
 
-    async def publish_research(self, group_id: str, content: str, pdf_hash: str) -> str:
+    async def publish_research(self, group_id: str, content: str, pdf_hash: str, duration_minutes: int = 60) -> str:
          if not self.governance_manager:
             return "Governance Manager not initialized"
             
-         proposal, election = self.governance_manager.initiate_research_publication(group_id, content, pdf_hash)
-         
-         # Mock eligible voters (Same as proposal)
+         # Fetch eligible voters from group members
+         eligible_voters = set()
          if p2p_service.local_node and group_id in p2p_service.local_node.network_manager.groups:
-             group = p2p_service.local_node.network_manager.groups[group_id]
-             election.eligible_voters = group.members.copy()
+              group = p2p_service.local_node.network_manager.groups[group_id]
+              eligible_voters = group.members.copy()
+
+         proposal, election = self.governance_manager.initiate_research_publication(group_id, content, pdf_hash, duration_minutes, eligible_voters=eligible_voters)
              
          # Broadcast via P2P
          asyncio.create_task(p2p_service.broadcast_governance_event(

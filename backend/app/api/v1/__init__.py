@@ -163,3 +163,20 @@ async def cast_vote(request: VoteRequest):
     import asyncio
     asyncio.create_task(agent_service.process_user_instruction(instruction))
     return {"status": "suggestion_forwarded", "message": "Suggestion forwarded to your agent. Please check the Chat for their decision."}
+@router.delete("/governance/proposals/{proposal_id}")
+async def delete_proposal(proposal_id: str):
+    """Remove a proposal and its associated election."""
+    success = await agent_service.delete_proposal(proposal_id)
+    if success:
+        return {"status": "success", "message": f"Proposal {proposal_id} removed."}
+    else:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+
+@router.delete("/governance/elections/{election_id}")
+async def delete_election(election_id: str):
+    """Remove a specific election."""
+    success = await agent_service.delete_election(election_id)
+    if success:
+        return {"status": "success", "message": f"Election {election_id} removed."}
+    else:
+        raise HTTPException(status_code=404, detail="Election not found")
