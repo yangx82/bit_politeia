@@ -195,14 +195,14 @@ async def websocket_relay(websocket: WebSocket, node_id: str):
                 msg_type = message.get("message_type")
                 
                 if recipient_id:
-                     logger.info(f"Relay Handler: Received message from {node_id}. recipient_id={recipient_id}, msg_type='{msg_type}' (raw)")
-                     if msg_type and str(msg_type).lower() == "group":
-                         # Group Broadcast
-                         logger.info(f"Relay Handler: Detected GROUP message. Broadcasting to group {recipient_id}")
+                     is_group = bootstrap_service.is_valid_group(recipient_id)
+                     logger.info(f"Relay Handler: Received {msg_type} from {node_id}. recipient={recipient_id} (IsGroup: {is_group})")
+                     
+                     if is_group or (msg_type and str(msg_type).lower() == "group"):
+                         # Group Broadcast (including Governance events like VOTE/PROPOSAL)
                          success = await relay_manager.broadcast_to_group(node_id, recipient_id, message)
                      else:
-                         # Direct Relay to recipient
-                         logger.info(f"Relay Handler: Detected DIRECT message. Routing to node {recipient_id}")
+                         # Direct Relay to node
                          success = await relay_manager.route_message(node_id, recipient_id, message)
                          
                      if not success:

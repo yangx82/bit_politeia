@@ -528,16 +528,24 @@ class AgentService:
         delay_val = getattr(self, 'p2p_reply_delay', 60)
         
         if msg.channel == "p2p" and delay_val > 0:
-            # 1. Notify Gateway that we are thinking (so UI shows status)
-            # Ensure session_id is normalized for UI
-            ui_session_id = self._normalize_session_id(msg.session_id)
-            await self.message_bus.publish_outbound(OutboundMessage(
-                channel="gateway",
-                session_id=ui_session_id,
-                content=f"... (Simulating {delay_val}s human-like research delay) ...",
-                type="thought"
-            ))
-            await asyncio.sleep(delay_val)
+            # Calculate remaining delay relative to message timestamp
+            # This ensures that the total delay is consistent regardless of transit time.
+            now = datetime.now()
+            # If msg.timestamp is offset-naive and now is naive, they compare fine.
+            # Assuming both are local or both are UTC.
+            target_time = msg.timestamp + timedelta(seconds=delay_val)
+            remaining_seconds = (target_time - now).total_seconds()
+            
+            if remaining_seconds > 0:
+                # 1. Notify Gateway that we are thinking (so UI shows status)
+                ui_session_id = self._normalize_session_id(msg.session_id)
+                await self.message_bus.publish_outbound(OutboundMessage(
+                    channel="gateway",
+                    session_id=ui_session_id,
+                    content=f"... (Finalizing research... {int(remaining_seconds)}s remaining) ...",
+                    type="thought"
+                ))
+                await asyncio.sleep(remaining_seconds)
         #     p2p_logger.info(f"DEBUG: Delay FINISHED for {msg.sender_id}")
         # elif msg.channel == "p2p":
         #     p2p_logger.info(f"DEBUG: P2P Delay SKIPPED. Reason: msg.channel={msg.channel}, delay_val={delay_val}")

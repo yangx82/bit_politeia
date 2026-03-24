@@ -357,11 +357,10 @@ class NetworkManager:
                      return False
                  return await self._send_via_relay(node_id, msg)
 
-        # Handle routing based on message type
-        if message.message_type == MessageType.DIRECT:
-            return await send_to_node(message.recipient_id, message)
+        # Handle routing: Detect if recipient is a group to trigger broadcast logic
+        is_group_id = message.recipient_id in self.groups
         
-        elif message.message_type == MessageType.GROUP:
+        if message.message_type == MessageType.GROUP or is_group_id:
             group_id = message.recipient_id
             
             # 1. Local Delivery: Deliver to self if we are a member
@@ -380,7 +379,7 @@ class NetworkManager:
                 if not targets:
                     return True
                 
-                logger.info(f"[Network] Group Broadcast: Initiating parallel direct delivery to {len(targets)} members.")
+                logger.info(f"[Network] Broadcast for {message.message_type.value}: Initiating parallel direct delivery to {len(targets)} members.")
                 
                 # Parallel Task: Attempt direct HTTP for each member
                 async def attempt_direct(m_id: str):
@@ -398,7 +397,7 @@ class NetworkManager:
                 failed_ids = [fid for fid in failed_ids if fid is not None]
                 
                 if not failed_ids:
-                    logger.info(f"[Network] Group Broadcast: All {len(targets)} members reached via direct HTTP.")
+                    logger.info(f"[Network] Broadcast for {message.message_type.value}: All {len(targets)} members reached via direct HTTP.")
                     return True
                 
                 # 3. Partial Relay Fallback: Only send to relay for nodes that failed direct delivery
@@ -406,7 +405,7 @@ class NetworkManager:
                     # Prevent relay loops
                     return True
                 
-                logger.info(f"[Network] Group Broadcast: {len(failed_ids)} members unreachable directly. Requesting Partial Relay Broadcast.")
+                logger.info(f"[Network] Broadcast for {message.message_type.value}: {len(failed_ids)} members unreachable directly. Requesting Partial Relay Broadcast.")
                 msg_dict = message.to_dict()
                 msg_dict["target_node_ids"] = failed_ids # Signal to relay to only send to these
                 
@@ -417,6 +416,7 @@ class NetworkManager:
                     return await self._send_via_relay(group_id, message)
                 return True
         
+        # Default: Direct route to single node
         return await send_to_node(message.recipient_id, message)
 
     def get_network_structure(self):
