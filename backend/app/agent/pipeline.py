@@ -375,9 +375,16 @@ class RetrospectiveStage(PipelineStage):
         if not hasattr(agent, 'task_manager') or not agent.task_manager:
             return
 
-        terminal_tasks = [t for t in agent.task_manager.tasks.values() 
-                          if t.status in ["completed", "failed"] 
-                          and (datetime.now(timezone.utc) - t.updated_at).total_seconds() < 300] # Last 5 mins
+        terminal_tasks = []
+        now_utc = datetime.now(timezone.utc)
+        for t in agent.task_manager.tasks.values():
+            if t.status in ["completed", "failed"]:
+                t_upd = t.updated_at
+                # Add awareness guard for legacy naive timestamps
+                if t_upd.tzinfo is None:
+                    t_upd = t_upd.replace(tzinfo=timezone.utc)
+                if (now_utc - t_upd).total_seconds() < 300:
+                    terminal_tasks.append(t)
         
         for task in terminal_tasks:
             if task.lessons_learned:
