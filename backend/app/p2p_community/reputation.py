@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 import logging
 
@@ -12,7 +12,7 @@ class Evaluation:
     rater_id: str
     target_id: str
     scores: Dict[str, int] # e.g. {"contribution": 80, "reliability": 90}
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     signature: str = "" # To be implemented
 
 class ReputationManager:

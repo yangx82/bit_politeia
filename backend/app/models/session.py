@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 class Session(BaseModel):
@@ -12,8 +12,8 @@ class Session(BaseModel):
     channel: str
     
     # State tracking
-    created_at: datetime = Field(default_factory=datetime.now)
-    last_active: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_active: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     # Context & Logic
     history_slice: List[Any] = [] # Recent Relevant messages
