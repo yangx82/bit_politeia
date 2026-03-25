@@ -1198,11 +1198,28 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         timestamp=msg_ts
                     ))
                     
-                    # 3. Run Pipeline to get Response
+                    # 3. Check for lapsed messages (30 mins = 1800 seconds)
+                    now = datetime.now(timezone.utc)
+                    delay_seconds = (now - msg_ts).total_seconds()
+                    
+                    if delay_seconds > 1800:
+                        logger.info(f"Lapsed message detected ({int(delay_seconds)}s delay). Skipping agent processing for session {effective_session_id}.")
+                        # Notify Gateway that this message is being handled silently
+                        await self.message_bus.publish_outbound(OutboundMessage(
+                            channel="gateway",
+                            session_id=effective_session_id,
+                            content=f"Message received with {int(delay_seconds/60)}m delay. Stored in history without auto-processing.",
+                            type="thought"
+                        ))
+                        # [COMPLETION FLAG] Mark as processed in history without LLM response
+                        # No further action needed as history logging already happened above at line 1180
+                        continue
+
+                    # 4. Run Pipeline to get Response
                     # p2p_logger.info(f"DEBUG: process_network_inbox calling run_pipeline. Channel={msg_obj.channel}, Sender={msg_obj.sender_id}")
                     response_text, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
                     
-                    # 4. Agent's Final Answer is for internal record, NOT sent over P2P.
+                    # 5. Agent's Final Answer is for internal record, NOT sent over P2P.
                     # All outbound P2P communication must be done explicitly by the LLM via `send_p2p_message` tool.
                     if response_text and "[NO_RESPONSE_NEEDED]" not in str(response_text) and response_text != "No response generated.":
                         # Log the agent's final conclusion of this P2P interaction to local history so the resident sees it

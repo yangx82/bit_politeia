@@ -363,7 +363,12 @@ class NetworkManager:
         # Handle routing: Detect if recipient is a group to trigger broadcast logic
         is_group_id = message.recipient_id in self.groups
         
-        if message.message_type == MessageType.GROUP or is_group_id:
+        # FIX: Also broadcast PROPOSAL and VOTE messages to group members
+        is_group_broadcast_type = message.message_type in (
+            MessageType.GROUP, MessageType.PROPOSAL, MessageType.VOTE
+        )
+        
+        if is_group_broadcast_type or is_group_id:
             group_id = message.recipient_id
             
             # 1. Local Delivery: Deliver to self if we are a member
