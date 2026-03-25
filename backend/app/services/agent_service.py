@@ -27,7 +27,7 @@ from ..agent.tools import AGENT_TOOLS
 from ..agent.tools_meta import create_tool_tool
 from .skill_manager import skill_manager
 from ..agent.context import ContextBuilder
-from ..p2p_community.governance import GovernanceManager, Vote
+from ..p2p_community.governance import GovernanceManager, Vote, ElectionType
 import json
 
 from ..p2p_community.economy import Ledger, Transaction
@@ -44,6 +44,7 @@ class AgentService:
     def __init__(self):
         self.history: list[Message] = []
         self.processed_message_ids: set[str] = set() # For de-duplication
+        self.notified_governance_ids: set[str] = set() # Track proposals shared with agent
         self._is_processing_inbox = False # Concurrency Guard
         self.status = AgentStatus(is_online=True, reputation=10, balance=100.0)
         self.message_bus = message_bus
@@ -116,6 +117,7 @@ class AgentService:
                 self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', minutes=2, id="sync_network_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=5, next_run_time=datetime.now(), id="task_monitor_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:check_governance_proposals_proxy", 'interval', minutes=10, next_run_time=datetime.now(), id="governance_monitor_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, next_run_time=datetime.now(), id="retry_messages_job", replace_existing=True)
                 self._jobs_added = True
                 logger.info("Scheduler background jobs registered successfully.")
@@ -1310,6 +1312,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             
             state = {
                 "processed_message_ids": id_list,
+                "notified_governance_ids": list(self.notified_governance_ids),
                 "resident_bridges": self.resident_bridges,
                 "last_updated": datetime.now().isoformat()
             }
@@ -1335,8 +1338,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     all_ids = state.get("processed_message_ids", [])
                     # Limit to 10,000 recent IDs on load
                     self.processed_message_ids = set(all_ids[-10000:])
+                    self.notified_governance_ids = set(state.get("notified_governance_ids", []))
                     self.resident_bridges = state.get("resident_bridges", {})
-                    logger.info(f"Hydrated {len(self.processed_message_ids)} de-dup IDs and {len(self.resident_bridges)} resident bridges.")
+                    logger.info(f"Hydrated {len(self.processed_message_ids)} de-dup IDs, {len(self.notified_governance_ids)} gov notifications, and {len(self.resident_bridges)} resident bridges.")
             
             # 2. Hydrate P2P Inbox
             # Wait for node initialization if needed? Usually called after config?
@@ -2142,6 +2146,67 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             elif task.status == TaskStatus.BLOCKED:
                  logger.info(f"Task Monitor: Task '{task.goal}' is BLOCKED. Waiting for resumption condition.")
 
+    async def check_governance_proposals(self):
+        """Background job to scan for unhandled governance proposals and notify the agent."""
+        if not self.governance_manager or not self.llm:
+            return
+            
+        active_elections = self.governance_manager.get_active_elections()
+        # Find elections we haven't voted in AND haven't been notified about locally
+        my_id = p2p_service.local_node.node_id if p2p_service.local_node else None
+        if not my_id:
+            return
+        
+        logger.debug(f"Governance Monitor: Checking {len(active_elections)} active elections...")
+        found_new = False
+
+        for eid, election in active_elections.items():
+            # Focus on proposal votes
+            if election.election_type != ElectionType.PROPOSAL_VOTE:
+                continue
+            
+            # Skip if we already voted
+            if my_id in election.votes:
+                continue
+                
+            # Skip if we were already notified (Check both instance state and persistence)
+            if eid in self.notified_governance_ids:
+                continue
+            
+            # Found a new proposal!
+            proposal_id = election.proposal_id
+            proposal = self.governance_manager.proposals.get(proposal_id)
+            if not proposal:
+                logger.warning(f"Governance Monitor: Election {eid} found but proposal {proposal_id} is missing.")
+                continue
+            
+            logger.info(f"Governance Monitor: New unhandled proposal detected: {proposal_id}. Awakening agent...")
+            
+            # Create internal probe message
+            poke_msg = InboundMessage(
+                channel="internal",
+                sender_id="system",
+                session_id="resident",
+                content=(
+                    f"[治理监控]: 系统检测到一项新的社区提案 (ID: {proposal_id}) 需要您的评审。\n"
+                    f"提案发起人: {proposal.initiator_id[:8]}\n"
+                    f"提案内容: {proposal.content}\n"
+                    f"投票截止日期: {election.end_time}\n"
+                    f"所在小组: {proposal.group_id}\n\n"
+                    f"[自治指令]: 请评估该提案的价值和风险。您可以直接调用 `cast_vote` 工具进行投票，或者如果您认为该提案需要更深入的研究，请使用 `publish_research` 发表您的专业见解以引导社区共识。"
+                )
+            )
+            
+            # Fire and forget pipeline execution
+            asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
+            
+            # Mark as notified and mark for persistence
+            self.notified_governance_ids.add(eid)
+            found_new = True
+
+        if found_new:
+            self._save_system_state()
+
     async def get_latest_archive_report(self) -> dict:
         if not self.archive_manager:
             return {}
@@ -2272,6 +2337,11 @@ async def check_tasks_monitor_proxy():
     """Proxy for agent_service.check_tasks_monitor"""
     if agent_service:
         await agent_service.check_tasks_monitor()
+
+async def check_governance_proposals_proxy():
+    """Proxy for agent_service.check_governance_proposals"""
+    if agent_service:
+        await agent_service.check_governance_proposals()
 
 async def retry_failed_messages_proxy():
     """Proxy for agent_service._retry_failed_messages"""
