@@ -3,7 +3,7 @@ import json
 import os
 import time
 from typing import List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import httpx
 import xml.etree.ElementTree as ET
 import re
@@ -75,7 +75,7 @@ class WebResearcher:
 
         # 2. BioRxiv Search (Metadata interval - expand to last 30 days)
         try:
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             # Using a fixed start date for 2025 or relative past
             biorxiv_url = f"https://api.biorxiv.org/details/biorxiv/2025-01-01/{today}/0"
             resp = httpx.get(biorxiv_url, timeout=12.0)
@@ -332,7 +332,7 @@ class KnowledgeBase:
                 
                 meta = {
                     "source": "core_memory",
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "type": "insight"
                 }
                 

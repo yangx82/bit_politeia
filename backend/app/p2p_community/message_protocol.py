@@ -133,7 +133,7 @@ class MessageProtocol:
     def _generate_message_id(self, sender_id: str) -> str:
         """Generate unique message ID."""
         self._message_counter += 1
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
         return f"{sender_id[:8]}_{timestamp}_{self._message_counter}"
     
     def _generate_nonce(self) -> str:

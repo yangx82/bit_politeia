@@ -1,7 +1,7 @@
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -29,14 +29,14 @@ class Task(BaseModel):
     subtasks: List[SubTask] = Field(default_factory=list)
     checkpoint: Optional[str] = None # Last reasoning summary + next planned action
     lessons_learned: Optional[str] = None # Filled during Retrospective
-    created_at: datetime = Field(default_factory=datetime.now)
-    updated_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     priority: int = 5 # 1-10
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     def update_status(self, new_status: TaskStatus):
         self.status = new_status
-        self.updated_at = datetime.now()
+        self.updated_at = datetime.now(timezone.utc)
 
 class TaskManager:
     def __init__(self, storage_path: str = None):
@@ -119,7 +119,7 @@ class TaskManager:
     def update_task_checkpoint(self, task_id: str, checkpoint: str):
         if task_id in self.tasks:
             self.tasks[task_id].checkpoint = checkpoint
-            self.tasks[task_id].updated_at = datetime.now()
+            self.tasks[task_id].updated_at = datetime.now(timezone.utc)
             self.save_tasks()
 
     def complete_task(self, task_id: str, lessons: str = None):

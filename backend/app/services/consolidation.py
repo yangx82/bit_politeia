@@ -1,6 +1,6 @@
 import logging
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List
 from ..services.knowledge_base import knowledge_base
 from ..services.memory_store import memory_store
@@ -20,7 +20,7 @@ class ConsolidationService:
         mem = self.agent.resident_memory
         
         # 1. Determine Time Range
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         last_run_str = mem._semantic_profile.get("last_consolidation_time")
         
         if last_run_str:

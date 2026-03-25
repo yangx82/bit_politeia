@@ -148,7 +148,12 @@ class AgentService:
         retry_candidates = []
         for msg in self.history:
             if msg.sender == "agent" and msg.status in ["failed", "pending", None]:
-                if ten_minutes_ago <= msg.timestamp <= one_minute_ago:
+                # Ensure msg.timestamp is aware before comparison
+                m_ts = msg.timestamp
+                if m_ts and m_ts.tzinfo is None:
+                    m_ts = m_ts.replace(tzinfo=timezone.utc)
+                
+                if m_ts and ten_minutes_ago <= m_ts <= one_minute_ago:
                     retry_candidates.append(msg)
         
         if not retry_candidates:

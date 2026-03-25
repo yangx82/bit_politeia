@@ -3,7 +3,7 @@ import json
 import os
 from typing import Dict, Optional
 from ..models.session import Session
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class SessionManager:
         
         if session_key in self.sessions:
             session = self.sessions[session_key]
-            session.last_active = datetime.now()
+            session.last_active = datetime.now(timezone.utc)
             return session
         
         # Try loading from disk
@@ -52,7 +52,7 @@ class SessionManager:
 
     def save_session(self, session: Session):
         """Persist session state to disk."""
-        session.last_active = datetime.now()
+        session.last_active = datetime.now(timezone.utc)
         self.sessions[session.entity_id] = session
         
         filepath = os.path.join(self.data_dir, f"{session.entity_id}.json")
