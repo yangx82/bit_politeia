@@ -2151,7 +2151,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         if not self.governance_manager or not self.llm:
             return
             
-        active_elections = self.governance_manager.get_active_elections()
+        active_elections = self.governance_manager.active_elections
         # Find elections we haven't voted in AND haven't been notified about locally
         my_id = p2p_service.local_node.node_id if p2p_service.local_node else None
         if not my_id:
