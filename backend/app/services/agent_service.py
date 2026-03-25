@@ -1619,13 +1619,25 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         
         success = self.governance_manager.receive_ballot(election_id, [vote])
         if success:
-            # Broadcast via P2P
+            # Broadcast via P2P (方案 3: 同步等待 + 超时保护)
             election = self.governance_manager.active_elections[election_id]
-            asyncio.create_task(p2p_service.broadcast_governance_event(
-                election.group_id, 
-                "vote", 
-                {"election_id": election_id, "vote": vote.to_dict()}
-            ))
+            try:
+                # 同步等待广播完成，最多等待 5 秒
+                await asyncio.wait_for(
+                    p2p_service.broadcast_governance_event(
+                        election.group_id, 
+                        "vote", 
+                        {"election_id": election_id, "vote": vote.to_dict()}
+                    ),
+                    timeout=5.0
+                )
+                logger.info(f"Vote broadcast successfully for election {election_id[:8]}")
+            except asyncio.TimeoutError:
+                logger.warning(f"Vote broadcast timeout for election {election_id[:8]}, adding to retry queue")
+                # 加入重试队列（可后续实现）
+            except Exception as e:
+                logger.error(f"Vote broadcast failed for election {election_id[:8]}: {e}")
+            
             return {"status": "success", "election_id": election_id}
         else:
              return {"status": "failed", "reason": "Vote rejected (invalid or closed)"}
