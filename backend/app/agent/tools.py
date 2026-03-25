@@ -84,6 +84,44 @@ async def send_file(recipient_id: str, file_path: str, description: str = "File"
         return f"Error sending file: {str(e)}"
 
 @tool
+async def submit_code_fix(file_path: str, new_content: str, explanation: str) -> str:
+    """
+    Submits a code fix for self-repair. 
+    The fix will be validated by a background supervisor and applied if tests pass.
+    Note: Provide the FULL content for 'new_content'. file_path should be relative to project root.
+    
+    Args:
+        file_path: Relative path to the file to modify (e.g., 'backend/app/services/agent_service.py').
+        new_content: The complete new content for the file.
+        explanation: Why this fix is being applied and what it fixes.
+    """
+    import os
+    import json
+    from datetime import datetime
+    
+    WATCH_SETTING = "backend/data/code_updates/pending.json"
+    
+    if os.path.exists(WATCH_SETTING):
+        return "Error: A pending code update is already being processed. Please wait 10 seconds and try again."
+        
+    try:
+        os.makedirs(os.path.dirname(WATCH_SETTING), exist_ok=True)
+        
+        request = {
+            "file_path": file_path,
+            "new_content": new_content,
+            "explanation": explanation,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        with open(WATCH_SETTING, "w", encoding="utf-8") as f:
+            json.dump(request, f, indent=4)
+            
+        return f"SUCCESS: Code fix for {file_path} submitted to supervisor. It will be validated and applied shortly."
+    except Exception as e:
+        return f"Error submitting code fix: {str(e)}"
+
+@tool
 async def get_my_status() -> str:
     """
     Get the current status of the agent, including Node ID, Group memberships, 
@@ -486,5 +524,5 @@ AGENT_TOOLS = [
     fetch_web_page,
     schedule_reminder, list_reminders, cancel_reminder,
     start_scheduler, get_scheduler_status,
-    delegate_task
+    delegate_task, submit_code_fix
 ] + TASK_TOOLS

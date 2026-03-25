@@ -1,8 +1,9 @@
 import asyncio
-from typing import Any, Dict
+import os
 import uuid
 import logging
 from datetime import datetime, timedelta
+from typing import Any, Dict, Set
 from ..models.schemas import Message, AgentStatus, P2PMessage
 from .crypto_service import crypto_service
 from .transaction_manager import transaction_manager
@@ -44,7 +45,8 @@ class AgentService:
     def __init__(self):
         self.history: list[Message] = []
         self.processed_message_ids: set[str] = set() # For de-duplication
-        self.notified_governance_ids: set[str] = set() # Track proposals shared with agent
+        self.notified_governance_ids: Set[str] = set() # Track proposals shared with agent
+        self.notified_error_signatures: Set[str] = set() # Track error signatures for self-reflection
         self._is_processing_inbox = False # Concurrency Guard
         self.status = AgentStatus(is_online=True, reputation=10, balance=100.0)
         self.message_bus = message_bus
@@ -119,6 +121,7 @@ class AgentService:
                 self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=5, next_run_time=datetime.now(), id="task_monitor_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:check_governance_proposals_proxy", 'interval', minutes=10, next_run_time=datetime.now(), id="governance_monitor_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, next_run_time=datetime.now(), id="retry_messages_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:self_reflection_proxy", 'interval', minutes=15, id="self_reflection_job", replace_existing=True)
                 self._jobs_added = True
                 logger.info("Scheduler background jobs registered successfully.")
 
@@ -1313,6 +1316,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             state = {
                 "processed_message_ids": id_list,
                 "notified_governance_ids": list(self.notified_governance_ids),
+                "notified_error_signatures": list(self.notified_error_signatures),
                 "resident_bridges": self.resident_bridges,
                 "last_updated": datetime.now().isoformat()
             }
@@ -1339,6 +1343,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     # Limit to 10,000 recent IDs on load
                     self.processed_message_ids = set(all_ids[-10000:])
                     self.notified_governance_ids = set(state.get("notified_governance_ids", []))
+                    self.notified_error_signatures = set(state.get("notified_error_signatures", []))
                     self.resident_bridges = state.get("resident_bridges", {})
                     logger.info(f"Hydrated {len(self.processed_message_ids)} de-dup IDs, {len(self.notified_governance_ids)} gov notifications, and {len(self.resident_bridges)} resident bridges.")
             
@@ -2301,7 +2306,51 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             metadata={"handoff_id": handoff_id, "sender_id": sender_id}
         ))
 
-
+    async def _self_reflection(self):
+        """Periodic job to scan logs for errors and trigger autonomous repair."""
+        log_path = "backend/data/logs/p2p_network.log"
+        if not os.path.exists(log_path):
+            return
+            
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 10000))
+                chunk = f.read()
+                
+            lines = chunk.splitlines()
+            # Only look for actual ERROR or CRITICAL lines
+            errors = [l for l in lines if "ERROR: " in l or "CRITICAL: " in l]
+            
+            for error in errors:
+                # Basic signature extraction
+                sig = ""
+                if " - ERROR: " in error:
+                    sig = error.split(" - ERROR: ", 1)[1][:100]
+                elif " - CRITICAL: " in error:
+                    sig = error.split(" - CRITICAL: ", 1)[1][:100]
+                else:
+                    sig = error[-100:]
+                    
+                if sig and sig not in self.notified_error_signatures:
+                    logger.info(f"Self-Reflection: Detected new error signature: {sig}")
+                    self.notified_error_signatures.add(sig)
+                    self._save_system_state()
+                    
+                    # Notify the agent via a focused session
+                    from .events import InboundMessage
+                    await self.message_bus.publish_inbound(InboundMessage(
+                        sender_id="system",
+                        session_id="system_health",
+                        content=f"System Health Alert: The following error was detected in your logs:\n\n{error}\n\nPlease help investigate the cause. You can use 'view_file' to examine relevant modules and 'submit_code_fix' to suggest a patch.",
+                        type="DIRECT"
+                    ))
+                    # Only notify one new error per scan to avoid overwhelming the agent
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Error in self_reflection job: {e}")
 
 # -------------------------------------------------------------------------
 # Standalone Proxy Functions for Scheduler
@@ -2347,6 +2396,11 @@ async def retry_failed_messages_proxy():
     """Proxy for agent_service._retry_failed_messages"""
     if agent_service:
         await agent_service._retry_failed_messages()
+
+async def self_reflection_proxy():
+    """Proxy for agent_service._self_reflection"""
+    if agent_service:
+        await agent_service._self_reflection()
 
 
 agent_service = AgentService()
