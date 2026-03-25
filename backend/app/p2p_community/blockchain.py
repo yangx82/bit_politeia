@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, field, asdict
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ class ArchiveChain:
         genesis = Block(
             index=0,
             prev_hash="0",
-            timestamp=datetime.now().timestamp(),
+            timestamp=datetime.now(timezone.utc).timestamp(),
             data={"note": "Genesis Block"}
         )
         genesis.hash = genesis.calculate_hash()
@@ -86,11 +86,11 @@ class ArchiveChain:
         try:
             temp_path = self.db_path.with_suffix('.tmp')
             with open(temp_path, "w", encoding="utf-8") as f:
-                json.payload = {
+                payload = {
                     "owner_id": self.owner_id,
                     "chain": self.get_chain_dict()
                 }
-                json.dump(json.payload, f, indent=2)
+                json.dump(payload, f, indent=2)
             temp_path.replace(self.db_path)
         except Exception as e:
             logger.error(f"Failed to save blockchain to disk: {e}")
@@ -104,13 +104,13 @@ class ArchiveChain:
         new_block = Block(
             index=prev_block.index + 1,
             prev_hash=prev_block.hash,
-            timestamp=datetime.now().timestamp(),
+            timestamp=datetime.now(timezone.utc).timestamp(),
             data=data,
             signature=signature
         )
         new_block.hash = new_block.calculate_hash()
         self.chain.append(new_block)
-        logger.info(f"Block {new_block.index} added. Hash: {new_block.hash[:8]}...")
+        logger.info(f"Block {new_block.index} added. Hash: {str(new_block.hash)[:8]}...")
         self._save_to_disk()
         return new_block
 
@@ -158,7 +158,7 @@ class ArchiveManager:
             "tx_hash": tx_hash,
             "research_hash": research_hash,
             "messages_hash": messages_hash,
-            "period_end": datetime.now().isoformat()
+            "period_end": datetime.now(timezone.utc).isoformat()
         }
         return summary
 

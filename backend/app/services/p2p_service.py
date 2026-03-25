@@ -117,7 +117,7 @@ class P2PService:
             "recipient_id": self.local_node.node_id if self.local_node else "unknown",
             "message_type": MessageType.DIRECT.value, # Default to DIRECT
             "content": {"text": message},
-            "timestamp": datetime.datetime.now().isoformat()
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
         }
         if isinstance(content, dict):
             # Extract top-level protocol fields if they were packed into the JSON
@@ -245,16 +245,16 @@ class P2PService:
         logger.info(f"ICE Warmup: Proactively initiating WebRTC connection with {peer_id}")
         asyncio.create_task(self.webrtc_manager.initiate_connection(peer_id))
 
-    async def send_message(self, recipient_id: str, content: Dict[str, Any], msg_type: str = MessageType.DIRECT.value, message_id: Optional[str] = None):
+    async def send_message(self, recipient_id: str, content: Dict[str, Any], msg_type: str = MessageType.DIRECT.value, message_id: Optional[str] = None, timestamp: Optional[datetime.datetime] = None):
         """
         Send a message to a recipient (Node or Group).
         """
         if not self.local_node:
             raise RuntimeError("P2PService not initialized")
             
-        return await self.local_node.send_message(recipient_id, content, msg_type, message_id=message_id)
+        return await self.local_node.send_message(recipient_id, content, msg_type, message_id=message_id, timestamp=timestamp)
 
-    async def broadcast_to_group(self, group_id: str, text: str, subject: Optional[str] = None, message_id: Optional[str] = None):
+    async def broadcast_to_group(self, group_id: str, text: str, subject: Optional[str] = None, message_id: Optional[str] = None, timestamp: Optional[datetime.datetime] = None):
         """
         Helper to broadcast to a specific group.
         """
@@ -265,7 +265,7 @@ class P2PService:
             "text": text,
             "subject": subject
         }
-        return await self.local_node.send_message(group_id, content, MessageType.GROUP.value, message_id=message_id)
+        return await self.local_node.send_message(group_id, content, MessageType.GROUP.value, message_id=message_id, timestamp=timestamp)
 
     async def broadcast_governance_event(self, group_id: str, event_type: str, data: dict):
         """

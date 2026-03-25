@@ -1,7 +1,7 @@
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import uuid
 import logging
 from pathlib import Path
@@ -20,7 +20,7 @@ class Proposal:
     initiator_id: str
     group_id: str
     content: str
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     scope: str = "group" # group or inclusive_subgroups
     status: str = "discussed" # discussed, voting, passed, failed
     pdf_hash: Optional[str] = None # For research proposals
@@ -55,7 +55,7 @@ class Proposal:
 class Vote:
     voter_id: str
     candidate_id: Optional[str] = None # For Election. For Proposal, can be None or "yes"/"no" placeholders
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     signature: str = ""
     approval: bool = True # True=Approve/Yes, False=Reject/No
     reason: str = "" # Mandatory for proposal votes
@@ -283,8 +283,8 @@ class GovernanceManager:
             group_id=group_id,
             election_type=ElectionType.CORE_NODE,
             initiator_id=self.node_id,
-            start_time=datetime.now(),
-            end_time=datetime.now() + timedelta(minutes=duration_minutes),
+            start_time=datetime.now(timezone.utc),
+            end_time=datetime.now(timezone.utc) + timedelta(minutes=duration_minutes),
             candidates=candidates,
             eligible_voters=set()
         )
@@ -309,8 +309,8 @@ class GovernanceManager:
             group_id=group_id,
             election_type=ElectionType.PROPOSAL_VOTE,
             initiator_id=self.node_id, # Host logic simplified
-            start_time=datetime.now(),
-            end_time=datetime.now() + timedelta(minutes=duration_minutes),
+            start_time=datetime.now(timezone.utc),
+            end_time=datetime.now(timezone.utc) + timedelta(minutes=duration_minutes),
             proposal_id=proposal_id,
             eligible_voters=eligible_voters if eligible_voters is not None else set()
         )
@@ -335,8 +335,8 @@ class GovernanceManager:
             group_id=group_id,
             election_type=ElectionType.RESEARCH_EVALUATION,
             initiator_id=self.node_id,
-            start_time=datetime.now(),
-            end_time=datetime.now() + timedelta(minutes=duration_minutes),
+            start_time=datetime.now(timezone.utc),
+            end_time=datetime.now(timezone.utc) + timedelta(minutes=duration_minutes),
             proposal_id=proposal_id,
             eligible_voters=eligible_voters if eligible_voters is not None else set(),
             excluded_voters={self.node_id} # Exclude author from quorum/voting
@@ -358,7 +358,7 @@ class GovernanceManager:
         # Real implementation would check against eligible_voters
         # if voter_id not in election.eligible_voters: ...
         
-        if datetime.now() > election.end_time:
+        if datetime.now(timezone.utc) > election.end_time:
             logger.warning(f"Vote received after deadline for {election_id}")
             return False
 

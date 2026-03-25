@@ -132,7 +132,7 @@ class Node:
             self.group_ids.add(group_id)
         return success
 
-    async def send_message(self, target_id: str, content: Dict[str, Any], msg_type: str = 'DIRECT', message_id: Optional[str] = None):
+    async def send_message(self, target_id: str, content: Dict[str, Any], msg_type: str = 'DIRECT', message_id: Optional[str] = None, timestamp: Optional[datetime.datetime] = None):
         """
         Send a signed message via the network manager.
         """
@@ -145,7 +145,8 @@ class Node:
             target_id=target_id,
             msg_type=msg_type,
             content=content,
-            message_id=message_id
+            message_id=message_id,
+            timestamp=timestamp
         )
 
     async def receive_message(self, message: Any):

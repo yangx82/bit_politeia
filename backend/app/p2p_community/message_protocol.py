@@ -9,7 +9,7 @@ import hashlib
 import base64
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 import logging
 
@@ -147,7 +147,8 @@ class MessageProtocol:
         recipient_id: str,
         message_type: MessageType,
         content: Dict[str, Any],
-        message_id: Optional[str] = None
+        message_id: Optional[str] = None,
+        timestamp: Optional[datetime] = None
     ) -> SignedMessage:
         """
         Create a new signed message.
@@ -167,7 +168,7 @@ class MessageProtocol:
             recipient_id=recipient_id,
             message_type=message_type,
             content=content,
-            timestamp=datetime.now(),
+            timestamp=timestamp or datetime.now(timezone.utc),
             signature="",  # Will be set after signing
             nonce=self._generate_nonce()
         )

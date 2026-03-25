@@ -3,6 +3,7 @@ import logging
 import httpx
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlparse
+from datetime import datetime
 
 from .models import Node, Group
 from .bootstrap_client import bootstrap_client, PeerAddress, NodeRegistration
@@ -276,7 +277,8 @@ class NetworkManager:
         target_id: str,
         msg_type: str,
         content: Dict[str, Any],
-        message_id: Optional[str] = None
+        message_id: Optional[str] = None,
+        timestamp: Optional[datetime] = None
     ):
         """
         Create, sign, and route a message.
@@ -293,7 +295,8 @@ class NetworkManager:
             recipient_id=target_id,
             message_type=m_type,
             content=content,
-            message_id=message_id
+            message_id=message_id,
+            timestamp=timestamp
         )
         
         return await self.route_message(signed_msg)

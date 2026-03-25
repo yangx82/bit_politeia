@@ -2,7 +2,7 @@ import asyncio
 import os
 import uuid
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Set
 from ..models.schemas import Message, AgentStatus, P2PMessage
 from .crypto_service import crypto_service
@@ -848,13 +848,29 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         # Use original timestamp if available in metadata
         msg_ts = msg.metadata.get('timestamp')
+        original_ts = None
         try:
             if isinstance(msg_ts, str):
                 msg_ts = datetime.fromisoformat(msg_ts)
+                original_ts = msg_ts
             elif not msg_ts:
-                msg_ts = datetime.now()
+                msg_ts = datetime.now(timezone.utc)
+            else:
+                original_ts = msg_ts
         except:
-            msg_ts = datetime.now()
+            msg_ts = datetime.now(timezone.utc)
+
+        # Calculate and log delivery latency
+        if original_ts:
+            try:
+                # Ensure UTC for comparison
+                calc_ts = original_ts
+                if calc_ts.tzinfo is None:
+                    calc_ts = calc_ts.replace(tzinfo=timezone.utc)
+                latency = (datetime.now(timezone.utc) - calc_ts).total_seconds()
+                logger.info(f"P2P Latency: Receiving message {msg.metadata.get('message_id')} from {msg.sender_id} via {msg.channel}. Latency: {latency:.3f}s")
+            except Exception as le:
+                logger.debug(f"Could not calculate latency: {le}")
 
         user_msg_obj = Message(
             id=msg.metadata.get("message_id") or str(uuid.uuid4()),
@@ -915,7 +931,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
              id=reply_id,
              content=response_text,
              sender="agent",
-             timestamp=datetime.now(),
+             timestamp=datetime.now(timezone.utc),
              session_id=target_session,
              status=target_status
         )
@@ -935,7 +951,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             id=msg_id,
             content=content,
             sender="agent",
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             session_id=session_id
         ))
         self.resident_memory.log_interaction("agent", content, msg_type="chat", session_id=session_id)
@@ -1026,7 +1042,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     continue
                 
                 try:
-                    receive_time = datetime.now().timestamp()
+                    receive_time = datetime.now(timezone.utc).timestamp()
                     # 1. De-duplication
                     m_id = msg.get('message_id')
                     if m_id:
@@ -1114,13 +1130,29 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     
                     # 2. Log Inbound Message to history
                     msg_ts = msg.get('timestamp') or msg.get('metadata', {}).get('timestamp')
+                    original_ts = None
                     try:
                         if isinstance(msg_ts, str):
                             msg_ts = datetime.fromisoformat(msg_ts)
+                            original_ts = msg_ts
                         elif not msg_ts:
-                            msg_ts = datetime.now()
+                            msg_ts = datetime.now(timezone.utc)
+                        else:
+                            original_ts = msg_ts
                     except:
-                        msg_ts = datetime.now()
+                        msg_ts = datetime.now(timezone.utc)
+
+                    # Calculate and log delivery latency
+                    if original_ts:
+                        try:
+                            # Ensure UTC for comparison
+                            calc_ts = original_ts
+                            if calc_ts.tzinfo is None:
+                                calc_ts = calc_ts.replace(tzinfo=timezone.utc)
+                            latency = (datetime.now(timezone.utc) - calc_ts).total_seconds()
+                            logger.info(f"P2P Latency (Polling): Receiving message {m_id} from {sender_id}. Latency: {latency:.3f}s")
+                        except Exception as le:
+                            logger.debug(f"Could not calculate latency (Polling): {le}")
 
                     self.history.append(Message(
                         id=m_id or str(uuid.uuid4()), 
@@ -1137,7 +1169,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         session_id=effective_session_id,
                         content=text_content,
                         type="chat",
-                        sender=sender_id
+                        sender=sender_id,
+                        timestamp=msg_ts
                     ))
                     # Also publish to p2p for internal listeners
                     await self.message_bus.publish_outbound(OutboundMessage(
@@ -1145,7 +1178,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         session_id=effective_session_id,
                         content=text_content,
                         type="chat",
-                        sender=sender_id
+                        sender=sender_id,
+                        timestamp=msg_ts
                     ))
                     
                     # 3. Run Pipeline to get Response
@@ -1160,7 +1194,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                             id=str(uuid.uuid4()),
                             content=f"[Agent completed P2P task]: {response_text}",
                             sender="agent",
-                            timestamp=datetime.now(),
+                            timestamp=datetime.now(timezone.utc),
                             session_id=effective_session_id
                         ))
                         # Ensure Gateway knows processing is done
@@ -1190,7 +1224,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         id=str(uuid.uuid4()),
                         content=f"Error processing P2P message: {e}",
                         sender="system",
-                        timestamp=datetime.now(),
+                        timestamp=datetime.now(timezone.utc),
                         session_id=err_session_id
                     ))
             
@@ -1293,7 +1327,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 id=entry.get('id', str(uuid.uuid4())),
                 content=entry.get('content', ''),
                 sender=entry.get('sender', 'unknown'),
-                timestamp=datetime.fromisoformat(entry.get('timestamp')) if entry.get('timestamp') else datetime.now(),
+                timestamp=datetime.fromisoformat(entry.get('timestamp')) if entry.get('timestamp') else datetime.now(timezone.utc),
                 session_id=entry.get('session_id') or entry.get('chat_id'),
                 status=entry.get('status')
             ))
@@ -1564,7 +1598,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             candidate_id=candidate_id,
             approval=approval,
             reason=reason,
-            timestamp=datetime.now()
+            timestamp=datetime.now(timezone.utc)
         )
         
         success = self.governance_manager.receive_ballot(election_id, [vote])
@@ -1627,7 +1661,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     id=str(uuid.uuid4()),
                     content=msg,
                     sender="agent",
-                    timestamp=datetime.now(),
+                    timestamp=datetime.now(timezone.utc),
                     session_id=recipient_id
                 ))
                 self.resident_memory.log_interaction("agent", msg, "moderation", session_id=recipient_id, status="failed")
@@ -1664,13 +1698,17 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         norm_target = self._normalize_session_id(recipient_id)
         msg_id = original_msg_id if is_retry and original_msg_id else str(uuid.uuid4())
         
+        # Use a single UTC timestamp for consistent tracking
+        from datetime import timezone
+        msg_timestamp = datetime.now(timezone.utc)
+        
         if not is_retry:
             self.processed_message_ids.add(msg_id) # Track our own messages to avoid loopback
             msg_obj = Message(
                 id=msg_id,
                 content=f"{text_to_check}",
                 sender="agent",
-                timestamp=datetime.now(),
+                timestamp=msg_timestamp,
                 session_id=norm_target,
                 status="pending"
             )
@@ -1686,6 +1724,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             content=f"{text_to_check}",
             type=package_type,
             sender="agent",
+            timestamp=msg_timestamp,
             metadata={"message_id": msg_id, "status": "pending", "package_type": package_type, "recipient_type": recipient_type}
         ))
         
@@ -1695,7 +1734,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             session_id=recipient_id, # Use raw recipient for P2P routing
             content=f"{text_to_check}",
             type="chat",
-            sender="agent"
+            sender="agent",
+            timestamp=msg_timestamp,
+            metadata={"message_id": msg_id, "recipient_id": recipient_id, "package_type": package_type}
         ))
         
         # 3. Direct Transmission
@@ -1725,6 +1766,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 msg_content = content
                 webrtc_payload_dict = content.copy()
                 webrtc_payload_dict["message_id"] = msg_id # CRITICAL: Include unique ID
+                webrtc_payload_dict["timestamp"] = msg_timestamp.isoformat() # PROPAGATE SOURCE TIMESTAMP
                 if "message_type" not in webrtc_payload_dict:
                     webrtc_payload_dict["message_type"] = "DIRECT"
                 import json
@@ -1732,7 +1774,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             else:
                 msg_content = {"text": text_to_check}
                 import json
-                webrtc_payload = json.dumps({"text": text_to_check, "message_type": "DIRECT", "message_id": msg_id})
+                webrtc_payload = json.dumps({
+                    "text": text_to_check, 
+                    "message_type": "DIRECT", 
+                    "message_id": msg_id,
+                    "timestamp": msg_timestamp.isoformat() # PROPAGATE SOURCE TIMESTAMP
+                })
 
             
             # Map to protocol message types
@@ -1756,7 +1803,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     success = await p2p_service.broadcast_to_group(
                         recipient_id,
                         text_to_check,
-                        message_id=msg_id
+                        message_id=msg_id,
+                        timestamp=msg_timestamp
                     )
                     mode = "group_broadcast"
                 else:
@@ -1765,7 +1813,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         recipient_id, 
                         msg_content, 
                         msg_type=package_type,
-                        message_id=msg_id
+                        message_id=msg_id,
+                        timestamp=msg_timestamp
                     )
                     mode = "http_relay"
                 if success:
@@ -1853,7 +1902,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 "message_id": message_id,
                 "status": "failed",
                 "error": str(error_content),
-                "timestamp": datetime.datetime.now().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
         ))
         
@@ -2119,7 +2168,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 
             elif task.status == TaskStatus.ACTIVE:
                 last_update = task.updated_at
-                now = datetime.now()
+                now = datetime.now(timezone.utc)
                 # If no update for 30 mins, or if it's a fresh start check
                 # Note: On a fresh reboot, this might still be > 1800s if the task was saved long ago
                 if (now - last_update).total_seconds() > 1800:
@@ -2144,7 +2193,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     
                     # Explicitly bump the updated_at timestamp to reset the 30-minute idle clock
                     # This prevents the monitor from spamming the agent if the monitor interval is shorter than 30 mins
-                    task.updated_at = datetime.now()
+                    task.updated_at = datetime.now(timezone.utc)
                     self.task_manager.save_tasks()
                 else:
                     logger.info(f"Task Monitor: Task '{task.goal}' is ongoing (Updated {(now-last_update).total_seconds()/60:.1f}m ago).")
