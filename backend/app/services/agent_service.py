@@ -118,9 +118,9 @@ class AgentService:
                 self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=30, misfire_grace_time=15, id="network_inbox_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', minutes=2, id="sync_network_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
-                self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=5, next_run_time=datetime.now(), id="task_monitor_job", replace_existing=True)
-                self.scheduler.add_job("app.services.agent_service:check_governance_proposals_proxy", 'interval', minutes=10, next_run_time=datetime.now(), id="governance_monitor_job", replace_existing=True)
-                self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, next_run_time=datetime.now(), id="retry_messages_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=5, next_run_time=datetime.now(timezone.utc), id="task_monitor_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:check_governance_proposals_proxy", 'interval', minutes=10, next_run_time=datetime.now(timezone.utc), id="governance_monitor_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, next_run_time=datetime.now(timezone.utc), id="retry_messages_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:self_reflection_proxy", 'interval', minutes=15, id="self_reflection_job", replace_existing=True)
                 self._jobs_added = True
                 logger.info("Scheduler background jobs registered successfully.")
@@ -139,7 +139,7 @@ class AgentService:
         
         # 1. Find candidates (last 2 hours for safety, but focus on the 10min window)
         # focus on the 10min window
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         ten_minutes_ago = now - timedelta(minutes=10)
         one_minute_ago = now - timedelta(minutes=1)
         
@@ -535,7 +535,7 @@ class AgentService:
         if msg.channel == "p2p" and delay_val > 0:
             # Calculate remaining delay relative to message timestamp
             # This ensures that the total delay is consistent regardless of transit time.
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             # If msg.timestamp is offset-naive and now is naive, they compare fine.
             # Assuming both are local or both are UTC.
             target_time = msg.timestamp + timedelta(seconds=delay_val)
@@ -852,10 +852,15 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         try:
             if isinstance(msg_ts, str):
                 msg_ts = datetime.fromisoformat(msg_ts)
+                if msg_ts.tzinfo is None:
+                    msg_ts = msg_ts.replace(tzinfo=timezone.utc)
                 original_ts = msg_ts
             elif not msg_ts:
                 msg_ts = datetime.now(timezone.utc)
             else:
+                # Ensure existing datetime object is aware
+                if hasattr(msg_ts, 'tzinfo') and msg_ts.tzinfo is None:
+                    msg_ts = msg_ts.replace(tzinfo=timezone.utc)
                 original_ts = msg_ts
         except:
             msg_ts = datetime.now(timezone.utc)
@@ -986,7 +991,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             id=str(uuid.uuid4()),
             content=content,
             sender="user",
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             session_id="resident"
         )
         self.history.append(user_msg)
@@ -1134,10 +1139,16 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     try:
                         if isinstance(msg_ts, str):
                             msg_ts = datetime.fromisoformat(msg_ts)
+                            # Ensure aware immediately
+                            if msg_ts.tzinfo is None:
+                                msg_ts = msg_ts.replace(tzinfo=timezone.utc)
                             original_ts = msg_ts
                         elif not msg_ts:
                             msg_ts = datetime.now(timezone.utc)
                         else:
+                            # Ensure aware immediately
+                            if hasattr(msg_ts, 'tzinfo') and msg_ts.tzinfo is None:
+                                msg_ts = msg_ts.replace(tzinfo=timezone.utc)
                             original_ts = msg_ts
                     except:
                         msg_ts = datetime.now(timezone.utc)
@@ -1352,7 +1363,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 "notified_governance_ids": list(self.notified_governance_ids),
                 "notified_error_signatures": list(self.notified_error_signatures),
                 "resident_bridges": self.resident_bridges,
-                "last_updated": datetime.now().isoformat()
+                "last_updated": datetime.now(timezone.utc).isoformat()
             }
             state_path = system_dir / "agent_state.json"
             
@@ -2034,7 +2045,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             ballot.append(Vote(
                  voter_id=self.governance_manager.node_id,
                  candidate_id=v_data.get("candidate_id"), # Can be None for proposal
-                 timestamp=datetime.now(),
+                 timestamp=datetime.now(timezone.utc),
                  approval=v_data.get("approve", False),
                  reason=v_data.get("reason", ""),
                  reward_amount=v_data.get("reward_amount", 0.0)
@@ -2133,7 +2144,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             self.scheduler.add_job(
                 "app.services.agent_service:check_tasks_monitor_proxy", 
                 trigger='date', 
-                run_date=datetime.now() + timedelta(seconds=5), 
+                run_date=datetime.now(timezone.utc) + timedelta(seconds=5), 
                 id="task_monitor_startup_retry", 
                 replace_existing=True
             )

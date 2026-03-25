@@ -377,7 +377,7 @@ class RetrospectiveStage(PipelineStage):
 
         terminal_tasks = [t for t in agent.task_manager.tasks.values() 
                           if t.status in ["completed", "failed"] 
-                          and (datetime.now() - t.updated_at).total_seconds() < 300] # Last 5 mins
+                          and (datetime.now(timezone.utc) - t.updated_at).total_seconds() < 300] # Last 5 mins
         
         for task in terminal_tasks:
             if task.lessons_learned:
