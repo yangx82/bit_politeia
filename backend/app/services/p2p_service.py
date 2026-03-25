@@ -175,7 +175,7 @@ class P2PService:
         content = message.get("content", {})
         message_id = message.get("message_id")
         
-        # Deduplication for signaling messages
+        # 1. Deduplication for signaling messages
         if message_id:
             if message_id in self.processed_signaling_ids:
                 logger.debug(f"P2P Signaling: Ignoring duplicate message {message_id}")
@@ -187,6 +187,31 @@ class P2PService:
                 # Keep set size manageable
                 if len(self.processed_signaling_ids) > 1000:
                      self.processed_signaling_ids.clear() 
+
+        # 2. Dispatch by Message Type
+        if msg_type == MessageType.SDP_OFFER.value:
+            if self.webrtc_manager:
+                asyncio.create_task(self.webrtc_manager.handle_offer(sender_id, content))
+            return True
+        
+        elif msg_type == MessageType.SDP_ANSWER.value:
+            if self.webrtc_manager:
+                asyncio.create_task(self.webrtc_manager.handle_answer(sender_id, content))
+            return True
+        
+        elif msg_type == MessageType.ICE_CANDIDATE.value:
+            if self.webrtc_manager:
+                asyncio.create_task(self.webrtc_manager.handle_candidate(sender_id, content))
+            return True
+
+        elif msg_type == "SYSTEM_ERROR":
+            # Asynchronous delivery failure from the relay
+            m_id = message.get("message_id")
+            if m_id:
+                logger.warning(f"P2P Delivery Failure for message {m_id}: {content}")
+                from .agent_service import agent_service
+                asyncio.create_task(agent_service.handle_remote_delivery_error(m_id, content))
+            return True
 
         elif msg_type == MessageType.PROPOSAL.value:
             # Import here to avoid circular dependency
