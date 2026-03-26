@@ -327,9 +327,15 @@ class NetworkManager:
             return await self.relay_client.send(msg_dict)
         return False
 
-    async def route_message(self, message: SignedMessage, from_relay: bool = False) -> bool:
-        """Route message to local node or remote peer via HTTP, fallback to Relay."""
-        self._log_throttled("info", f"[Network] Routing {message.message_type.value} message to {message.recipient_id} (From Relay: {from_relay})")
+    async def route_message(self, message: SignedMessage, from_relay: bool = False, gossip_forward: bool = True) -> bool:
+        """Route message to local node or remote peer via HTTP, fallback to Relay.
+        
+        Args:
+            message: The signed message to route
+            from_relay: Whether this message came from relay (prevents loops)
+            gossip_forward: Whether to forward to other group members (Gossip protocol)
+        """
+        self._log_throttled("info", f"[Network] Routing {message.message_type.value} message to {message.recipient_id} (From Relay: {from_relay}, Gossip: {gossip_forward})")
 
         # Helper to route to single node with fallback
         async def send_to_node(node_id: str, msg: SignedMessage) -> bool:
@@ -372,17 +378,24 @@ class NetworkManager:
             group_id = message.recipient_id
             
             # 1. Local Delivery: Deliver to self if we are a member
+            local_delivered = False
             if self.local_node_id in self.nodes:
                 if group_id in self.nodes[self.local_node_id].group_ids:
                     if message.sender_id != self.local_node_id:
                         await self.nodes[self.local_node_id].receive_message(message)
+                        local_delivered = True
             
-            # 2. Peer Delivery strategy: Parallel Direct HTTP + Partial Relay Fallback
+            # 2. GOSSIP PROTOCOL: Forward to other group members
+            # This ensures messages propagate even if not all members are in local topology
+            if gossip_forward and not from_relay:
+                asyncio.create_task(self._gossip_broadcast(message, group_id, exclude_sender=True))
+            
+            # 3. Direct delivery to known members (legacy behavior, kept for compatibility)
             if group_id in self.groups:
                 members = list(self.groups[group_id].members)
                 
-                # Filter out ourselves
-                targets = [m_id for m_id in members if m_id != self.local_node_id]
+                # Filter out ourselves and the original sender
+                targets = [m_id for m_id in members if m_id != self.local_node_id and m_id != message.sender_id]
                 
                 if not targets:
                     return True
@@ -408,7 +421,7 @@ class NetworkManager:
                     logger.info(f"[Network] Broadcast for {message.message_type.value}: All {len(targets)} members reached via direct HTTP.")
                     return True
                 
-                # 3. Partial Relay Fallback: Only send to relay for nodes that failed direct delivery
+                # 4. Partial Relay Fallback: Only send to relay for nodes that failed direct delivery
                 if from_relay:
                     # Prevent relay loops
                     return True
@@ -427,6 +440,74 @@ class NetworkManager:
         # Default: Direct route to single node
         return await send_to_node(message.recipient_id, message)
 
+    async def _gossip_broadcast(self, message: SignedMessage, group_id: str, exclude_sender: bool = True):
+        """
+        Gossip Protocol: Forward message to all known group members.
+        This ensures eventual consistency even when topology is incomplete.
+        """
+        # Prevent duplicate gossip for same message
+        gossip_key = f"gossip:{message.message_id}:{self.local_node_id}"
+        if hasattr(self, '_gossip_cache') and gossip_key in self._gossip_cache:
+            logger.debug(f"[Gossip] Already forwarded message {message.message_id}, skipping.")
+            return
+        
+        # Initialize gossip cache if not exists
+        if not hasattr(self, '_gossip_cache'):
+            self._gossip_cache = set()
+        
+        self._gossip_cache.add(gossip_key)
+        
+        # Clean old cache entries if too large (simple LRU)
+        if len(self._gossip_cache) > 10000:
+            self._gossip_cache = set(list(self._gossip_cache)[-5000:])
+        
+        if group_id not in self.groups:
+            logger.debug(f"[Gossip] Group {group_id} not in local topology, cannot forward.")
+            return
+        
+        members = self.groups[group_id].members
+        targets = []
+        
+        for member_id in members:
+            # Skip self
+            if member_id == self.local_node_id:
+                continue
+            # Skip original sender if requested
+            if exclude_sender and member_id == message.sender_id:
+                continue
+            targets.append(member_id)
+        
+        if not targets:
+            logger.debug(f"[Gossip] No targets to forward message {message.message_id}")
+            return
+        
+        logger.info(f"[Gossip] Forwarding {message.message_type.value} message {message.message_id[:8]}... to {len(targets)} group members")
+        
+        # Forward to each target
+        success_count = 0
+        for target_id in targets:
+            try:
+                success = await self._forward_to_peer(message, target_id)
+                if success:
+                    success_count += 1
+            except Exception as e:
+                logger.debug(f"[Gossip] Failed to forward to {target_id[:8]}...: {e}")
+        
+        logger.info(f"[Gossip] Forwarded to {success_count}/{len(targets)} peers for message {message.message_id[:8]}...")
+
+    async def _forward_to_peer(self, message: SignedMessage, peer_id: str) -> bool:
+        """Forward a message to a specific peer via HTTP or Relay."""
+        # If peer is known and has endpoint, try HTTP
+        if peer_id in self.nodes:
+            peer = self.nodes[peer_id]
+            if peer.endpoint:
+                success = await self._send_http_message(peer.endpoint, message)
+                if success:
+                    return True
+        
+        # Fallback to relay
+        return await self._send_via_relay(peer_id, message)
+
     def get_network_structure(self):
         """Returns a dict representation of the hierarchy."""
         return {
@@ -436,3 +517,63 @@ class NetworkManager:
             "nodes": {n_id: {"name": n.name, "public_key": n.public_key[:16] + "...", "is_online": n.is_online} for n_id, n in self.nodes.items()},
             "relay_connected": getattr(self, 'relay_client', None) and self.relay_client.websocket is not None
         }
+
+    async def request_state_sync(self, group_id: str):
+        """
+        Request state synchronization from group members.
+        Used for periodic consistency checks and catching missed messages.
+        """
+        if not self.local_node_id or group_id not in self.groups:
+            return
+        
+        logger.info(f"[StateSync] Requesting state sync for group {group_id}")
+        
+        # Create sync request message
+        sync_content = {
+            "sync_type": "state_request",
+            "requester_id": self.local_node_id,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        sync_msg = self.message_protocol.create_message(
+            sender_id=self.local_node_id,
+            recipient_id=group_id,
+            message_type=MessageType.SYNC,
+            content=sync_content
+        )
+        
+        # Broadcast sync request to all group members
+        await self.route_message(sync_msg, gossip_forward=True)
+
+    async def handle_state_sync_request(self, message: SignedMessage):
+        """Handle incoming state sync request by sharing known proposals/elections."""
+        content = message.content
+        if content.get("sync_type") != "state_request":
+            return
+        
+        requester_id = content.get("requester_id")
+        if not requester_id or requester_id == self.local_node_id:
+            return
+        
+        logger.info(f"[StateSync] Received sync request from {requester_id[:8]}...")
+        
+        # Import governance manager to get local state
+        from ..services.agent_service import agent_service
+        if not agent_service or not agent_service.governance_manager:
+            return
+        
+        # Share active proposals and elections
+        gm = agent_service.governance_manager
+        group_id = message.recipient_id
+        
+        # Get proposals for this group
+        for proposal in gm.proposals.values():
+            if proposal.group_id == group_id:
+                # Re-broadcast this proposal
+                proposal_data = {
+                    "proposal": proposal.to_dict(),
+                    "election": gm.active_elections.get(proposal.proposal_id, {}).to_dict() if proposal.proposal_id in gm.active_elections else None
+                }
+                await self.broadcast_governance_event(group_id, "proposal", proposal_data)
+                logger.info(f"[StateSync] Re-shared proposal {proposal.proposal_id[:8]}... to {requester_id[:8]}...")
+                await asyncio.sleep(0.1)  # Rate limit to avoid flooding

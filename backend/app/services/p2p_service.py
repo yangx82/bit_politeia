@@ -218,15 +218,57 @@ class P2PService:
             from .agent_service import agent_service
             if agent_service.governance_manager:
                 agent_service.governance_manager.receive_p2p_event("proposal", content)
+                
+                # GOSSIP FORWARD: Forward to other group members to ensure propagation
+                # This implements the "rumor mongering" phase of the Gossip protocol
+                recipient_id = message.get("recipient_id")
+                if recipient_id and recipient_id in self.network_manager.groups:
+                    asyncio.create_task(self._forward_governance_message(message, "proposal"))
             return True
             
         elif msg_type == MessageType.VOTE.value:
             from .agent_service import agent_service
             if agent_service.governance_manager:
                 agent_service.governance_manager.receive_p2p_event("vote", content)
+                
+                # GOSSIP FORWARD: Forward votes as well
+                recipient_id = message.get("recipient_id")
+                if recipient_id and recipient_id in self.network_manager.groups:
+                    asyncio.create_task(self._forward_governance_message(message, "vote"))
+            return True
+            
+        elif msg_type == MessageType.SYNC.value:
+            # Handle state synchronization requests
+            content = message.get("content", {})
+            if content.get("sync_type") == "state_request":
+                asyncio.create_task(self.network_manager.handle_state_sync_request(message))
             return True
 
         return False
+
+    async def _forward_governance_message(self, message: dict, event_type: str):
+        """
+        Forward a governance message to other group members (Gossip protocol).
+        This ensures eventual consistency even if some members missed the original broadcast.
+        """
+        try:
+            import json
+            from ..p2p_community.message_protocol import SignedMessage, MessageType
+            
+            # Convert dict back to SignedMessage if needed
+            if isinstance(message, dict):
+                msg_obj = SignedMessage.from_dict(message)
+            else:
+                msg_obj = message
+            
+            group_id = msg_obj.recipient_id
+            sender_id = msg_obj.sender_id
+            
+            # Forward to group members (excluding original sender and self)
+            await self.network_manager._gossip_broadcast(msg_obj, group_id, exclude_sender=True)
+            
+        except Exception as e:
+            logger.debug(f"[Gossip] Failed to forward {event_type} message: {e}")
 
     async def warmup_webrtc(self, peer_id: str):
         """
@@ -270,12 +312,25 @@ class P2PService:
     async def broadcast_governance_event(self, group_id: str, event_type: str, data: dict):
         """
         Broadcast a governance event (proposal or vote) to a group.
+        Uses Gossip protocol to ensure eventual consistency across all group members.
         """
         if not self.local_node:
              raise RuntimeError("P2PService not initialized")
              
         msg_type = MessageType.PROPOSAL if event_type == "proposal" else MessageType.VOTE
-        return await self.local_node.send_message(group_id, data, msg_type.value)
+        
+        # Create the message
+        message = self.message_protocol.create_message(
+            sender_id=self.local_node.node_id,
+            recipient_id=group_id,
+            message_type=msg_type,
+            content=data
+        )
+        
+        # Route with Gossip forwarding enabled
+        # This ensures the message propagates to all group members even if not in local topology
+        logger.info(f"[Governance] Broadcasting {event_type} to group {group_id} with Gossip protocol")
+        return await self.network_manager.route_message(message, gossip_forward=True)
 
     def get_network_status(self) -> Dict[str, Any]:
         return self.network_manager.get_network_structure()

@@ -124,6 +124,8 @@ class AgentService:
                 self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, next_run_time=datetime.now(timezone.utc), id="retry_messages_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:self_reflection_proxy", 'interval', minutes=15, id="self_reflection_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:check_unhandled_messages_proxy", 'interval', minutes=5, id="unhandled_msg_watchdog", replace_existing=True)
+                # Gossip State Sync: Periodic state synchronization for eventual consistency
+                self.scheduler.add_job("app.services.agent_service:gossip_state_sync_proxy", 'interval', minutes=3, id="gossip_state_sync_job", replace_existing=True)
                 # Self-Healing: only register supervisor job if env var is set
                 if os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes"):
                     self.scheduler.add_job("app.services.agent_service:code_supervisor_proxy", 'interval', seconds=10, id="code_supervisor_job", replace_existing=True)
@@ -2611,6 +2613,36 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         except Exception as e:
             logger.error(f"Error in check_unhandled_messages watchdog: {e}")
+
+    async def gossip_state_sync(self):
+        """
+        Periodic Gossip state synchronization for eventual consistency.
+        Requests state sync from group members to catch missed proposals/votes.
+        """
+        try:
+            if not p2p_service._initialized or not self.governance_manager:
+                return
+            
+            # Get all groups the local node is a member of
+            my_groups = p2p_service.get_my_groups()
+            if not my_groups:
+                return
+            
+            logger.info(f"[GossipSync] Starting periodic state sync for {len(my_groups)} groups")
+            
+            for group_id in my_groups:
+                try:
+                    # Request state sync from this group
+                    await p2p_service.network_manager.request_state_sync(group_id)
+                    # Small delay between groups to avoid flooding
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.debug(f"[GossipSync] Failed to sync group {group_id}: {e}")
+            
+            logger.info(f"[GossipSync] Completed state sync for {len(my_groups)} groups")
+            
+        except Exception as e:
+            logger.error(f"Error in gossip_state_sync: {e}")
 # Standalone Proxy Functions for Scheduler
 # These avoid pickling the 'self' (AgentService instance) which contains the unpickleable scheduler.
 # -------------------------------------------------------------------------
@@ -2664,6 +2696,11 @@ async def check_unhandled_messages_proxy():
     """Proxy for agent_service.check_unhandled_messages"""
     if agent_service:
         await agent_service.check_unhandled_messages()
+
+async def gossip_state_sync_proxy():
+    """Proxy for agent_service.gossip_state_sync"""
+    if agent_service:
+        await agent_service.gossip_state_sync()
 
 async def code_supervisor_proxy():
     """Integrated code supervisor: polls pending.json and processes code updates."""
