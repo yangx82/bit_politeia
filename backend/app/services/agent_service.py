@@ -23,7 +23,7 @@ p2p_logger = logging.getLogger("p2p_network")
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
-from ..agent.prompts import AGENT_SYSTEM_PROMPT
+from ..agent.prompts import AGENT_SYSTEM_PROMPT, SELF_HEALING_PROMPT
 from ..agent.tools import AGENT_TOOLS
 from ..agent.tools_meta import create_tool_tool
 from .skill_manager import skill_manager
@@ -403,7 +403,11 @@ class AgentService:
             # INJECT DYNAMIC HOST INFO
             host_info = self._get_host_info()
             
-            self.current_system_prompt = AGENT_SYSTEM_PROMPT + identity_section + host_info + "\n" + skill_index_prompt
+            base_prompt = AGENT_SYSTEM_PROMPT
+            if os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes"):
+                base_prompt += SELF_HEALING_PROMPT
+                
+            self.current_system_prompt = base_prompt + identity_section + host_info + "\n" + skill_index_prompt
             
             self.llm = raw_llm.bind_tools(all_tools)
             self.tools_map = {t.name: t for t in all_tools}
@@ -2473,7 +2477,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         """Watchdog: Scan all active sessions for unhandled inbound messages older than 5 minutes."""
         try:
             from .session_service import session_manager
-            from .events import InboundMessage
+            from ..bus.events import InboundMessage
             now = datetime.now(timezone.utc)
             five_minutes_ago = now - timedelta(minutes=5)
 
