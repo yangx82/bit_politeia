@@ -99,11 +99,24 @@ async def submit_code_fix(file_path: str, new_content: str, explanation: str) ->
     import os
     import json
     from datetime import datetime
+    from pathlib import Path
     
-    WATCH_SETTING = "backend/data/code_updates/pending.json"
+    # Absolute path: project_root/backend/data/code_updates/pending.json
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    WATCH_SETTING = str(PROJECT_ROOT / "data" / "code_updates" / "pending.json")
+    STALE_TIMEOUT_SECONDS = 60
     
     if os.path.exists(WATCH_SETTING):
-        return "Error: A pending code update is already being processed. Please wait 10 seconds and try again."
+        # Check if the file is stale (older than 60 seconds)
+        try:
+            file_age = datetime.now().timestamp() - os.path.getmtime(WATCH_SETTING)
+            if file_age < STALE_TIMEOUT_SECONDS:
+                return f"Error: A pending code update is already being processed ({int(file_age)}s ago). Please wait and try again."
+            else:
+                logger.warning(f"Stale pending.json detected ({int(file_age)}s old). Overwriting.")
+                os.remove(WATCH_SETTING)
+        except Exception:
+            os.remove(WATCH_SETTING)
         
     try:
         os.makedirs(os.path.dirname(WATCH_SETTING), exist_ok=True)
@@ -515,6 +528,9 @@ async def append_daily_note(content: str) -> str:
         return f"Error appending to daily note: {str(e)}"
 
 # List of Tools to bind to the agent
+import os as _os
+_SELF_HEALING_ENABLED = _os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes")
+
 AGENT_TOOLS = [
     send_p2p_message, send_file, ask_resident, send_file_to_resident, get_my_status, read_community_rules, update_system_parameter, 
     search_chat_history, update_core_memory, append_daily_note,
@@ -525,5 +541,5 @@ AGENT_TOOLS = [
     fetch_web_page,
     schedule_reminder, list_reminders, cancel_reminder,
     start_scheduler, get_scheduler_status,
-    delegate_task, submit_code_fix
-] + TASK_TOOLS
+    delegate_task,
+] + ([submit_code_fix] if _SELF_HEALING_ENABLED else []) + TASK_TOOLS

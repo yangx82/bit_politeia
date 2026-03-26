@@ -124,6 +124,10 @@ class AgentService:
                 self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, next_run_time=datetime.now(timezone.utc), id="retry_messages_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:self_reflection_proxy", 'interval', minutes=15, id="self_reflection_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:check_unhandled_messages_proxy", 'interval', minutes=5, id="unhandled_msg_watchdog", replace_existing=True)
+                # Self-Healing: only register supervisor job if env var is set
+                if os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes"):
+                    self.scheduler.add_job("app.services.agent_service:code_supervisor_proxy", 'interval', seconds=10, id="code_supervisor_job", replace_existing=True)
+                    logger.info("Self-Healing: Code supervisor job registered (ENABLE_SELF_HEALING=true).")
                 self._jobs_added = True
                 logger.info("Scheduler background jobs registered successfully.")
 
@@ -2448,10 +2452,15 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     
                     # Notify the agent via a focused session
                     from .events import InboundMessage
+                    # Conditionally suggest submit_code_fix based on ENABLE_SELF_HEALING
+                    heal_hint = ""
+                    if os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes"):
+                        heal_hint = " You can use 'submit_code_fix' to suggest a patch."
+                    
                     await self.message_bus.publish_inbound(InboundMessage(
                         sender_id="system",
                         session_id="system_health",
-                        content=f"System Health Alert: The following error was detected in your logs:\n\n{error}\n\nPlease help investigate the cause. You can use 'view_file' to examine relevant modules and 'submit_code_fix' to suggest a patch.",
+                        content=f"System Health Alert: The following error was detected in your logs:\n\n{error}\n\nPlease help investigate the cause. You can use 'view_file' to examine relevant modules.{heal_hint}",
                         type="DIRECT"
                     ))
                     # Only notify one new error per scan to avoid overwhelming the agent
@@ -2578,6 +2587,78 @@ async def check_unhandled_messages_proxy():
     """Proxy for agent_service.check_unhandled_messages"""
     if agent_service:
         await agent_service.check_unhandled_messages()
+
+async def code_supervisor_proxy():
+    """Integrated code supervisor: polls pending.json and processes code updates."""
+    if not agent_service:
+        return
+    import json
+    from pathlib import Path
+    
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    WATCH_FILE = PROJECT_ROOT / "data" / "code_updates" / "pending.json"
+    LOG_DIR = PROJECT_ROOT / "data" / "logs"
+    
+    if not WATCH_FILE.exists():
+        return
+    
+    logger.info(f"[CodeSupervisor] Detected pending update at {WATCH_FILE}")
+    processing_file = WATCH_FILE.with_suffix(".json.processing")
+    
+    try:
+        # Rename to prevent double-processing
+        WATCH_FILE.rename(processing_file)
+        
+        with open(processing_file, "r", encoding="utf-8") as f:
+            request = json.load(f)
+        
+        file_path = request.get("file_path")
+        new_content = request.get("new_content")
+        explanation = request.get("explanation", "No explanation")
+        
+        if not file_path or not os.path.exists(file_path):
+            logger.error(f"[CodeSupervisor] Target file not found: {file_path}")
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            processing_file.rename(WATCH_FILE.parent / f"failed_{ts}.json")
+            return
+        
+        # 1. Syntax check
+        import subprocess
+        code = subprocess.run(["python", "-m", "py_compile", file_path], capture_output=True, text=True)
+        
+        # Backup original
+        original_content = None
+        with open(file_path, "r", encoding="utf-8") as f:
+            original_content = f.read()
+        
+        # Apply change
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        
+        # Verify syntax of new content
+        result = subprocess.run(["python", "-m", "py_compile", file_path], capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            logger.error(f"[CodeSupervisor] Syntax error in patch. Rolling back. stderr: {result.stderr}")
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(original_content)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            processing_file.rename(WATCH_FILE.parent / f"failed_{ts}.json")
+            return
+        
+        # Success
+        logger.info(f"[CodeSupervisor] Patch applied successfully: {explanation}")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        processing_file.rename(WATCH_FILE.parent / f"success_{ts}.json")
+        
+        # Log to supervisor log
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOG_DIR / "supervisor.log", "a", encoding="utf-8") as lf:
+            lf.write(f"[{datetime.now().isoformat()}] Applied: {file_path} - {explanation}\n")
+            
+    except Exception as e:
+        logger.error(f"[CodeSupervisor] Error processing update: {e}")
+        if processing_file.exists():
+            processing_file.unlink()
 
 
 agent_service = AgentService()

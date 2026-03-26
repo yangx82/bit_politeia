@@ -3,10 +3,13 @@ import json
 import subprocess
 import time
 from datetime import datetime
+from pathlib import Path
 
-# Paths are relative to the project root where the supervisor is expected to be run
-WATCH_FILE = "backend/data/code_updates/pending.json"
-LOG_FILE = "backend/data/logs/supervisor.log"
+# Derive absolute paths from this script's location
+SCRIPT_DIR = Path(__file__).resolve().parent.parent  # -> backend/
+WATCH_FILE = str(SCRIPT_DIR / "data" / "code_updates" / "pending.json")
+LOG_FILE = str(SCRIPT_DIR / "data" / "logs" / "supervisor.log")
+PROCESSING_TIMEOUT = 120  # seconds
 
 def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -59,7 +62,7 @@ def process_update(request):
 
     # 3. Validation Phase
     log("Phase 1: Syntax & Compile Check...")
-    code, out, err = run_command(["python3", "-m", "py_compile", file_path])
+    code, out, err = run_command(["python", "-m", "py_compile", file_path])
     if code != 0:
         log(f"CRITICAL: Syntax error in new code. Rolling back immediately.")
         log(f"Compiler output: {err}")
@@ -110,14 +113,23 @@ def main():
                 
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 if success:
-                    os.rename(processing_file, f"backend/data/code_updates/success_{timestamp}.json")
+                    os.rename(processing_file, f"{os.path.dirname(WATCH_FILE)}/success_{timestamp}.json")
                 else:
-                    os.rename(processing_file, f"backend/data/code_updates/failed_{timestamp}.json")
+                    os.rename(processing_file, f"{os.path.dirname(WATCH_FILE)}/failed_{timestamp}.json")
                     
             except Exception as e:
                 log(f"CRITICAL ERROR in supervisor loop: {e}")
                 if os.path.exists(WATCH_FILE):
                     os.remove(WATCH_FILE)
+        
+        # Recovery: check for stale .processing files
+        processing_file = WATCH_FILE + ".processing"
+        if os.path.exists(processing_file):
+            age = time.time() - os.path.getmtime(processing_file)
+            if age > PROCESSING_TIMEOUT:
+                log(f"WARNING: Stale .processing file detected ({int(age)}s old). Treating as crashed run.")
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                os.rename(processing_file, f"{os.path.dirname(WATCH_FILE)}/failed_timeout_{timestamp}.json")
         
         time.sleep(5)
 
