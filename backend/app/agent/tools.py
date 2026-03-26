@@ -136,6 +136,31 @@ async def submit_code_fix(file_path: str, new_content: str, explanation: str) ->
         return f"Error submitting code fix: {str(e)}"
 
 @tool
+async def repair_code(issue_description: str) -> str:
+    """
+    Delegate a code repair task to the specialized Self-Healing Sub-Agent.
+    Use this if you or the resident identify a bug, a logic flaw, or a needed improvement in the backend code.
+    The sub-agent will analyze the codebase and attempt to submit a fix.
+    
+    Args:
+        issue_description: Detailed description of the bug or the expected change.
+    """
+    try:
+        from app.services.agent_service import agent_service
+        import asyncio
+        import os
+        
+        if not os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes"):
+            return "Error: Self-healing is currently disabled in system settings (ENABLE_SELF_HEALING=false)."
+            
+        # Launch the sub-agent task
+        asyncio.create_task(agent_service._run_autonomous_repair_subagent(issue_description))
+        
+        return f"Task delegated to System Repair Specialist: {issue_description}. Monitor 'system_health' thought stream for progress."
+    except Exception as e:
+        return f"Error delegating repair task: {str(e)}"
+
+@tool
 async def get_my_status() -> str:
     """
     Get the current status of the agent, including Node ID, Group memberships, 
@@ -538,7 +563,7 @@ AGENT_TOOLS = [
     fetch_web_page,
     schedule_reminder, list_reminders, cancel_reminder,
     start_scheduler, get_scheduler_status,
-    delegate_task,
+    delegate_task, repair_code,
 ] + TASK_TOOLS
 
 # Specialized toolset for the Self-Healing Sub-Agent
