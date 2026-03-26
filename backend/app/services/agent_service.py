@@ -23,8 +23,8 @@ p2p_logger = logging.getLogger("p2p_network")
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
-from ..agent.prompts import AGENT_SYSTEM_PROMPT, SELF_HEALING_PROMPT
-from ..agent.tools import AGENT_TOOLS
+from ..agent.prompts import AGENT_SYSTEM_PROMPT, SELF_HEALING_SUBAGENT_PROMPT
+from ..agent.tools import AGENT_TOOLS, REPAIR_TOOLS
 from ..agent.tools_meta import create_tool_tool
 from .skill_manager import skill_manager
 from ..agent.context import ContextBuilder
@@ -404,8 +404,6 @@ class AgentService:
             host_info = self._get_host_info()
             
             base_prompt = AGENT_SYSTEM_PROMPT
-            if os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes"):
-                base_prompt += SELF_HEALING_PROMPT
                 
             self.current_system_prompt = base_prompt + identity_section + host_info + "\n" + skill_index_prompt
             
@@ -2454,24 +2452,99 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     self.notified_error_signatures.add(sig)
                     self._save_system_state()
                     
-                    # Notify the agent via a focused session
-                    from .events import InboundMessage
-                    # Conditionally suggest submit_code_fix based on ENABLE_SELF_HEALING
-                    heal_hint = ""
-                    if os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes"):
-                        heal_hint = " You can use 'submit_code_fix' to suggest a patch."
-                    
-                    await self.message_bus.publish_inbound(InboundMessage(
-                        sender_id="system",
+                    # Notify the resident via thought
+                    await self.message_bus.publish_outbound(OutboundMessage(
+                        channel="gateway",
                         session_id="system_health",
-                        content=f"System Health Alert: The following error was detected in your logs:\n\n{error}\n\nPlease help investigate the cause. You can use 'view_file' to examine relevant modules.{heal_hint}",
-                        type="DIRECT"
+                        content=f"System Health Alert: Error signature detected: {sig}. Launching autonomous repair sub-agent...",
+                        type="thought"
                     ))
+                    
+                    # Launch the sub-agent task
+                    asyncio.create_task(self._run_autonomous_repair_subagent(error))
+                    
                     # Only notify one new error per scan to avoid overwhelming the agent
                     break
                     
         except Exception as e:
             logger.error(f"Error in self_reflection job: {e}")
+
+    async def _run_autonomous_repair_subagent(self, error_message: str):
+        """Invoke a specialized sub-agent to diagnose and fix a system error."""
+        if not self.api_key or not os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes"):
+            return
+            
+        logger.info(f"Sub-Agent: Starting autonomous repair for error: {error_message[:100]}...")
+        
+        try:
+            # 1. Initialize specialized LLM for repair
+            repair_llm = ChatOpenAI(
+                base_url=self.base_url,
+                api_key=self.api_key,
+                model=self.model,
+                temperature=0.2 # Lower temperature for precision repair
+            ).bind_tools(REPAIR_TOOLS)
+            
+            repair_tools_map = {t.name: t for t in REPAIR_TOOLS}
+            
+            # 2. Build initial context
+            messages = [
+                SystemMessage(content=SELF_HEALING_SUBAGENT_PROMPT),
+                HumanMessage(content=f"The following error was detected in your logs:\n\n{error_message}\n\nPlease analyze and repair it.")
+            ]
+            
+            # 3. Execution Loop (simplified ReAct)
+            max_iters = 10
+            for i in range(max_iters):
+                try:
+                    response = await repair_llm.ainvoke(messages)
+                    messages.append(response)
+                    
+                    # Extract Reasoning/Thought
+                    thought = ""
+                    if "reasoning_content" in response.additional_kwargs:
+                        thought = response.additional_kwargs["reasoning_content"]
+                    elif response.content:
+                        thought = response.content
+
+                    # Emit thought to UI
+                    if thought:
+                        await self.message_bus.publish_outbound(OutboundMessage(
+                            channel="gateway",
+                            session_id="system_health",
+                            content=f"[Repair Sub-Agent] {thought}",
+                            type="thought"
+                        ))
+                    
+                    if not response.tool_calls:
+                        break
+                        
+                    for tc in response.tool_calls:
+                        t_name = tc["name"]
+                        t_args = tc["args"]
+                        t_id = tc["id"]
+                        
+                        await self.message_bus.publish_outbound(OutboundMessage(
+                            channel="gateway",
+                            session_id="system_health",
+                            content=f"[Repair Sub-Agent] Invoking {t_name}...",
+                            type="tool_call",
+                            metadata={"tool": t_name, "args": t_args}
+                        ))
+                        
+                        if t_name in repair_tools_map:
+                            logger.info(f"Repair Sub-Agent Invoking Tool: {t_name}")
+                            output = await repair_tools_map[t_name].ainvoke(t_args)
+                            messages.append(ToolMessage(tool_call_id=t_id, content=str(output), name=t_name))
+                        else:
+                            messages.append(ToolMessage(tool_call_id=t_id, content=f"Error: Tool {t_name} not found.", name=t_name))
+                except Exception as e:
+                    logger.error(f"Error in repair sub-agent iteration {i}: {e}")
+                    break
+            
+            logger.info("Sub-Agent: Autonomous repair task completed.")
+        except Exception as e:
+            logger.error(f"Failed to run autonomous repair sub-agent: {e}")
 
     async def check_unhandled_messages(self):
         """Watchdog: Scan all active sessions for unhandled inbound messages older than 5 minutes."""

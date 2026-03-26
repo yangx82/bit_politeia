@@ -528,9 +528,6 @@ async def append_daily_note(content: str) -> str:
         return f"Error appending to daily note: {str(e)}"
 
 # List of Tools to bind to the agent
-import os as _os
-_SELF_HEALING_ENABLED = _os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes")
-
 AGENT_TOOLS = [
     send_p2p_message, send_file, ask_resident, send_file_to_resident, get_my_status, read_community_rules, update_system_parameter, 
     search_chat_history, update_core_memory, append_daily_note,
@@ -542,4 +539,10 @@ AGENT_TOOLS = [
     schedule_reminder, list_reminders, cancel_reminder,
     start_scheduler, get_scheduler_status,
     delegate_task,
-] + ([submit_code_fix] if _SELF_HEALING_ENABLED else []) + TASK_TOOLS
+] + TASK_TOOLS
+
+# Specialized toolset for the Self-Healing Sub-Agent
+REPAIR_TOOLS = [
+    list_dir, read_file, view_file, write_file, edit_file, # Exploration & Basic Edit
+    submit_code_fix # The actual repair submission
+]
