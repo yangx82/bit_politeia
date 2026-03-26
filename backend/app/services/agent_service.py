@@ -47,6 +47,7 @@ class AgentService:
         self.processed_message_ids: set[str] = set() # For de-duplication
         self.notified_governance_ids: Set[str] = set() # Track proposals shared with agent
         self.notified_error_signatures: Set[str] = set() # Track error signatures for self-reflection
+        self.notified_watchdog_ids: Set[str] = set() # Track watchdog-triggered message IDs
         self._is_processing_inbox = False # Concurrency Guard
         self.status = AgentStatus(is_online=True, reputation=10, balance=100.0)
         self.message_bus = message_bus
@@ -122,6 +123,7 @@ class AgentService:
                 self.scheduler.add_job("app.services.agent_service:check_governance_proposals_proxy", 'interval', minutes=10, next_run_time=datetime.now(timezone.utc), id="governance_monitor_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, next_run_time=datetime.now(timezone.utc), id="retry_messages_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:self_reflection_proxy", 'interval', minutes=15, id="self_reflection_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:check_unhandled_messages_proxy", 'interval', minutes=5, id="unhandled_msg_watchdog", replace_existing=True)
                 self._jobs_added = True
                 logger.info("Scheduler background jobs registered successfully.")
 
@@ -1201,22 +1203,34 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     # 3. Check for lapsed messages (30 mins = 1800 seconds)
                     now = datetime.now(timezone.utc)
                     delay_seconds = (now - msg_ts).total_seconds()
+                    skip_delay = False
                     
-                    if delay_seconds > 1800:
-                        logger.info(f"Lapsed message detected ({int(delay_seconds)}s delay). Skipping agent processing for session {effective_session_id}.")
-                        # Notify Gateway that this message is being handled silently
+                    if delay_seconds > 1800 and inbox:
+                        # Only skip lapsed messages if there are MORE messages in the queue
+                        logger.info(f"Lapsed message detected ({int(delay_seconds)}s delay) with {len(inbox)} more in queue. Skipping agent processing for session {effective_session_id}.")
                         await self.message_bus.publish_outbound(OutboundMessage(
                             channel="gateway",
                             session_id=effective_session_id,
                             content=f"Message received with {int(delay_seconds/60)}m delay. Stored in history without auto-processing.",
                             type="thought"
                         ))
-                        # [COMPLETION FLAG] Mark as processed in history without LLM response
-                        # No further action needed as history logging already happened above at line 1180
                         continue
+                    elif delay_seconds > 1800 and not inbox:
+                        # Last message in queue but lapsed: process it immediately, skip reply delay
+                        logger.info(f"Lapsed message detected ({int(delay_seconds)}s delay) but it's the LAST in queue. Processing immediately.")
+                        skip_delay = True
+
+                    # 3.5 Smart Reply Delay: Calculate remaining delay
+                    if not skip_delay:
+                        configured_delay = getattr(self, 'p2p_reply_delay', 5)
+                        remaining_delay = max(0, configured_delay - delay_seconds)
+                        if remaining_delay > 0:
+                            logger.info(f"P2P Reply Delay: waiting {remaining_delay:.1f}s (configured={configured_delay}s, elapsed={delay_seconds:.1f}s)")
+                            await asyncio.sleep(remaining_delay)
+                        else:
+                            logger.info(f"P2P Reply Delay: already elapsed ({delay_seconds:.1f}s >= {configured_delay}s). Processing immediately.")
 
                     # 4. Run Pipeline to get Response
-                    # p2p_logger.info(f"DEBUG: process_network_inbox calling run_pipeline. Channel={msg_obj.channel}, Sender={msg_obj.sender_id}")
                     response_text, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
                     
                     # 5. Agent's Final Answer is for internal record, NOT sent over P2P.
@@ -2446,7 +2460,71 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         except Exception as e:
             logger.error(f"Error in self_reflection job: {e}")
 
-# -------------------------------------------------------------------------
+    async def check_unhandled_messages(self):
+        """Watchdog: Scan all active sessions for unhandled inbound messages older than 5 minutes."""
+        try:
+            from .session_service import session_manager
+            from .events import InboundMessage
+            now = datetime.now(timezone.utc)
+            five_minutes_ago = now - timedelta(minutes=5)
+
+            # Gather all unique session IDs from history
+            session_ids = set()
+            for msg in self.history:
+                sid = getattr(msg, 'session_id', None)
+                if sid and sid not in ['resident', 'system', 'system_health', 'global']:
+                    session_ids.add(sid)
+
+            for sid in session_ids:
+                # Find the last inbound message for this session
+                last_inbound = None
+                for msg in reversed(self.history):
+                    if getattr(msg, 'session_id', None) == sid and getattr(msg, 'sender', '') != 'agent':
+                        last_inbound = msg
+                        break
+
+                if not last_inbound:
+                    continue
+
+                # Check if the last message in this session is from the agent (i.e., already handled)
+                last_msg_in_session = None
+                for msg in reversed(self.history):
+                    if getattr(msg, 'session_id', None) == sid:
+                        last_msg_in_session = msg
+                        break
+
+                if last_msg_in_session and getattr(last_msg_in_session, 'sender', '') == 'agent':
+                    continue  # Already responded
+
+                # Check if the last inbound is older than 5 minutes
+                msg_ts = getattr(last_inbound, 'timestamp', None)
+                if msg_ts:
+                    if msg_ts.tzinfo is None:
+                        msg_ts = msg_ts.replace(tzinfo=timezone.utc)
+                    if msg_ts < five_minutes_ago:
+                        msg_id = getattr(last_inbound, 'id', 'unknown')
+                        if msg_id in self.notified_watchdog_ids:
+                            continue  # Already triggered for this message
+
+                        logger.warning(f"[WATCHDOG] Unhandled message detected in session {sid[:8]}... (msg_id={msg_id}, age={(now - msg_ts).total_seconds():.0f}s). Triggering immediate processing.")
+                        self.notified_watchdog_ids.add(msg_id)
+
+                        # Trigger immediate processing via pipeline
+                        poke_msg = InboundMessage(
+                            channel="p2p",
+                            sender_id=getattr(last_inbound, 'sender', sid),
+                            session_id=sid,
+                            content=getattr(last_inbound, 'content', ''),
+                            metadata={"watchdog": True, "original_msg_id": msg_id}
+                        )
+                        asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
+
+            # Prune old watchdog IDs (keep last 200)
+            if len(self.notified_watchdog_ids) > 200:
+                self.notified_watchdog_ids = set(list(self.notified_watchdog_ids)[-100:])
+
+        except Exception as e:
+            logger.error(f"Error in check_unhandled_messages watchdog: {e}")
 # Standalone Proxy Functions for Scheduler
 # These avoid pickling the 'self' (AgentService instance) which contains the unpickleable scheduler.
 # -------------------------------------------------------------------------
@@ -2495,6 +2573,11 @@ async def self_reflection_proxy():
     """Proxy for agent_service._self_reflection"""
     if agent_service:
         await agent_service._self_reflection()
+
+async def check_unhandled_messages_proxy():
+    """Proxy for agent_service.check_unhandled_messages"""
+    if agent_service:
+        await agent_service.check_unhandled_messages()
 
 
 agent_service = AgentService()
