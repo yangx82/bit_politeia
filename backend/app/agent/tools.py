@@ -543,6 +543,6 @@ AGENT_TOOLS = [
 
 # Specialized toolset for the Self-Healing Sub-Agent
 REPAIR_TOOLS = [
-    list_dir, read_file, view_file, write_file, edit_file, # Exploration & Basic Edit
+    list_dir, read_file, write_file, edit_file, # Exploration & Basic Edit
     submit_code_fix # The actual repair submission
 ]

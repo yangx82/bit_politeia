@@ -101,6 +101,6 @@ Given a specific ERROR or CRITICAL log message, your task is to:
 - **Safety**: Your submission will be validated by a background supervisor. If you introduce a syntax error, it will be rolled back. 
 
 ### TOOLS AVAILABLE:
-- `list_dir`, `read_file`, `view_file`: For investigation.
+- `list_dir`, `read_file`: For investigation.
 - `submit_code_fix`: For applying the repair.
 """
