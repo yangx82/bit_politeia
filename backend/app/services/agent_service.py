@@ -1598,12 +1598,22 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
              
         proposal, election = self.governance_manager.initiate_proposal(group_id, content, duration_minutes, eligible_voters=eligible_voters)
         
-        # Broadcast via P2P
-        asyncio.create_task(p2p_service.broadcast_governance_event(
-            group_id, 
-            "proposal", 
-            {"proposal": proposal.to_dict(), "election": election.to_dict()}
-        ))
+        # Broadcast via P2P - Wait for broadcast to complete with timeout (Fixed: was asyncio.create_task without await)
+        try:
+            await asyncio.wait_for(
+                p2p_service.broadcast_governance_event(
+                    group_id, 
+                    "proposal", 
+                    {"proposal": proposal.to_dict(), "election": election.to_dict()}
+                ),
+                timeout=10.0
+            )
+            logger.info(f"Proposal broadcast successfully for group {group_id}")
+        except asyncio.TimeoutError:
+            logger.warning(f"Proposal broadcast timeout for group {group_id}")
+        except Exception as e:
+            logger.error(f"Proposal broadcast failed for group {group_id}: {e}")
+        
         return {
             "proposal": proposal.to_dict(),
             "election": election.to_dict()
@@ -2051,12 +2061,21 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
              group = p2p_service.local_node.network_manager.groups[group_id]
              election.eligible_voters = group.members.copy()
         
-        # Broadcast via P2P
-        asyncio.create_task(p2p_service.broadcast_governance_event(
-            group_id, 
-            "proposal", 
-            {"proposal": {"proposal_id": "", "content": "Election"}, "election": election.to_dict()} # Minimal proposal for election
-        ))
+        # Broadcast via P2P - Wait for broadcast to complete with timeout (Fixed: was asyncio.create_task without await)
+        try:
+            await asyncio.wait_for(
+                p2p_service.broadcast_governance_event(
+                    group_id, 
+                    "proposal", 
+                    {"proposal": {"proposal_id": "", "content": "Election"}, "election": election.to_dict()}
+                ),
+                timeout=10.0
+            )
+            logger.info(f"Election broadcast successfully for group {group_id}")
+        except asyncio.TimeoutError:
+            logger.warning(f"Election broadcast timeout for group {group_id}")
+        except Exception as e:
+            logger.error(f"Election broadcast failed for group {group_id}: {e}")
         
         return str(election.election_id)
 
@@ -2079,12 +2098,21 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
          proposal, election = self.governance_manager.initiate_research_publication(group_id, content, pdf_hash, duration_minutes, eligible_voters=eligible_voters)
              
-         # Broadcast via P2P
-         asyncio.create_task(p2p_service.broadcast_governance_event(
-            group_id, 
-            "proposal", 
-            {"proposal": proposal.to_dict(), "election": election.to_dict()}
-         ))
+         # Broadcast via P2P - Wait for broadcast to complete with timeout (Fixed: was asyncio.create_task without await)
+         try:
+             await asyncio.wait_for(
+                 p2p_service.broadcast_governance_event(
+                     group_id, 
+                     "proposal", 
+                     {"proposal": proposal.to_dict(), "election": election.to_dict()}
+                 ),
+                 timeout=10.0
+             )
+             logger.info(f"Research proposal broadcast successfully for group {group_id}")
+         except asyncio.TimeoutError:
+             logger.warning(f"Research proposal broadcast timeout for group {group_id}")
+         except Exception as e:
+             logger.error(f"Research proposal broadcast failed for group {group_id}: {e}")
              
          return f"Research published {proposal.pdf_hash}. Evaluation ID: {election.election_id}"
 
