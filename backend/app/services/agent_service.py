@@ -2109,15 +2109,32 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         
         success = self.governance_manager.receive_ballot(election_id, ballot)
         if success:
-             # Broadcast via P2P
+             # Broadcast via P2P - Wait for broadcast to complete with timeout
              election = self.governance_manager.active_elections[election_id]
+             broadcast_tasks = []
              for v in ballot:
-                 asyncio.create_task(p2p_service.broadcast_governance_event(
+                 task = asyncio.create_task(p2p_service.broadcast_governance_event(
                      election.group_id, 
                      "vote", 
                      {"election_id": election_id, "vote": v.to_dict()}
                  ))
-             return "Ballot registered locally"
+                 broadcast_tasks.append(task)
+             
+             # Wait for all broadcasts to complete (with timeout)
+             try:
+                 await asyncio.wait_for(
+                     asyncio.gather(*broadcast_tasks, return_exceptions=True),
+                     timeout=10.0
+                 )
+                 logger.info(f"Vote broadcast successfully for election {election_id[:8]} ({len(ballot)} votes)")
+             except asyncio.TimeoutError:
+                 logger.warning(f"Vote broadcast timeout for election {election_id[:8]}")
+                 return "Ballot registered locally but broadcast timed out"
+             except Exception as e:
+                 logger.error(f"Vote broadcast failed for election {election_id[:8]}: {e}")
+                 return f"Ballot registered locally but broadcast failed: {e}"
+             
+             return "Ballot registered and broadcast successfully"
         else:
              return "Ballot rejected (invalid, closed, or validation failed)"
 
