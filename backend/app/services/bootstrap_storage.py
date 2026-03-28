@@ -99,6 +99,15 @@ class BootstrapStorage:
             )
         ''')
 
+        # Tunnel Allocations (for frp)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tunnel_allocations (
+                node_id TEXT PRIMARY KEY,
+                remote_port INTEGER UNIQUE,
+                allocated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         conn.commit()
         conn.close()
 
@@ -322,3 +331,32 @@ class BootstrapStorage:
                 group_id=gid
             ))
         return pending
+
+    # --- Tunnel Allocations ---
+
+    def upsert_tunnel_allocation(self, node_id: str, remote_port: int):
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO tunnel_allocations (node_id, remote_port)
+            VALUES (?, ?)
+            ON CONFLICT(node_id) DO UPDATE SET
+                remote_port=excluded.remote_port
+        ''', (node_id, remote_port))
+        conn.commit()
+        conn.close()
+
+    def load_tunnel_allocations(self) -> Dict[str, int]:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute('SELECT node_id, remote_port FROM tunnel_allocations')
+        rows = cursor.fetchall()
+        conn.close()
+        return {row[0]: row[1] for row in rows}
+
+    def delete_tunnel_allocation(self, node_id: str):
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM tunnel_allocations WHERE node_id=?', (node_id,))
+        conn.commit()
+        conn.close()

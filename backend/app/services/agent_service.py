@@ -380,7 +380,7 @@ class AgentService:
                 base_url=base_url,
                 api_key=api_key,
                 model=model, 
-                temperature=0.7
+                temperature=1#0.7
             )
             # Load custom skills (Run in thread to avoid blocking loop)
             # Load custom skills (Run in thread to avoid blocking loop)

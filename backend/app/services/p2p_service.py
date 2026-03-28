@@ -43,9 +43,6 @@ class P2PService:
         except RuntimeError:
             logger.warning("P2P initialize called without running loop?")
 
-        # Initialize network manager (sync topology)
-        await self.network_manager.initialize()
-        
         # Create and register local node
         public_key = crypto_service.get_public_key_string()
         
@@ -56,6 +53,9 @@ class P2PService:
         # Use provided node_id if it looks like a valid Hex ID, else default to hex_node_id
         if not node_id or len(node_id) != 64:
              node_id = hex_node_id
+
+        # Initialize network manager (sync topology) with node_id for tunnel fallback
+        await self.network_manager.initialize(node_id=node_id)
 
         self.local_node = Node(
             node_id=node_id, 

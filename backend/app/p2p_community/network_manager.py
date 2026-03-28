@@ -8,6 +8,7 @@ from datetime import datetime
 from .models import Node, Group
 from .bootstrap_client import bootstrap_client, PeerAddress, NodeRegistration
 from .message_protocol import MessageProtocol, MessageType, SignedMessage
+from .tunnel_client import TunnelClient
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +30,13 @@ class NetworkManager:
         self.bootstrap = bootstrap_client
         self.http_client = httpx.AsyncClient(timeout=3.0, trust_env=False)
         self._last_logs: Dict[str, float] = {} # For deduplication: message -> last_time
+        self.tunnel: Optional[TunnelClient] = None
 
-    async def initialize(self):
+    async def initialize(self, node_id: Optional[str] = None):
         """Initialize network state from bootstrap server."""
+        if node_id:
+            self.local_node_id = node_id
+            
         # 1. Try UPnP Port Mapping
         from .nat_traversal import nat_manager
         
@@ -53,6 +58,22 @@ class NetworkManager:
             await stun_loop.run_in_executor(None, nat_manager.get_stun_endpoint, internal_port)
         except Exception as e:
             logger.debug(f"[Network] STUN background discovery error: {e}")
+            
+        # 3. Final Fallback: frp Tunnel
+        # Only use if we don't have a reliable public IP/Port or if configured to always tunnel
+        import os
+        always_tunnel = os.getenv("P2P_ALWAYS_TUNNEL", "false").lower() == "true"
+        # Check node state or config
+        if always_tunnel or not nat_manager.public_ip:
+             logger.info("[Network] Initiating frp tunnel fallback...")
+             self.tunnel = TunnelClient(self.bootstrap.server_url, self.local_node_id or "default", internal_port)
+             public_endpoint = await self.tunnel.start()
+             if public_endpoint:
+                  logger.info(f"[Network] Tunnel established: {public_endpoint}")
+                  # Override nat_manager properties so registration uses tunnel endpoint
+                  parsed = urlparse(public_endpoint)
+                  nat_manager.public_ip = parsed.hostname
+                  nat_manager.public_port = parsed.port
         
         await self.sync_topology()
         logger.info("NetworkManager initialized and topology synced")

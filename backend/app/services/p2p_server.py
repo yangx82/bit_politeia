@@ -4,6 +4,10 @@ from typing import Dict, Any, List, Optional
 import uvicorn
 import logging
 import os
+import subprocess
+import signal
+import time
+import threading
 
 from .bootstrap_service import bootstrap_service
 from ..p2p_community.bootstrap_client import NodeRegistration
@@ -15,7 +19,13 @@ logger = logging.getLogger("BootstrapServer")
 app = FastAPI(title="Bit-Politeia Bootstrap Server")
 
 # Global safety toggle for node removal
+# Global tunnel state
 ALLOW_NODE_REMOVAL = os.getenv("BOOTSTRAP_ALLOW_NODE_REMOVAL", "false").lower() == "true"
+FRPS_PROCESS: Optional[subprocess.Popen] = None
+FRPS_TOKEN = os.getenv("FRPS_TOKEN", "bit-politeia-secret-2026")
+FRPS_BIND_PORT = int(os.getenv("FRPS_BIND_PORT", "7000"))
+# Public IP of this server for tunnel connections
+PUBLIC_IP = os.getenv("BOOTSTRAP_PUBLIC_IP", "127.0.0.1") 
 
 from contextlib import asynccontextmanager
 
@@ -35,13 +45,86 @@ async def lifespan(app: FastAPI):
     try:
         bootstrap_service.initialize()
         logger.info("BootstrapService initialization complete.")
+        
+        # Start frps if binary exists
+        start_frps()
     except Exception as e:
-        logger.error(f"FATAL: Failed to initialize BootstrapService: {e}")
+        logger.error(f"FATAL: Failed to initialize BootstrapService or frps: {e}")
         import traceback
         logger.error(traceback.format_exc())
     yield
     # Cleanup on shutdown (if needed)
     logger.info("Shutting down BootstrapServer...")
+    stop_frps()
+
+def get_frps_path():
+    # Check project bin directory first
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    bin_dir = os.path.join(base_dir, "bin")
+    
+    # Platform dependent extension
+    ext = ".exe" if os.name == "nt" else ""
+    path = os.path.join(bin_dir, f"frps{ext}")
+    
+    if os.path.exists(path):
+        return path
+    
+    # Fallback to PATH
+    import shutil
+    return shutil.which(f"frps{ext}")
+
+def generate_frps_config():
+    config_content = f"""
+bindPort = {FRPS_BIND_PORT}
+auth.token = "{FRPS_TOKEN}"
+
+# Optional: Enable dashboard for monitoring
+# webServer.port = 7500
+# webServer.user = "admin"
+# webServer.password = "admin"
+
+allowPorts = [
+  {{ start = 60000, end = 61000 }}
+]
+"""
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    config_path = os.path.join(base_dir, "frps.toml")
+    with open(config_path, "w") as f:
+        f.write(config_content)
+    return config_path
+
+def start_frps():
+    global FRPS_PROCESS
+    frps_path = get_frps_path()
+    if not frps_path:
+        logger.warning("[Tunnel] frps binary not found. Tunnels will not be available. Put frps in backend/bin/")
+        return
+    
+    config_path = generate_frps_config()
+    logger.info(f"[Tunnel] Starting frps using {frps_path} with config {config_path}")
+    
+    try:
+        # Start in background
+        FRPS_PROCESS = subprocess.Popen(
+            [frps_path, "-c", config_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        # We don't want to block, so we'll just let it run.
+        logger.info(f"[Tunnel] frps started (PID: {FRPS_PROCESS.pid})")
+    except Exception as e:
+        logger.error(f"[Tunnel] Failed to start frps: {e}")
+
+def stop_frps():
+    global FRPS_PROCESS
+    if FRPS_PROCESS:
+        logger.info(f"[Tunnel] Stopping frps (PID: {FRPS_PROCESS.pid})...")
+        FRPS_PROCESS.terminate()
+        try:
+            FRPS_PROCESS.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            FRPS_PROCESS.kill()
+        logger.info("[Tunnel] frps stopped.")
 
 app.router.lifespan_context = lifespan
 
@@ -140,6 +223,27 @@ async def get_candidates(group_id: str) -> Dict[str, List[str]]:
     """Get candidate suggestions for a core node election based on reputation."""
     candidates = bootstrap_service.get_election_candidates(group_id)
     return {"candidates": candidates}
+
+@app.post("/tunnel/v1/request")
+async def request_tunnel(payload: dict = Body(...)) -> Dict[str, Any]:
+    """Allocate a tunnel port and return frps connection info."""
+    node_id = payload.get("node_id")
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id required")
+    
+    port = bootstrap_service.allocate_tunnel_port(node_id)
+    if not port:
+        raise HTTPException(status_code=503, detail="No tunnel ports available")
+    
+    return {
+        "success": True,
+        "config": {
+            "server_addr": PUBLIC_IP,
+            "server_port": FRPS_BIND_PORT,
+            "token": FRPS_TOKEN,
+            "remote_port": port
+        }
+    }
 
 @app.get("/nodes")
 async def list_nodes() -> Dict[str, Any]:

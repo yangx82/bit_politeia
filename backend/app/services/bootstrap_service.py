@@ -25,6 +25,7 @@ class BootstrapService:
         self._peers = {}
         self._group_members = {}
         self._pending_joins = {}
+        self._tunnel_allocations = {}
         
         self._reputation = ReputationManager("bootstrap")
         self._last_update = datetime.now()
@@ -46,6 +47,7 @@ class BootstrapService:
         self._peers = self.storage.load_nodes()
         self._group_members = self.storage.load_group_members()
         self._pending_joins = self.storage.load_pending_joins()
+        self._tunnel_allocations = self.storage.load_tunnel_allocations()
         
         # Initialize Topology if empty
         if not self._groups:
@@ -262,10 +264,39 @@ class BootstrapService:
         # 4. Storage cleanup (Removes from nodes, group_members, rankings, cores, pending)
         self.storage.delete_node(node_id)
         
-        # 5. Global update
+        # 5. Release tunnel allocation if any
+        if node_id in self._tunnel_allocations:
+            self._tunnel_allocations.pop(node_id)
+            self.storage.delete_tunnel_allocation(node_id)
+            logger.info(f"Bootstrap: Released tunnel port for node {node_id}")
+
+        # 6. Global update
         self._last_update = datetime.now()
         logger.info(f"Bootstrap: Node {node_id} has been manually unregistered and removed from topology.")
         return True
+
+    # --- Tunnel Management ---
+
+    def allocate_tunnel_port(self, node_id: str) -> Optional[int]:
+        """Allocate a unique port for a node's frp tunnel (Range: 60000-61000)."""
+        # 1. Existing check
+        if node_id in self._tunnel_allocations:
+            return self._tunnel_allocations[node_id]
+        
+        # 2. Find available port
+        used_ports = set(self._tunnel_allocations.values())
+        port_start = 60000
+        port_end = 61000
+        for port in range(port_start, port_end + 1):
+            if port not in used_ports:
+                # Assign and Persist
+                self._tunnel_allocations[node_id] = port
+                self.storage.upsert_tunnel_allocation(node_id, port)
+                logger.info(f"Bootstrap: Allocated tunnel port {port} to node {node_id}")
+                return port
+        
+        logger.error(f"Bootstrap: Tunnel port pool exhausted ({port_start}-{port_end})!")
+        return None
 
     def get_election_candidates(self, group_id: str) -> List[str]:
         """
