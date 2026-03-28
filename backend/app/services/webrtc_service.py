@@ -51,16 +51,42 @@ class WebRTCManager:
             if peer_id_lower in self.data_channels:
                 del self.data_channels[peer_id_lower]
         
-        # Configure STUN server for NAT traversal
-        # This helps resolve the public IP and avoids binding errors on some local interfaces
-        config = RTCConfiguration(iceServers=[
-            RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
-            RTCIceServer(urls=["stun:stun1.l.google.com:19302"]),
-            RTCIceServer(urls=["stun:stun2.l.google.com:19302"]),
-            RTCIceServer(urls=["stun:stun.qq.com:3478"]),
-            RTCIceServer(urls=["stun:stun.miwifi.com:3478"]),
-            RTCIceServer(urls=["stun:stun.tuku.cn:3478"])
-        ])
+        # Configure STUN/TURN servers for NAT traversal
+        ice_servers = []
+        
+        # 1. Default Robust STUN list for global coverage
+        default_stuns = [
+            "stun:stun.l.google.com:19302",
+            "stun:stun1.l.google.com:19302",
+            "stun:stun2.l.google.com:19302",
+            "stun:stun3.l.google.com:19302",
+            "stun:stun4.l.google.com:19302",
+            "stun:stun.cloudflare.com:3478",
+            "stun:stun.matrix.org:3478",
+            "stun:stun.qq.com:3478",
+            "stun:stun.miwifi.com:3478",
+            "stun:stun.tuku.cn:3478"
+        ]
+        
+        # 2. Add from ENV if provided (comma-separated list of STUN/TURN URLs)
+        env_ice = os.getenv("ICE_SERVERS")
+        if env_ice:
+            server_urls = [s.strip() for s in env_ice.split(",")]
+            logger.info(f"[{peer_id}] Using custom ICE Servers from environment.")
+        else:
+            server_urls = default_stuns
+            
+        # 3. Handle Credentials (primarily for TURN)
+        turn_user = os.getenv("TURN_USER")
+        turn_pass = os.getenv("TURN_PASS")
+        
+        for url in server_urls:
+            if url.startswith("turn:"):
+                ice_servers.append(RTCIceServer(urls=[url], username=turn_user, credential=turn_pass))
+            else:
+                ice_servers.append(RTCIceServer(urls=[url]))
+        
+        config = RTCConfiguration(iceServers=ice_servers)
         
         pc = RTCPeerConnection(configuration=config)
         self.pcs[peer_id.lower()] = pc
