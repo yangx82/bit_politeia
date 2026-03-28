@@ -1,9 +1,27 @@
-
 import logging
 import threading
 import time
-from typing import Optional, Tuple
+import socket
+import struct
+import random
+from typing import Optional, Tuple, List
 import upnpy
+
+# STUN Protocol Constants
+STUN_BINDING_REQUEST = 0x0001
+STUN_BINDING_RESPONSE = 0x0101
+STUN_MAGIC_COOKIE = 0x2112A442
+STUN_ATTR_MAPPED_ADDRESS = 0x0001
+STUN_ATTR_XOR_MAPPED_ADDRESS = 0x0020
+
+# Reliable Public STUN Servers
+DEFAULT_STUN_SERVERS = [
+    "stun.l.google.com:19302",
+    "stun1.l.google.com:19302",
+    "stun2.l.google.com:19302",
+    "stun.cloudflare.com:3478",
+    "stun.mixminion.net:3478"
+]
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +35,7 @@ class NATManager:
         self.device = None
         self.service = None
         self.public_ip = None
+        self.public_port = None
         self.mapped_ports = set() # Set of (external_port, proto)
         self._lock = threading.Lock()
 
@@ -145,6 +164,110 @@ class NATManager:
         except Exception as e:
             logger.error(f"Failed to delete port mapping: {e}")
             return False
+
+    def get_stun_endpoint(self, local_port: int, servers: List[str] = None) -> Optional[Tuple[str, int]]:
+        """
+        Discover public IP and port using STUN protocol.
+        Tries multiple servers until success.
+        """
+        if not servers:
+            servers = DEFAULT_STUN_SERVERS
+            
+        logger.info(f"Attempting STUN discovery for local port {local_port}...")
+        
+        for server_addr in servers:
+            try:
+                host, port_str = server_addr.split(':')
+                port = int(port_str)
+                
+                # Perform a single STUN Binding Request
+                endpoint = self._query_stun(local_port, host, port)
+                if endpoint:
+                    public_ip, public_port = endpoint
+                    logger.info(f"STUN Discovery Successful via {server_addr}. Public Endpoint: {public_ip}:{public_port}")
+                    self.public_ip = public_ip
+                    self.public_port = public_port
+                    return public_ip, public_port
+            except Exception as e:
+                logger.debug(f"STUN server {server_addr} failed: {e}")
+                continue
+                
+        logger.warning("STUN Discovery failed for all servers.")
+        return None
+
+    def _query_stun(self, local_port: int, stun_host: str, stun_port: int) -> Optional[Tuple[str, int]]:
+        """Internal: Send STUN Binding Request and parse response."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
+        try:
+            # Bind to same local port as the P2P service to ensure symmetric mapping (if any)
+            # Use '0.0.0.0' to bind to all interfaces
+            try:
+                sock.bind(('0.0.0.0', local_port))
+            except Exception as e:
+                # If already bound, we might need SO_REUSEPORT on Linux/Mac
+                # On Windows, SO_REUSEADDR is usually enough
+                logger.debug(f"STUN socket bind failed on {local_port}: {e}. Retrying without bind (limited NAT info).")
+                pass
+
+            sock.settimeout(2.5)
+            
+            # Transaction ID: 12 random bytes
+            transaction_id = bytes(random.getrandbits(8) for _ in range(12))
+            
+            # Header: Type (2), Length (2), Cookie (4), ID (12)
+            header = struct.pack('!HHI12s', STUN_BINDING_REQUEST, 0, STUN_MAGIC_COOKIE, transaction_id)
+            
+            sock.sendto(header, (stun_host, stun_port))
+            
+            data, addr = sock.recvfrom(2048)
+            
+            if len(data) < 20:
+                return None
+                
+            res_type, res_len, res_cookie, res_id = struct.unpack('!HHI12s', data[:20])
+            
+            if res_type != STUN_BINDING_RESPONSE or res_id != transaction_id:
+                return None
+            
+            # Parse STUN Attributes
+            pos = 20
+            while pos + 4 <= len(data):
+                attr_type, attr_len = struct.unpack('!HH', data[pos:pos+4])
+                pos += 4
+                
+                # XOR-MAPPED-ADDRESS (Preferred)
+                if attr_type == STUN_ATTR_XOR_MAPPED_ADDRESS:
+                    if pos + 8 <= len(data):
+                        # Pad (1), Family (1), X-Port (2), X-Address (4)
+                        _, family, x_port = struct.unpack('!BBH', data[pos:pos+4])
+                        if family == 0x01: # IPv4
+                            # Port: XOR with top 16 bits of magic cookie
+                            public_port = x_port ^ (STUN_MAGIC_COOKIE >> 16)
+                            # Address: XOR with magic cookie
+                            x_addr = struct.unpack('!I', data[pos+4:pos+8])[0]
+                            public_ip_int = x_addr ^ STUN_MAGIC_COOKIE
+                            public_ip = socket.inet_ntoa(struct.pack('!I', public_ip_int))
+                            return public_ip, public_port
+                            
+                # MAPPED-ADDRESS (Fallback)
+                elif attr_type == STUN_ATTR_MAPPED_ADDRESS:
+                    if pos + 8 <= len(data):
+                        _, family, port = struct.unpack('!BBH', data[pos:pos+4])
+                        if family == 0x01:
+                            addr_int = struct.unpack('!I', data[pos+4:pos+8])[0]
+                            public_ip = socket.inet_ntoa(struct.pack('!I', addr_int))
+                            return public_ip, port
+
+                # Move to next attribute (padded to 4 bytes)
+                pos += (attr_len + 3) & ~3
+                
+            return None
+        except Exception:
+            return None
+        finally:
+            sock.close()
 
     def close(self):
         """Cleanup all mapped ports on shutdown."""

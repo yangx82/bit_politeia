@@ -32,23 +32,27 @@ class NetworkManager:
 
     async def initialize(self):
         """Initialize network state from bootstrap server."""
-        # Try UPnP Port Mapping
+        # 1. Try UPnP Port Mapping
         from .nat_traversal import nat_manager
+        
+        # Determine the port we want to open (default 8000)
+        internal_port = 8000
+        
+        # Discover and map via UPnP
         if nat_manager.discover_gateway():
-            # Try to map default port 8000
-            external_port = 8000
-            # If we have a local node endpoint configured, try to use that port
-            if self.local_node_id and self.local_node_id in self.nodes:
-                 # Logic to parse port from endpoint... simplified for now
-                 pass
-
-            if nat_manager.add_port_mapping(8000, external_port, "TCP", "BitPoliteia P2P"):
+            if nat_manager.add_port_mapping(internal_port, internal_port, "TCP", "BitPoliteia P2P"):
                 public_ip = nat_manager.get_external_ip()
                 if public_ip:
-                    logger.info(f"NAT Traversal Successful. Public Endpoint: http://{public_ip}:{external_port}")
-                    # We should update our local node's endpoint to this public one
-                    # But we need to be careful not to break local testing.
-                    # For now, just log it. In a real scenario, we'd update self.nodes[self.local_node_id].endpoint
+                    logger.info(f"[Network] UPnP NAT Traversal Successful. Public Endpoint: http://{public_ip}:{internal_port}")
+        
+        # 2. Try STUN Discovery (Parallel Fallback)
+        # STUN is often more reliable than UPnP and helps even if UPnP works (verifies mapping)
+        # We run this in a thread to avoid blocking the async loop
+        try:
+            stun_loop = asyncio.get_event_loop()
+            await stun_loop.run_in_executor(None, nat_manager.get_stun_endpoint, internal_port)
+        except Exception as e:
+            logger.debug(f"[Network] STUN background discovery error: {e}")
         
         await self.sync_topology()
         logger.info("NetworkManager initialized and topology synced")
@@ -160,11 +164,33 @@ class NetworkManager:
         
         # Parse own endpoint for bootstrap registration
         host, port = "127.0.0.1", 8000
+        
+        # Use discovered public endpoint from NAT traversal (UPnP or STUN)
+        from .nat_traversal import nat_manager
+        if nat_manager.public_ip:
+            host = nat_manager.public_ip
+            if nat_manager.public_port:
+                port = nat_manager.public_port
+            
+            # If node.endpoint was localhost, update it to the public one
+            if node.endpoint:
+                try:
+                    parsed = urlparse(node.endpoint)
+                    if parsed.hostname in ("127.0.0.1", "localhost", "0.0.0.0"):
+                        node.endpoint = f"http://{host}:{port}"
+                except Exception: pass
+            else:
+                node.endpoint = f"http://{host}:{port}"
+                
+            logger.info(f"[Network] Using discovered public endpoint for registration: {host}:{port}")
+        
+        # Override with specifically provided node.endpoint if set and not localhost
         if node.endpoint:
             try:
                 parsed = urlparse(node.endpoint)
-                host = parsed.hostname or host
-                port = parsed.port or port
+                if parsed.hostname not in ("127.0.0.1", "localhost", "0.0.0.0"):
+                    host = parsed.hostname or host
+                    port = parsed.port or port
             except Exception: pass
         
         reg = NodeRegistration(
