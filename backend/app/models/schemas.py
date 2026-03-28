@@ -1,13 +1,15 @@
 from pydantic import BaseModel
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 class Message(BaseModel):
     id: str
     content: str
     sender: str  # "user" or "agent"
     timestamp: datetime
-    chat_id: Optional[str] = None
+    session_id: Optional[str] = None
+    status: Optional[str] = None
+  # pending, sent, failed
 
 class ChatRequest(BaseModel):
     content: str

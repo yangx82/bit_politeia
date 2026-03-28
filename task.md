@@ -201,8 +201,38 @@
     - [x] **Client**: Update `BootstrapClient` to support HTTPS and custom CA/verify selection.
     - [x] **Verify**: Create `tests/verify_https.py` to test secure connection.
 
-- [ ] **Architecture Evolution: OpenClaw Analysis**
-    - [ ] **Research**: Analyze OpenClaw's Gateway and Node architecture.
-    - [ ] **Compare**: Document differences with current Bit Politeia (Nanobot) architecture.
-    - [ ] **Design**: Create ADR 0006 proposing "Neural Gateway" pattern.
-    - [ ] **Plan**: Create implementation plan for Gateway/Node integration.
+- [x] **Phase 14: Debuging Status Indicator Regression**
+    - [x] Trace agent message handling through `agent_service.process_bus_message`
+    - [x] Uncover session ID pollution allowing internal summary thoughts into P2P histories with missing statuses
+    - [x] Fix `agent_service.py` to restrict `[NO_RESPONSE_NEEDED]` to the `"resident"` session
+    - [x] Assign correct `status="sent"` defaults for natively replied P2P bus message returns
+    - [x] Re-tag historically erroneous `pending` instances in `chat.jsonl`
+
+- [x] **Phase 15: Fix Task Monitor and Scheduler Registration**
+    - [x] Update `check_tasks_monitor` to parse `pending` tasks and poke the agent immediately.
+    - [x] Increase visibility by changing debug logging to `INFO` for idle task status updates.
+    - [x] Resolve a race condition where `configure_agent` booting the scheduler preemptively caused `start_scheduler` to abandon adding background jobs.
+    - [x] Identify silent `TaskStatus` missing import failure causing internal queue monitor proxy to crash on launch.
+    - [x] Migrate `APScheduler` from `SQLAlchemyJobStore` to `MemoryJobStore` to purge corrupt cached triggers and guarantee instantaneous boot-time trigger evaluation.
+    - [x] Resolve LLM initialisation race condition: Task Monitor now waits/reschedules if `agent.llm` isn't established upon early boot triggers rather than aborting silently.
+    - [x] Append strict system instructions to `check_tasks_monitor`'s poke message dictating that the LLM must execute an action tool, explicitly forbidding the passive fallback of calling `ask_resident` for permission.
+    - [x] Fix Task Monitor 30-minute interval race condition by decoupling the APScheduler polling rate (5 minutes) from the idle threshold (>30 minutes) and actively refreshing the `updated_at` timeout upon dispatch.
+    - [x] Fortify `update_task_status` tool with strict technical constraints resolving the 'attempted but failed = completed' semantic hallucination by demanding absolute success for `completed` usage, directing failures to the `blocked` or `failed` enumerations instead.
+    - [x] Resolve P2P message status persistence bug by making `ResidentMemory.update_message_status` topic-agnostic, ensuring 'sent' status is correctly written to `chat.jsonl` even when triggered via `agent` service context.
+
+- [x] **Phase 16: Agent Self-Awareness & Maintenance**
+    - [x] Define high-level architecture map in `backend/CODEBASE_MAP.md` for agent self-inspection.
+    - [x] Inject `LAYER 4: SELF-AWARENESS` into the global `AGENT_SYSTEM_PROMPT` to authorize internal code analysis.
+    - [x] Explicitly permit file tools to access `backend/app/` source code for autonomous debugging.
+
+- [x] Phase 17: Execute Agent Self-Correction (WebRTC)
+    - [x] Implement ICE candidate buffering in `webrtc_service.py`
+    - [x] Add negotiation timeouts and state cleanup
+    - [x] Implement DataChannel Heartbeat logic
+    - [x] Refactor `handle_remote_delivery_error` for robustness
+    - [x] Verify with `tests/test_webrtc_logic.py`
+- [x] Phase 18: Fix Deceptive Hallucinations (Pipeline Integrity)
+    - [x] Refactor `PlanStage` to distinguish Reasoning from Intent
+    - [x] Implement result-aware `NotifyStage` for factual confirmation
+    - [x] Update `AGENT_SYSTEM_PROMPT` with strict reporting rules
+    - [x] Clean up prompt formatting and numbering

@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
@@ -87,7 +87,7 @@ class SenseStage(PipelineStage):
             effective_history.pop()
             
         # a) Extract Session-Specific History (The Core Dialogue)
-        session_history = [msg for msg in effective_history if msg.chat_id == context.input_message.chat_id]
+        session_history = [msg for msg in effective_history if msg.session_id == context.input_message.session_id]
         recent_session_history = session_history[-8:] if session_history else []
         
         lc_history = []
@@ -101,7 +101,7 @@ class SenseStage(PipelineStage):
         
         # b) Extract Global Recent Events (The Periphery / Awareness)
         # Get the most recent events that DO NOT belong to this session
-        global_events_raw = [msg for msg in effective_history if msg.chat_id != context.input_message.chat_id][-5:]
+        global_events_raw = [msg for msg in effective_history if msg.session_id != context.input_message.session_id][-5:]
         recent_global_events = ""
         if global_events_raw:
             events_formatted = []
@@ -109,24 +109,40 @@ class SenseStage(PipelineStage):
                 sender_label = "Me" if msg.sender == "agent" else msg.sender
                 timestamp_str = msg.timestamp.strftime("%Y-%m-%d %H:%M:%S")
                 # Format: [2024-xx-xx] Me in chat_xyz: Hello
-                events_formatted.append(f"[{timestamp_str}] {sender_label} in {msg.chat_id}: {msg.content}")
+                events_formatted.append(f"[{timestamp_str}] {sender_label} in {msg.session_id}: {msg.content}")
             recent_global_events = "\n".join(events_formatted)
 
         # Build initial messages for Plan stage
         source_label = f"P2P Peer (Node ID: {context.input_message.sender_id})" if context.input_message.channel == "p2p" else "Resident (Human User)"
         
+        # LAYERED & HIERARCHICAL MEMORY INJECTION: Get Semantic + Social + Working context
+        # sender_id is the peer we are talking to
+        peer_id = context.input_message.sender_id
+        memory_context = agent.resident_memory.get_full_context_text(peer_id=peer_id)
+
+        # Resolve Chat Name if it's a group
+        session_id = context.input_message.session_id
+        chat_name = "Unknown"
+        network_status = p2p_service.get_network_status()
+        if network_status and "groups" in network_status:
+            if session_id in network_status["groups"]:
+                chat_name = network_status["groups"][session_id].get("name", "Unknown Group")
+
         context.metadata["messages"] = agent.context_builder.build_messages(
             history=lc_history, 
             current_message=agent_query,
             rag_context=rag_context,
             network_identity=network_identity,
             recent_global_events=recent_global_events,
+            resident_memory_context=memory_context,
             source=source_label,
             name=agent.name,
             personality=agent.personality,
             agent_language=getattr(agent, 'agent_language', '中文'),
             channel=context.input_message.channel,
-            host_info=agent._get_host_info()
+            host_info=agent._get_host_info(),
+            session_id=session_id,
+            chat_name=chat_name
         )
 
 class PlanStage(PipelineStage):
@@ -191,13 +207,28 @@ class PlanStage(PipelineStage):
             context.thoughts.append(str(display_thought))
             context.session.message_count += 1
             
-            # CRITICAL FIX: Thoughts are internal monologue.
-            # 1. ALWAYS send to "gateway" for UI observability.
-            logger.info(f"Pipeline: Publishing thought to gateway: {str(display_thought)[:50]}...")
+            # DIMENSION 4: Subject Separation - Log to Agent Journal
+            agent.resident_memory.log_interaction(
+                sender="agent",
+                content=str(display_thought),
+                msg_type="agent",
+                session_id=context.input_message.session_id,
+                status="sent"
+            )
+
+            # CRITICAL FIX: Distinguish between internal reasoning and premature intents.
+            # If tool calls are present, the non-reasoning content is an 'Intent' (e.g., "I will send it").
+            # Label it so the user knows it's currently in progress.
+            is_intent_only = len(context.tool_calls) > 0 and not thought_content
+            content_to_publish = str(display_thought)
+            if is_intent_only:
+                content_to_publish = f"**[计划执行中]**: {content_to_publish}"
+            
+            logger.info(f"Pipeline: Publishing thought to gateway: {content_to_publish[:50]}...")
             out_msg = OutboundMessage(
                 channel="gateway", 
-                chat_id=context.input_message.sender_id,
-                content=str(display_thought),
+                session_id=context.input_message.session_id,
+                content=content_to_publish,
                 type="thought"
             )
             await agent.message_bus.publish_outbound(out_msg)
@@ -227,7 +258,7 @@ class ExecuteStage(PipelineStage):
             # Emit Tool Call Event - Internal Log
             out_msg = OutboundMessage(
                 channel="gateway",
-                chat_id=context.input_message.sender_id,
+                session_id=context.input_message.session_id,
                 content=f"Invoking {tool_name} with {args}",
                 type="tool_call",
                 metadata={"tool": tool_name, "args": args}
@@ -279,23 +310,43 @@ class NotifyStage(PipelineStage):
     """Stage 5: Communication (Sending response)."""
     async def run(self, context: PipelineContext, agent: Any):
         logger.info(f"[{context.session.session_id}] Stage: Notify")
-        if context.final_answer:
-            # 1. Always mirror to Gateway for Observability (Neural Gateway / UI Debugging)
-            await agent.message_bus.publish_outbound(OutboundMessage(
-                channel="gateway",
-                chat_id=context.input_message.sender_id,
-                content=context.final_answer,
-                type="agent_message"
-            ))
+        if context.final_answer or context.tool_results:
+            # 1. Generate factual confirmation if tools were executed
+            confirmation = context.final_answer or ""
+            if context.tool_results:
+                success_list = [r["tool"] for r in context.tool_results if "error" not in r or not r.get("error")]
+                error_list = [f"{r['tool']} ({r.get('error')})" for r in context.tool_results if r.get("error")]
+                
+                status_suffix = ""
+                if success_list:
+                    status_suffix += f"\n\n**[✓ 执行成功]**: 已完成 {', '.join(success_list)}"
+                if error_list:
+                    status_suffix += f"\n\n**[✗ 执行失败]**: {'; '.join(error_list)}"
+                
+                # Append to agent's final answer if it's too brief or empty
+                if not confirmation or len(confirmation) < 10:
+                    confirmation = (confirmation + status_suffix).strip()
+                else:
+                    # Just mirror the status for visibility if the answer is already descriptive
+                    pass
+
+            # 2. Always mirror to Gateway for Observability
+            if confirmation:
+                await agent.message_bus.publish_outbound(OutboundMessage(
+                    channel="gateway",
+                    session_id=context.input_message.session_id,
+                    content=confirmation,
+                    type="agent_message"
+                ))
 
             # 2. Publish to source channel - DISABLED
             # Reason: The caller (agent_service.process_bus_message) already handles the reply.
             # Doing it here causes Duplicate Messages.
-            # Also, this logic used sender_id instead of chat_id, which was buggy for groups.
+            # Also, this logic used sender_id instead of session_id, which was buggy for groups.
             # if context.input_message.channel != "resident":
             #     await agent.message_bus.publish_outbound(OutboundMessage(
             #         channel=context.input_message.channel,
-            #         chat_id=context.input_message.sender_id,
+            #         session_id=context.input_message.sender_id,
             #         content=context.final_answer
             #     ))
 
@@ -312,3 +363,63 @@ class ArchiveStage(PipelineStage):
             context._sandbox.cleanup()
             
         logger.info(f"Session {context.session.session_id} archived and cleaned up.")
+
+class RetrospectiveStage(PipelineStage):
+    """Stage: Review completed/failed tasks and extract lessons."""
+    async def run(self, context: PipelineContext, agent: Any):
+        logger.info(f"[{context.session.session_id}] Stage: Retrospective")
+        
+        # Check if any tasks were completed or failed in this session
+        # This requires the agent to have tool for marking task status.
+        # For now, we scan for tasks that just reached terminal status.
+        if not hasattr(agent, 'task_manager') or not agent.task_manager:
+            return
+
+        terminal_tasks = []
+        now_utc = datetime.now(timezone.utc)
+        for t in agent.task_manager.tasks.values():
+            if t.status in ["completed", "failed"]:
+                t_upd = t.updated_at
+                # Add awareness guard for legacy naive timestamps
+                if t_upd.tzinfo is None:
+                    t_upd = t_upd.replace(tzinfo=timezone.utc)
+                if (now_utc - t_upd).total_seconds() < 300:
+                    terminal_tasks.append(t)
+        
+        for task in terminal_tasks:
+            if task.lessons_learned:
+                continue # Already processed or provided
+            
+            logger.info(f"Generating retrospective for task: {task.goal}")
+            
+            # Ask LLM to summarize lessons
+            prompt = f"""
+            You recently finished a long-term task: "{task.goal}" 
+            Status: {task.status.value}
+            Checkpoint: {task.checkpoint}
+            
+            Based on your final answer: "{context.final_answer}"
+            
+            Extract the core 'Lesson Learned' or 'Retrospective Summary'. 
+            If it was a success, what were the key factors? 
+            If it failed, what went wrong and how to avoid it?
+            
+            Format: A clear, concise paragraph (max 100 words).
+            """
+            
+            try:
+                from langchain_core.messages import HumanMessage
+                resp = await agent.llm.ainvoke([HumanMessage(content=prompt)])
+                task.lessons_learned = resp.content
+                agent.task_manager.save_tasks()
+                
+                # Optional: Push to Semantic Memory
+                if agent.resident_memory:
+                    agent.resident_memory.log_interaction(
+                        sender="system",
+                        content=f"Retrospective for '{task.goal}': {task.lessons_learned}",
+                        msg_type="moderation",
+                        status="sent"
+                    )
+            except Exception as e:
+                logger.error(f"Retrospective generation failed: {e}")

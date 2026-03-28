@@ -92,7 +92,7 @@ class BaseChannel(ABC):
     async def _handle_message(
         self,
         sender_id: str,
-        chat_id: str,
+        session_id: str,
         content: str,
         media: List[str] = None,
         metadata: dict = None
@@ -102,7 +102,7 @@ class BaseChannel(ABC):
         
         Args:
             sender_id: The sender's identifier.
-            chat_id: The chat/channel identifier.
+            session_id: The chat/channel/session identifier.
             content: Message text content.
             media: Optional list of media URLs.
             metadata: Optional channel-specific metadata.
@@ -116,7 +116,7 @@ class BaseChannel(ABC):
         msg = InboundMessage(
             channel=self.name,
             sender_id=str(sender_id),
-            chat_id=str(chat_id),
+            session_id=str(session_id),
             content=content,
             media=media or [],
             metadata=metadata or {}

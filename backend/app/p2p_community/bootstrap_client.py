@@ -90,7 +90,7 @@ class BootstrapClient:
         self.server_url = server_url.rstrip("/")
         # httpx handles verify=False to disable SSL cert checking
         self.verify = verify
-        self.client = httpx.AsyncClient(timeout=15.0, verify=verify)  # Increased for LAN stability
+        self.client = httpx.AsyncClient(timeout=15.0, verify=verify, trust_env=False)  # Increased for LAN stability
 
     async def set_server_url(self, url: str):
         """Dynamically update the bootstrap server URL."""
@@ -103,7 +103,7 @@ class BootstrapClient:
         self.verify = verify
         # Close old client if possible, though httpx handles it
         await self.client.aclose()
-        self.client = httpx.AsyncClient(timeout=15.0, verify=verify)
+        self.client = httpx.AsyncClient(timeout=15.0, verify=verify, trust_env=False)
         logger.info(f"BootstrapClient: SSL verification set to {verify}")
 
     async def get_joinable_groups(self, preferred_level: int = 1, my_node_id: Optional[str] = None) -> List[GroupInfo]:

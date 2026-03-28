@@ -2,7 +2,7 @@ import logging
 import json
 import asyncio
 import os
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration, RTCIceServer
 from aiortc.contrib.signaling import object_to_string, object_from_string
 
@@ -32,6 +32,8 @@ class WebRTCManager:
         self.message_callback = message_callback # Function to handle received data channel messages
         self.negotiating: set[str] = set() # peer_ids currently in handshake
         self.last_init_times: Dict[str, float] = {} # peer_id -> timestamp of last initiation
+        self.pending_candidates: Dict[str, List[Dict[str, Any]]] = {} # peer_id -> list of buffered candidates
+        self.heartbeat_tasks: Dict[str, asyncio.Task] = {} # peer_id -> heartbeat task
         self.loop = None
 
     def set_loop(self, loop):
@@ -41,18 +43,50 @@ class WebRTCManager:
         # Use case-insensitive lookup
         peer_id_lower = peer_id.lower() if hasattr(peer_id, 'lower') else str(peer_id).lower()
         if peer_id_lower in self.pcs:
-            return self.pcs[peer_id_lower]
+            pc = self.pcs[peer_id_lower]
+            if pc.signalingState != "closed":
+                return pc
+            logger.info(f"[{peer_id}] Existing PeerConnection is CLOSED. Cleaning up and recreating.")
+            del self.pcs[peer_id_lower]
+            if peer_id_lower in self.data_channels:
+                del self.data_channels[peer_id_lower]
         
-        # Configure STUN server for NAT traversal
-        # This helps resolve the public IP and avoids binding errors on some local interfaces
-        config = RTCConfiguration(iceServers=[
-            RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
-            RTCIceServer(urls=["stun:stun1.l.google.com:19302"]),
-            RTCIceServer(urls=["stun:stun2.l.google.com:19302"]),
-            RTCIceServer(urls=["stun:stun.qq.com:3478"]),
-            RTCIceServer(urls=["stun:stun.miwifi.com:3478"]),
-            RTCIceServer(urls=["stun:stun.tuku.cn:3478"])
-        ])
+        # Configure STUN/TURN servers for NAT traversal
+        ice_servers = []
+        
+        # 1. Default Robust STUN list for global coverage
+        default_stuns = [
+            "stun:stun.l.google.com:19302",
+            "stun:stun1.l.google.com:19302",
+            "stun:stun2.l.google.com:19302",
+            "stun:stun3.l.google.com:19302",
+            "stun:stun4.l.google.com:19302",
+            "stun:stun.cloudflare.com:3478",
+            "stun:stun.matrix.org:3478",
+            "stun:stun.qq.com:3478",
+            "stun:stun.miwifi.com:3478",
+            "stun:stun.tuku.cn:3478"
+        ]
+        
+        # 2. Add from ENV if provided (comma-separated list of STUN/TURN URLs)
+        env_ice = os.getenv("ICE_SERVERS")
+        if env_ice:
+            server_urls = [s.strip() for s in env_ice.split(",")]
+            logger.info(f"[{peer_id}] Using custom ICE Servers from environment.")
+        else:
+            server_urls = default_stuns
+            
+        # 3. Handle Credentials (primarily for TURN)
+        turn_user = os.getenv("TURN_USER")
+        turn_pass = os.getenv("TURN_PASS")
+        
+        for url in server_urls:
+            if url.startswith("turn:"):
+                ice_servers.append(RTCIceServer(urls=[url], username=turn_user, credential=turn_pass))
+            else:
+                ice_servers.append(RTCIceServer(urls=[url]))
+        
+        config = RTCConfiguration(iceServers=ice_servers)
         
         pc = RTCPeerConnection(configuration=config)
         self.pcs[peer_id.lower()] = pc
@@ -92,15 +126,26 @@ class WebRTCManager:
             else:
                 logger.info(f"[{peer_id}] No more ICE candidates.")
 
+        # Apply buffered candidates if any
+        if peer_id_lower in self.pending_candidates:
+            candidates = self.pending_candidates.pop(peer_id_lower)
+            logger.info(f"[{peer_id}] Flushing {len(candidates)} buffered ICE candidates.")
+            for cand_data in candidates:
+                asyncio.create_task(self.handle_candidate(peer_id, cand_data))
+
         return pc
 
     async def handle_candidate(self, peer_id: str, candidate_data: Any):
         """Handle incoming ICE Candidate from remote peer."""
-        if peer_id not in self.pcs:
-            logger.warning(f"[{peer_id}] Received ICE candidate for unknown peer connection")
+        peer_id_lower = peer_id.lower()
+        if peer_id_lower not in self.pcs:
+            logger.info(f"[{peer_id}] PC not ready. Buffering ICE candidate.")
+            if peer_id_lower not in self.pending_candidates:
+                self.pending_candidates[peer_id_lower] = []
+            self.pending_candidates[peer_id_lower].append(candidate_data)
             return
             
-        pc = self.pcs[peer_id]
+        pc = self.pcs[peer_id_lower]
         try:
             # Parse candidate data
             # candidate_data usually looks like {"candidate": "...", "sdpMid": "...", "sdpMLineIndex": ...}
@@ -123,24 +168,43 @@ class WebRTCManager:
         logger.info(f"[{peer_id}] Setting up data channel '{channel.label}' (State: {channel.readyState})")
         self.data_channels[peer_id.lower()] = channel
         
+        @channel.on("open")
+        def on_open():
+            peer_id_lower = peer_id.lower()
+            logger.info(f"[{peer_id}] !!! DATA CHANNEL '{channel.label}' IS OPEN !!!")
+            print(f"\n[!!!] WebRTC DATA CHANNEL OPEN WITH {peer_id} [!!!]\n", flush=True)
+            # Start heartbeat
+            if peer_id_lower not in self.heartbeat_tasks:
+                self.heartbeat_tasks[peer_id_lower] = asyncio.create_task(self._heartbeat_loop(peer_id, channel))
+
         @channel.on("message")
         def on_message(message):
+            # Check for heartbeat ping/pong
+            try:
+                msg_data = json.loads(message)
+                if isinstance(msg_data, dict):
+                    if msg_data.get("type") == "ping":
+                        channel.send(json.dumps({"type": "pong"}))
+                        return
+                    if msg_data.get("type") == "pong":
+                        # Heartbeat received
+                        return
+            except:
+                pass
+
             logger.info(f"[{peer_id}] >>> RECEIVED VIA WEBRTC: {message[:100]}...")
             # Handle received data
             if self.message_callback:
                 if self.loop:
                     asyncio.run_coroutine_threadsafe(self.message_callback(peer_id, message), self.loop)
                 else:
-                    # Fallback: Try to get running loop (might fail if in thread)
+                    # Fallback
                     try:
-                        loop = asyncio.get_running_loop()
-                        asyncio.run_coroutine_threadsafe(self.message_callback(peer_id, message), loop)
-                    except RuntimeError:
-                         logger.error(f"[{peer_id}] WebRTC Message Error: No event loop available to schedule callback.")
-
-        def on_open():
-            logger.info(f"[{peer_id}] !!! DATA CHANNEL '{channel.label}' IS OPEN !!!")
-            print(f"\n[!!!] WebRTC DATA CHANNEL OPEN WITH {peer_id} [!!!]\n", flush=True)
+                        import asyncio as _asyncio
+                        loop = _asyncio.get_running_loop()
+                        _asyncio.run_coroutine_threadsafe(self.message_callback(peer_id, message), loop)
+                    except:
+                         logger.error(f"[{peer_id}] WebRTC Message Error: No event loop available.")
 
         if channel.readyState == "open":
             on_open()
@@ -182,21 +246,26 @@ class WebRTCManager:
             channel = pc.createDataChannel("chat")
             self.setup_data_channel(peer_id, channel)
             
-            # Create Offer
-            offer = await pc.createOffer()
-            await pc.setLocalDescription(offer)
+            # Create Offer with Timeout
+            async with asyncio.timeout(30.0):
+                offer = await pc.createOffer()
+                await pc.setLocalDescription(offer)
             
             # Send Offer via Signaling (Simple dict, avoids double stringify)
             await self.signaling_callback(peer_id, "sdp_offer", {
                 "sdp": pc.localDescription.sdp,
                 "type": pc.localDescription.type
             })
+        except asyncio.TimeoutError:
+             logger.error(f"[{peer_id}] Connection initiation TIMEOUT (30s).")
+             self.negotiating.discard(peer_id_lower)
         except Exception as e:
             logger.error(f"[{peer_id}] Failed to initiate connection: {e}")
-            self.negotiating.discard(peer_id)
+            self.negotiating.discard(peer_id_lower)
 
     async def handle_offer(self, peer_id: str, sdp_data: Any):
         """Handle incoming SDP Offer."""
+        peer_id_lower = peer_id.lower()
         pc = await self.get_or_create_pc(peer_id)
         logger.info(f"[{peer_id}] Received SDP Offer. Current state: signaling={pc.signalingState}, connection={pc.connectionState}")
         
@@ -244,21 +313,25 @@ class WebRTCManager:
                     return
 
             logger.info(f"[{peer_id}] Setting remote offer SDP...")
-            await pc.setRemoteDescription(offer)
-            logger.info(f"[{peer_id}] Remote offer set successfully. State: {pc.signalingState}")
-            
-            # Create Answer
-            answer = await pc.createAnswer()
-            await pc.setLocalDescription(answer)
+            async with asyncio.timeout(30.0):
+                await pc.setRemoteDescription(offer)
+                logger.info(f"[{peer_id}] Remote offer set successfully. State: {pc.signalingState}")
+                
+                # Create Answer
+                answer = await pc.createAnswer()
+                await pc.setLocalDescription(answer)
             
             # Send Answer via Signaling
             await self.signaling_callback(peer_id, "sdp_answer", {
                 "sdp": pc.localDescription.sdp,
                 "type": pc.localDescription.type
             })
+        except asyncio.TimeoutError:
+            logger.error(f"[{peer_id}] SDP Offer handling TIMEOUT (30s).")
+            self.negotiating.discard(peer_id_lower)
         except Exception as e:
             logger.error(f"[{peer_id}] Failed to handle offer: {e}")
-            self.negotiating.discard(peer_id)
+            self.negotiating.discard(peer_id_lower)
 
     async def handle_answer(self, peer_id: str, sdp_data: Any):
         """Handle incoming SDP Answer."""
@@ -312,3 +385,23 @@ class WebRTCManager:
                 logger.error(f"Failed to send via DataChannel: {e}")
                 return False
         return False
+
+    async def _heartbeat_loop(self, peer_id: str, channel):
+        """Background loop to send pings and keep connection alive."""
+        peer_id_lower = peer_id.lower()
+        logger.info(f"[{peer_id}] Starting WebRTC Heartbeat loop.")
+        try:
+            while channel.readyState == "open":
+                await asyncio.sleep(30)
+                if channel.readyState == "open":
+                    try:
+                        channel.send(json.dumps({"type": "ping"}))
+                    except Exception as e:
+                        logger.warning(f"[{peer_id}] Heartbeat PING failed: {e}")
+                        break
+        except asyncio.CancelledError:
+            pass
+        finally:
+            logger.info(f"[{peer_id}] WebRTC Heartbeat loop stopped.")
+            if peer_id_lower in self.heartbeat_tasks:
+                del self.heartbeat_tasks[peer_id_lower]

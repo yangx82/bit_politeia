@@ -10,6 +10,11 @@ async def send_p2p_message(recipient_id: str, content: str, message_type: str = 
     """
     Send a P2P message to another node or group in the network.
     
+    IMPORTANT SAFETY RULES:
+    - NEVER use this tool to ask your Resident (human user) for advice or instructions. Use 'ask_resident' instead.
+    - If you are in a GROUP CONVERSATION (check your system prompt context), use the Group ID as the 'recipient_id' and 'GROUP' as the 'message_type' to reply to all members.
+    - Only use 'DIRECT' if you want to send a private message to a specific node.
+    
     Args:
         recipient_id: The UUID of the target Node or Group.
         content: The text content of the message.
@@ -78,6 +83,82 @@ async def send_file(recipient_id: str, file_path: str, description: str = "File"
             
     except Exception as e:
         return f"Error sending file: {str(e)}"
+
+@tool
+async def submit_code_fix(file_path: str, new_content: str, explanation: str) -> str:
+    """
+    Submits a code fix for self-repair. 
+    The fix will be validated by a background supervisor and applied if tests pass.
+    Note: Provide the FULL content for 'new_content'. file_path should be relative to project root.
+    
+    Args:
+        file_path: Relative path to the file to modify (e.g., 'backend/app/services/agent_service.py').
+        new_content: The complete new content for the file.
+        explanation: Why this fix is being applied and what it fixes.
+    """
+    import os
+    import json
+    from datetime import datetime
+    from pathlib import Path
+    
+    # Absolute path: project_root/backend/data/code_updates/pending.json
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    WATCH_SETTING = str(PROJECT_ROOT / "data" / "code_updates" / "pending.json")
+    STALE_TIMEOUT_SECONDS = 60
+    
+    if os.path.exists(WATCH_SETTING):
+        # Check if the file is stale (older than 60 seconds)
+        try:
+            file_age = datetime.now().timestamp() - os.path.getmtime(WATCH_SETTING)
+            if file_age < STALE_TIMEOUT_SECONDS:
+                return f"Error: A pending code update is already being processed ({int(file_age)}s ago). Please wait and try again."
+            else:
+                logger.warning(f"Stale pending.json detected ({int(file_age)}s old). Overwriting.")
+                os.remove(WATCH_SETTING)
+        except Exception:
+            os.remove(WATCH_SETTING)
+        
+    try:
+        os.makedirs(os.path.dirname(WATCH_SETTING), exist_ok=True)
+        
+        request = {
+            "file_path": file_path,
+            "new_content": new_content,
+            "explanation": explanation,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        with open(WATCH_SETTING, "w", encoding="utf-8") as f:
+            json.dump(request, f, indent=4)
+            
+        return f"SUCCESS: Code fix for {file_path} submitted to supervisor. It will be validated and applied shortly."
+    except Exception as e:
+        return f"Error submitting code fix: {str(e)}"
+
+@tool
+async def repair_code(issue_description: str) -> str:
+    """
+    Delegate a code repair task to the specialized Self-Healing Sub-Agent.
+    Use this if you or the resident identify a bug, a logic flaw, or a needed improvement in the backend code.
+    The sub-agent will analyze the codebase and attempt to submit a fix.
+    
+    Args:
+        issue_description: Detailed description of the bug or the expected change.
+    """
+    try:
+        from app.services.agent_service import agent_service
+        import asyncio
+        import os
+        
+        if not os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes"):
+            return "Error: Self-healing is currently disabled in system settings (ENABLE_SELF_HEALING=false)."
+            
+        # Launch the sub-agent task
+        asyncio.create_task(agent_service._run_autonomous_repair_subagent(issue_description))
+        
+        return f"Task delegated to System Repair Specialist: {issue_description}. Monitor 'system_health' thought stream for progress."
+    except Exception as e:
+        return f"Error delegating repair task: {str(e)}"
 
 @tool
 async def get_my_status() -> str:
@@ -381,6 +462,7 @@ from ..agent.tools_exec import execute_shell_command
 from ..agent.tools_fs import list_dir, read_file, write_file, edit_file, copy_files, move_files
 from ..agent.tools_web import fetch_web_page
 from ..agent.tools_cron import schedule_reminder, list_reminders, cancel_reminder, start_scheduler, get_scheduler_status
+from ..agent.tools_task import TASK_TOOLS
 
 @tool
 async def ask_resident(question: str) -> str:
@@ -481,5 +563,11 @@ AGENT_TOOLS = [
     fetch_web_page,
     schedule_reminder, list_reminders, cancel_reminder,
     start_scheduler, get_scheduler_status,
-    delegate_task
+    delegate_task, repair_code,
+] + TASK_TOOLS
+
+# Specialized toolset for the Self-Healing Sub-Agent
+REPAIR_TOOLS = [
+    list_dir, read_file, write_file, edit_file, # Exploration & Basic Edit
+    submit_code_fix # The actual repair submission
 ]

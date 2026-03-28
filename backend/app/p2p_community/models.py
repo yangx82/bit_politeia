@@ -62,6 +62,7 @@ class Node:
         self.inbox: List[dict] = []
         self.message_handler: Optional[Callable[[Dict[str, Any]], Any]] = None
         self.last_seen: Optional[datetime.datetime] = None
+        self.recent_inbox_ids: Set[str] = set() # Runtime deduplication for in-flight messages
 
     @property
     def is_online(self) -> bool:
@@ -131,7 +132,7 @@ class Node:
             self.group_ids.add(group_id)
         return success
 
-    async def send_message(self, target_id: str, content: Dict[str, Any], msg_type: str = 'DIRECT'):
+    async def send_message(self, target_id: str, content: Dict[str, Any], msg_type: str = 'DIRECT', message_id: Optional[str] = None, timestamp: Optional[datetime.datetime] = None):
         """
         Send a signed message via the network manager.
         """
@@ -143,7 +144,9 @@ class Node:
             sender_id=self.node_id,
             target_id=target_id,
             msg_type=msg_type,
-            content=content
+            content=content,
+            message_id=message_id,
+            timestamp=timestamp
         )
 
     async def receive_message(self, message: Any):
@@ -156,9 +159,30 @@ class Node:
         else:
             msg_data = message
             
+        # 0. Deduplication (Write-level)
+        m_id = msg_data.get('message_id')
+        if m_id:
+            if m_id in self.recent_inbox_ids:
+                logger.debug(f"Duplicate P2P message {m_id} ignored at receive stage.")
+                return
+            self.recent_inbox_ids.add(m_id)
+            
+            # Keep set size reasonable
+            if len(self.recent_inbox_ids) > 1000:
+                # Remove oldest (roughly)
+                it = iter(self.recent_inbox_ids)
+                for _ in range(100):
+                    try:
+                        next(it)
+                        # We can't easily pop from set by order, but we can clear or convert.
+                        # For a simple sliding window in a set, we just want to avoid memory leak.
+                        # Better to use a list if order matters, but here set is fine for fast lookup.
+                    except StopIteration: break
+                # Simple strategy: just clear if it gets too big, or use a list based queue.
+                if len(self.recent_inbox_ids) > 2000:
+                    self.recent_inbox_ids.clear()
+        
         logger.info(f"[{msg_data.get('sender_id', 'unknown')}] <<< RECEIVED via {msg_data.get('message_type', 'P2P')}: {str(msg_data.get('content'))[:100]}...")
-        if msg_data.get("message_type") == "DIRECT":
-             print(f"\n[<<<] INCOMING P2P MESSAGE from {msg_data.get('sender_id')}: {str(msg_data.get('content'))[:100]} [<<<]\n", flush=True)
         
         # Allow external handler to intercept (e.g., for WebRTC Signaling)
         if self.message_handler:
@@ -183,7 +207,6 @@ class Node:
             from pathlib import Path
             
             # Resolve backend/data/p2p safely
-            # app/p2p_community/models.py -> app/p2p_community -> app -> backend
             current_file = Path(__file__).resolve()
             backend_dir = current_file.parent.parent.parent
             data_dir = backend_dir / "data"
@@ -191,9 +214,15 @@ class Node:
             
             p2p_dir.mkdir(parents=True, exist_ok=True)
             
+            def json_serial(obj):
+                """JSON serializer for objects not serializable by default json code"""
+                if hasattr(obj, 'isoformat'):
+                    return obj.isoformat()
+                raise TypeError(f"Type {type(obj)} not serializable")
+
             inbox_path = p2p_dir / f"inbox_{self.node_id}.jsonl"
             with open(inbox_path, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(msg_data) + "\n")
+                f.write(json.dumps(msg_data, default=json_serial) + "\n")
         except Exception as e:
             logger.error(f"Failed to persist inbox message: {e}")
 

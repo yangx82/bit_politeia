@@ -1,8 +1,9 @@
 import asyncio
-from typing import Any, Dict
+import os
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Set
 from ..models.schemas import Message, AgentStatus, P2PMessage
 from .crypto_service import crypto_service
 from .transaction_manager import transaction_manager
@@ -22,65 +23,54 @@ p2p_logger = logging.getLogger("p2p_network")
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
-from ..agent.prompts import AGENT_SYSTEM_PROMPT
-from ..agent.tools import AGENT_TOOLS
+from ..agent.prompts import AGENT_SYSTEM_PROMPT, SELF_HEALING_SUBAGENT_PROMPT
+from ..agent.tools import AGENT_TOOLS, REPAIR_TOOLS
 from ..agent.tools_meta import create_tool_tool
 from .skill_manager import skill_manager
 from ..agent.context import ContextBuilder
-from ..p2p_community.governance import GovernanceManager, Vote
+from ..p2p_community.governance import GovernanceManager, Vote, ElectionType
 import json
 
 from ..p2p_community.economy import Ledger, Transaction
 from ..p2p_community.reputation import ReputationManager, Evaluation
 from ..p2p_community.blockchain import ArchiveManager
-from .resident_link import ResidentMemory, ResidentReporter
+from .resident_memory_service import ResidentMemory, ResidentReporter
 from .memory_store import memory_store
 from .knowledge_base import knowledge_base
 
 from .consolidation import ConsolidationService
+from .task_manager import TaskManager, TaskStatus
 
 class AgentService:
     def __init__(self):
         self.history: list[Message] = []
         self.processed_message_ids: set[str] = set() # For de-duplication
+        self.notified_governance_ids: Set[str] = set() # Track proposals shared with agent
+        self.notified_error_signatures: Set[str] = set() # Track error signatures for self-reflection
+        self.notified_watchdog_ids: Set[str] = set() # Track watchdog-triggered message IDs
         self._is_processing_inbox = False # Concurrency Guard
         self.status = AgentStatus(is_online=True, reputation=10, balance=100.0)
         self.message_bus = message_bus
         self.resident_bridges: Dict[str, str] = {} # Bridge Name -> Chat/OpenID
         
-        # Scheduler with Persistence
+        # Resolve absolute path to backend/data
+        from pathlib import Path
+        current_file = Path(__file__).resolve()
+        self.backend_dir = current_file.parent.parent.parent
+        self.data_dir = self.backend_dir / "data"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Scheduler (Memory-only to avoid DB trigger persistence conflicts with hardcoded boot jobs)
         try:
-            from pathlib import Path
-            import os
-            
-            # Resolve absolute path to backend/data
-            # app/services/agent_service.py -> app/services -> app -> backend
-            current_file = Path(__file__).resolve()
-            self.backend_dir = current_file.parent.parent.parent
-            self.data_dir = self.backend_dir / "data"
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            
-            db_path = self.data_dir / "jobs.sqlite"
-            
-            from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
-            from apscheduler.executors.pool import ThreadPoolExecutor
-            
-            jobstores = {
-                # Use 4 slashes for absolute path in unix/windows
-                'default': SQLAlchemyJobStore(url=f'sqlite:///{db_path}')
-            }
-            executors = {} # Default: AsyncIOExecutor() handles coroutines
             job_defaults = {
                 'coalesce': True, # Merge multiple missed runs into one
-                'max_instances': 3
+                'max_instances': 3,
+                'misfire_grace_time': 60 # Generous grace time to prevent skipping on boot load
             }
-            self.scheduler = AsyncIOScheduler(jobstores=jobstores, job_defaults=job_defaults)
-            logger.info(f"Scheduler initialized with SQLite persistence at {db_path}.")
-        except ImportError:
-            logger.warning("SQLAlchemy not found, using MemoryJobStore (No persistence).")
-            self.scheduler = AsyncIOScheduler()
+            self.scheduler = AsyncIOScheduler(job_defaults=job_defaults)
+            logger.info(f"Scheduler initialized with Memory persistence.")
         except Exception as e:
-            logger.error(f"Failed to init persistent scheduler: {e}. Fallback to Memory.")
+            logger.error(f"Failed to init scheduler: {e}")
             self.scheduler = AsyncIOScheduler()
 
         # Scheduler will be started in start_scheduler() called by main.py lifespan
@@ -106,9 +96,15 @@ class AgentService:
         self.resident_memory = ResidentMemory() 
         self.reporter = None 
         self.research_field = "AI Governance"
-        self.context_builder = ContextBuilder()
+        self.task_manager = TaskManager()
+        self.context_builder = ContextBuilder(task_manager=self.task_manager)
         self.consolidation_service = ConsolidationService(self)
         
+        # Identity Defaults
+        self.name = "Anonym"
+        self.personality = "Professional and helpful"
+        self.agent_language = "中文"
+
         # Hydrate History and System State from Disk
         self._hydrate_history()
         self._hydrate_system_state()
@@ -117,19 +113,84 @@ class AgentService:
     def start_scheduler(self):
         """Start the scheduler and add background jobs."""
         try:
-            if not self.scheduler.running:
-                # 1. Add background jobs using string references for robustness
+            # Add jobs only once
+            if not getattr(self, '_jobs_added', False):
                 self.scheduler.add_job("app.services.agent_service:trigger_scheduled_task_proxy", 'interval', hours=12, misfire_grace_time=60, id="periodic_brief_job", replace_existing=True) 
-                self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=10, misfire_grace_time=5, id="network_inbox_job", replace_existing=True) 
-                self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', seconds=60, id="sync_network_job", replace_existing=True) 
+                self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=30, misfire_grace_time=15, id="network_inbox_job", replace_existing=True) 
+                self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', minutes=2, id="sync_network_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=5, next_run_time=datetime.now(timezone.utc), id="task_monitor_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:check_governance_proposals_proxy", 'interval', minutes=10, next_run_time=datetime.now(timezone.utc), id="governance_monitor_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, next_run_time=datetime.now(timezone.utc), id="retry_messages_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:self_reflection_proxy", 'interval', minutes=15, id="self_reflection_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:check_unhandled_messages_proxy", 'interval', minutes=5, id="unhandled_msg_watchdog", replace_existing=True)
+                # Gossip State Sync: Periodic state synchronization for eventual consistency
+                self.scheduler.add_job("app.services.agent_service:gossip_state_sync_proxy", 'interval', minutes=3, id="gossip_state_sync_job", replace_existing=True)
+                # Self-Healing: only register supervisor job if env var is set
+                if os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes"):
+                    self.scheduler.add_job("app.services.agent_service:code_supervisor_proxy", 'interval', seconds=10, id="code_supervisor_job", replace_existing=True)
+                    logger.info("Self-Healing: Code supervisor job registered (ENABLE_SELF_HEALING=true).")
+                self._jobs_added = True
+                logger.info("Scheduler background jobs registered successfully.")
 
+            if not self.scheduler.running:
                 self.scheduler.start()
-                logger.info("Scheduler started successfully with background jobs.")
+                logger.info("Scheduler started successfully.")
             else:
-                logger.info("Scheduler already running.")
+                logger.info("Scheduler already running, jobs ensured.")
         except Exception as e:
             logger.error(f"Failed to start scheduler/jobs: {e}")
+
+    async def _retry_failed_messages(self):
+        """10-minute automatic retry for failed/pending P2P messages."""
+        logger.info("Starting automatic retry for failed/pending P2P messages...")
+        
+        # 1. Find candidates (last 2 hours for safety, but focus on the 10min window)
+        # focus on the 10min window
+        now = datetime.now(timezone.utc)
+        ten_minutes_ago = now - timedelta(minutes=10)
+        one_minute_ago = now - timedelta(minutes=1)
+        
+        # We only retry messages that failed recently (within the last 10 mins).
+        # We use a 1-minute grace period to avoid double-sending messages that are still connecting.
+        retry_candidates = []
+        for msg in self.history:
+            if msg.sender == "agent" and msg.status in ["failed", "pending", None]:
+                # Ensure msg.timestamp is aware before comparison
+                m_ts = msg.timestamp
+                if m_ts and m_ts.tzinfo is None:
+                    m_ts = m_ts.replace(tzinfo=timezone.utc)
+                
+                if m_ts and ten_minutes_ago <= m_ts <= one_minute_ago:
+                    retry_candidates.append(msg)
+        
+        if not retry_candidates:
+            logger.info("No candidates for P2P retry found.")
+            return
+
+        logger.info(f"Found {len(retry_candidates)} messages for P2P retry.")
+        
+        for msg in retry_candidates:
+            try:
+                # session_id in history is normalized, but send_p2p_message handles it
+                # We use is_retry=True to skip moderation and history duplication
+                # We pass original_msg_id to ensure the P2P network deduplicates if needed
+                recipient_id = msg.session_id
+                # Avoid retrying if it's not a P2P session (resident or system)
+                if recipient_id in ["resident", "system"] or "[" in recipient_id:
+                    continue
+                    
+                logger.info(f"Triggering automatic retry for message {msg.id} to {recipient_id}")
+                await self.send_p2p_message(
+                    recipient_id=recipient_id,
+                    content=msg.content,
+                    is_retry=True,
+                    original_msg_id=msg.id
+                )
+            except Exception as e:
+                logger.error(f"Failed to retry message {msg.id}: {e}")
+
+    # ... remaining of file ...
 
     def _get_host_info(self) -> str:
         """Detect current host environment (OS, Shell, CWD) for the agent."""
@@ -156,6 +217,19 @@ class AgentService:
             info += "- **Constraint**: Use POSIX-compatible commands (e.g., `ls` instead of `dir`).\n"
             
         return info
+    
+    def _normalize_session_id(self, sid: str) -> str:
+        """Standardize Session/Chat IDs to Hex 64-char format if it looks like a P2P ID."""
+        if not sid: return sid
+        # Strip potential prefixes
+        if sid.startswith("[p2p] "):
+            sid = sid[6:]
+        # If it's a known name, try to resolve to Node ID
+        if p2p_service._initialized and p2p_service.network_manager:
+            for node_id, node in p2p_service.network_manager.nodes.items():
+                if node.name == sid:
+                    return node_id
+        return sid
 
 
     async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None, p2p_reply_delay: int = 5, agent_language: str = "中文", ralph_wiggum_mode: bool = False):
@@ -269,7 +343,8 @@ class AgentService:
         await self.message_bus.start()
         asyncio.create_task(self.listen_to_bus())
         
-        self.governance_manager = GovernanceManager(node_id)
+        gov_path = str(self.data_dir / "governance_store.json")
+        self.governance_manager = GovernanceManager(node_id, storage_path=gov_path)
         self.reputation_manager = ReputationManager(node_id)
         self.archive_manager = ArchiveManager(node_id)
         self.reporter = ResidentReporter(self)
@@ -289,6 +364,15 @@ class AgentService:
         
         # Initialize LLM with Tools
         try:
+            # Clear proxy env vars that use unsupported schemes (e.g. socks://)
+            # httpx (used internally by langchain/OpenAI) doesn't support socks without extras
+            import os
+            for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 
+                              'http_proxy', 'https_proxy', 'all_proxy']:
+                if proxy_var in os.environ and 'socks' in os.environ[proxy_var].lower():
+                    logger.info(f"Clearing unsupported proxy env var: {proxy_var}={os.environ[proxy_var]}")
+                    del os.environ[proxy_var]
+            
             # Common fix: Ensure base_url for OpenAI-compatible proxies ends with /v1
             logger.info(f"Initializing ChatOpenAI with base_url: {base_url}")
             
@@ -321,7 +405,9 @@ class AgentService:
             # INJECT DYNAMIC HOST INFO
             host_info = self._get_host_info()
             
-            self.current_system_prompt = AGENT_SYSTEM_PROMPT + identity_section + host_info + "\n" + skill_index_prompt
+            base_prompt = AGENT_SYSTEM_PROMPT
+                
+            self.current_system_prompt = base_prompt + identity_section + host_info + "\n" + skill_index_prompt
             
             self.llm = raw_llm.bind_tools(all_tools)
             self.tools_map = {t.name: t for t in all_tools}
@@ -448,26 +534,38 @@ class AgentService:
 
     async def run_pipeline(self, msg: InboundMessage) -> tuple[str, bool, str]:
         """Execute the 6-stage pipeline for an inbound message."""
-        from ..agent.pipeline import PipelineContext, SenseStage, PlanStage, ExecuteStage, ConsolidateStage, NotifyStage, ArchiveStage
+        from ..agent.pipeline import PipelineContext, SenseStage, PlanStage, ExecuteStage, ConsolidateStage, RetrospectiveStage, NotifyStage, ArchiveStage
         from ..services.session_service import session_manager
         
         # 0. Get or Create Session
         session = session_manager.get_session(msg.sender_id, msg.channel)
         
+        # [ICE WARMUP] Start handshake in background during reasoning/delay
+        if msg.sender_id and msg.channel == "p2p":
+            asyncio.create_task(p2p_service.warmup_webrtc(msg.sender_id))
+
         # Refactored P2P Delay: Move delay to cognitive layer (Pipeline Start)
         delay_val = getattr(self, 'p2p_reply_delay', 60)
-        # p2p_logger.info(f"DEBUG: run_pipeline START. Channel={msg.channel}, Sender={msg.sender_id}, DelayVal={delay_val} (Type: {type(delay_val)})")
         
         if msg.channel == "p2p" and delay_val > 0:
-            # p2p_logger.info(f"Simulating human response delay: {delay_val}s for P2P pipeline (Source: {msg.sender_id})")
-            # 1. Notify Gateway that we are thinking (so UI shows status)
-            await self.message_bus.publish_outbound(OutboundMessage(
-                channel="gateway",
-                chat_id=msg.sender_id,
-                content=f"... (Simulating {delay_val}s human-like research delay) ...",
-                type="thought"
-            ))
-            await asyncio.sleep(delay_val)
+            # Calculate remaining delay relative to message timestamp
+            # This ensures that the total delay is consistent regardless of transit time.
+            now = datetime.now(timezone.utc)
+            # If msg.timestamp is offset-naive and now is naive, they compare fine.
+            # Assuming both are local or both are UTC.
+            target_time = msg.timestamp + timedelta(seconds=delay_val)
+            remaining_seconds = (target_time - now).total_seconds()
+            
+            if remaining_seconds > 0:
+                # 1. Notify Gateway that we are thinking (so UI shows status)
+                ui_session_id = self._normalize_session_id(msg.session_id)
+                await self.message_bus.publish_outbound(OutboundMessage(
+                    channel="gateway",
+                    session_id=ui_session_id,
+                    content=f"... (Finalizing research... {int(remaining_seconds)}s remaining) ...",
+                    type="thought"
+                ))
+                await asyncio.sleep(remaining_seconds)
         #     p2p_logger.info(f"DEBUG: Delay FINISHED for {msg.sender_id}")
         # elif msg.channel == "p2p":
         #     p2p_logger.info(f"DEBUG: P2P Delay SKIPPED. Reason: msg.channel={msg.channel}, delay_val={delay_val}")
@@ -481,6 +579,7 @@ class AgentService:
             PlanStage(),
             ExecuteStage(),
             ConsolidateStage(),
+            RetrospectiveStage(),
             NotifyStage(),
             ArchiveStage()
         ]
@@ -499,11 +598,12 @@ class AgentService:
             if not context.stop_execution:
                 await stages[2].run(context, self) # Execute
         
-        # 3. Wrapping Up: Consolidate, Notify, Archive
+        # 3. Wrapping Up: Consolidate, Retrospective, Notify, Archive
         await stages[3].run(context, self) # Consolidate
         session_manager.save_session(context.session) # Save intermediate
-        await stages[4].run(context, self) # Notify
-        await stages[5].run(context, self) # Archive
+        await stages[4].run(context, self) # Retrospective
+        await stages[5].run(context, self) # Notify
+        await stages[6].run(context, self) # Archive
         session_manager.save_session(context.session) # Final save
         
         if iteration >= max_iterations:
@@ -530,12 +630,12 @@ class AgentService:
             if not getattr(self, 'ralph_wiggum_mode', False) or not cont_req:
                 return response_text, cont_req, cont_reason
                 
-            logger.warning(f"Ralph Wiggum Mode: Triggering Epoch {epoch+1}/{max_epochs} for {msg.chat_id} due to {cont_reason}")
+            logger.warning(f"Ralph Wiggum Mode: Triggering Epoch {epoch+1}/{max_epochs} for {msg.session_id} due to {cont_reason}")
             
             # Send status update to Gateway so user sees it's auto-recovering
             await self.message_bus.publish_outbound(OutboundMessage(
                 channel="gateway",
-                chat_id=msg.sender_id,
+                session_id=msg.sender_id,
                 content=f"[Ralph Wiggum Auto-Heal Activated] Re-initiating loop {epoch+1}/{max_epochs} due to: {cont_reason}",
                 type="thought"
             ))
@@ -550,7 +650,7 @@ class AgentService:
             current_msg = InboundMessage(
                 channel=msg.channel,
                 sender_id="system", 
-                chat_id=msg.chat_id,
+                session_id=msg.session_id,
                 content=prompt,
                 metadata={"epoch": epoch}
             )
@@ -587,7 +687,9 @@ class AgentService:
             lc_history = []
             for msg in recent_history:
                 if msg.sender == "agent":
-                    lc_history.append(AIMessage(content=msg.content))
+                    # Include status for agent's own messages to perceive delivery state
+                    status_prefix = f"[STATUS: {msg.status.upper()}] " if msg.status and msg.status in ["pending", "failed"] else ""
+                    lc_history.append(AIMessage(content=f"{status_prefix}{msg.content}"))
                 else:
                     lc_history.append(HumanMessage(content=f"[{msg.sender}] {msg.content}"))
 
@@ -634,7 +736,7 @@ class AgentService:
                     logger.info(f"Agent Thought: {str(display_thought)[:200]}...")
                     thought_msg = OutboundMessage(
                         channel="gateway",
-                        chat_id="global", 
+                        session_id="global", 
                         content=str(display_thought),
                         type="thought"
                     )
@@ -653,7 +755,7 @@ class AgentService:
                         # Emit Tool Call Event
                         await self.message_bus.publish_outbound(OutboundMessage(
                             channel="gateway",
-                            chat_id="global",
+                            session_id="global",
                             content=f"Invoking {tool_name} with {args}",
                             type="tool_call",
                             metadata={"tool": tool_name, "args": args}
@@ -696,7 +798,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                             # Emit Tool Result Event
                             out_msg = OutboundMessage(
                                 channel="gateway",
-                                chat_id="global",
+                                session_id="global",
                                 content=f"Result: {output_str[:200]}...",
                                 type="tool_result",
                                 metadata={"tool": tool_name, "result": output_str}
@@ -739,59 +841,123 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
     async def process_bus_message(self, msg: InboundMessage):
         """Process an inbound message from a channel."""
         # 1. Log to history (Frontend Sync)
-        # Format sender as "[Channel] UserID" so frontend sees it clearly
-        formatted_sender = f"[{msg.channel}] {msg.sender_id}"
+        # Standardize ID: P2P messages use Hex ID consistently
+        raw_session_id = self._normalize_session_id(msg.session_id)
+        formatted_sender = msg.sender_id # Default
         
-        # Ensure chat_id in history also carries the [Channel] prefix for merging logic
-        # But keep raw chat_id for sending the reply back
-        raw_chat_id = msg.chat_id
-        history_chat_id = raw_chat_id
-        
-        # Determine history chat_id (Prefix if not resident)
-        if msg.channel != "resident":
-             history_chat_id = f"[{msg.channel}] {raw_chat_id}"
+        # Identity Normalization for History
+        history_session_id = raw_session_id
+        if msg.channel == "p2p":
+             # Try to find name for sender formatting
+             if p2p_service._initialized:
+                  node = p2p_service.network_manager.nodes.get(msg.sender_id)
+                  if node and node.name:
+                       formatted_sender = node.name
+        elif msg.channel != "resident":
+             # Other channels keep prefix for now (Legacy)
+             history_session_id = f"[{msg.channel}] {raw_session_id}"
+             formatted_sender = f"[{msg.channel}] {msg.sender_id}"
              # Update Resident Bridges registry for proactive notifications
-             if msg.channel != "p2p":
-                  self.resident_bridges[msg.channel] = raw_chat_id
-                  self._save_system_state() # Persist the new bridge immediately
+             self.resident_bridges[msg.channel] = raw_session_id
+             self._save_system_state()
+
+        # Use original timestamp if available in metadata
+        msg_ts = msg.metadata.get('timestamp')
+        original_ts = None
+        try:
+            if isinstance(msg_ts, str):
+                msg_ts = datetime.fromisoformat(msg_ts)
+                if msg_ts.tzinfo is None:
+                    msg_ts = msg_ts.replace(tzinfo=timezone.utc)
+                original_ts = msg_ts
+            elif not msg_ts:
+                msg_ts = datetime.now(timezone.utc)
+            else:
+                # Ensure existing datetime object is aware
+                if hasattr(msg_ts, 'tzinfo') and msg_ts.tzinfo is None:
+                    msg_ts = msg_ts.replace(tzinfo=timezone.utc)
+                original_ts = msg_ts
+        except:
+            msg_ts = datetime.now(timezone.utc)
+
+        # Calculate and log delivery latency
+        if original_ts:
+            try:
+                # Ensure UTC for comparison
+                calc_ts = original_ts
+                if calc_ts.tzinfo is None:
+                    calc_ts = calc_ts.replace(tzinfo=timezone.utc)
+                latency = (datetime.now(timezone.utc) - calc_ts).total_seconds()
+                logger.info(f"P2P Latency: Receiving message {msg.metadata.get('message_id')} from {msg.sender_id} via {msg.channel}. Latency: {latency:.3f}s")
+            except Exception as le:
+                logger.debug(f"Could not calculate latency: {le}")
 
         user_msg_obj = Message(
-            id=str(uuid.uuid4()),
+            id=msg.metadata.get("message_id") or str(uuid.uuid4()),
             content=msg.content,
             sender=formatted_sender,
-            timestamp=datetime.now(),
-            chat_id=history_chat_id
+            timestamp=msg_ts,
+            session_id=history_session_id
         )
         self.history.append(user_msg_obj)
-        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", chat_id=history_chat_id)
+        self.resident_memory.log_interaction(formatted_sender, msg.content, msg_type="chat", session_id=history_session_id, timestamp=msg_ts, msg_id=msg.metadata.get("message_id"))
+
+        # 1.5 DUAL BROADCAST: Inform Gateway of inbound P2P message
+        if msg.channel == "p2p":
+             await self.message_bus.publish_outbound(OutboundMessage(
+                 channel="gateway",
+                 session_id=history_session_id,
+                 content=msg.content,
+                 sender=formatted_sender,
+                 type="chat"
+             ))
 
         # 2. Pipeline Execution
         # p2p_logger.info(f"DEBUG: process_bus_message calling run_pipeline. Channel={msg.channel}, Sender={msg.sender_id}")
         response_text, cont_req, cont_reason = await self._run_ralph_wiggum_loop(msg)
 
         # 3. Reply via Bus
+        reply_id = str(uuid.uuid4())
+        is_internal_report = False
+        
         if response_text and "[NO_RESPONSE_NEEDED]" in str(response_text):
-            logger.info(f"P2P Logic: Conversation terminated by agent via [NO_RESPONSE_NEEDED] for chat_id={raw_chat_id}")
+            logger.info(f"P2P Logic: Conversation terminated by agent via [NO_RESPONSE_NEEDED] for session_id={raw_session_id}")
+            is_internal_report = True
         elif response_text and str(response_text).strip() and response_text != "No response generated.":
             out_msg = OutboundMessage(
                 channel=msg.channel,
-                chat_id=raw_chat_id, # Must use RAW ID for transport
+                session_id=raw_session_id, # Must use RAW ID for transport
                 content=response_text,
-                reply_to=msg.metadata.get("message_id")
+                reply_to=msg.metadata.get("message_id"),
+                metadata={"message_id": reply_id}
             )
             await self.message_bus.publish_outbound(out_msg)
+            
+            # 3.5 DUAL BROADCAST: Push Agent response to Gateway immediately
+            if msg.channel == "p2p":
+                 await self.message_bus.publish_outbound(OutboundMessage(
+                     channel="gateway",
+                     session_id=history_session_id,
+                     content=response_text,
+                     type="chat",
+                     metadata={"message_id": reply_id}
+                 ))
 
         # 4. Log Reply to history
+        target_session = "resident" if is_internal_report else history_session_id
+        target_status = None if is_internal_report else "sent"
+        
         agent_msg_obj = Message(
-             id=str(uuid.uuid4()),
+             id=reply_id,
              content=response_text,
              sender="agent",
-             timestamp=datetime.now(),
-             chat_id=history_chat_id # Log with Prefix so it merges
+             timestamp=datetime.now(timezone.utc),
+             session_id=target_session,
+             status=target_status
         )
         self.history.append(agent_msg_obj)
-        self.resident_memory.log_interaction("agent", response_text, msg_type="chat", chat_id=history_chat_id)
-    async def notify_resident(self, content: str, type: str = "agent_message", chat_id: str = "resident", broadcast: bool = True, media: list = None):
+        self.resident_memory.log_interaction("agent", response_text, msg_type="chat", session_id=target_session, status=target_status)
+    async def notify_resident(self, content: str, type: str = "agent_message", session_id: str = "resident", broadcast: bool = True, media: list = None):
         """
         Notify the resident. 
         If broadcast=True, sends to all known bridges (Feishu, etc.).
@@ -805,10 +971,10 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             id=msg_id,
             content=content,
             sender="agent",
-            timestamp=datetime.now(),
-            chat_id=chat_id
+            timestamp=datetime.now(timezone.utc),
+            session_id=session_id
         ))
-        self.resident_memory.log_interaction("agent", content, msg_type="chat", chat_id=chat_id)
+        self.resident_memory.log_interaction("agent", content, msg_type="chat", session_id=session_id)
         
         # 2. Broadcast or Targeted Send
         if broadcast:
@@ -823,7 +989,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             try:
                 out_msg = OutboundMessage(
                     channel=channel,
-                    chat_id=cid,
+                    session_id=cid,
                     content=content,
                     type=type,
                     media=media or []
@@ -840,24 +1006,24 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             id=str(uuid.uuid4()),
             content=content,
             sender="user",
-            timestamp=datetime.now(),
-            chat_id="resident"
+            timestamp=datetime.now(timezone.utc),
+            session_id="resident"
         )
         self.history.append(user_msg)
-        self.resident_memory.log_interaction("resident", content, msg_type="chat", chat_id="resident") # Log to private memory
+        self.resident_memory.log_interaction("resident", content, msg_type="chat", session_id="resident") # Log to private memory
         
         # 2. Agent response via Pipeline
         msg_obj = InboundMessage(
             channel="resident",
             sender_id="resident",
             content=content,
-            chat_id="resident"
+            session_id="resident"
         )
         # Pass through the pipeline with Ralph Wiggum loop wrapping
         response_text, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
         
         # 3. Notify Resident (Targeted or Broadcast depending on caller)
-        await self.notify_resident(response_text, chat_id="resident", broadcast=broadcast)
+        await self.notify_resident(response_text, session_id="resident", broadcast=broadcast)
         
         # Return the last Message object from history
         return self.history[-1] if self.history else None
@@ -889,32 +1055,64 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 msg = inbox.pop(0)
                 sender_id = msg.get('sender_id')
                 content = msg.get('content')
-                msg_type = msg.get('message_type')
+                msg_type = msg.get('message_type', msg.get('type'))
+                
+                # Filter out system messages that are handled elsewhere (e.g., in handle_p2p_message)
+                if msg_type == "SYSTEM_ERROR":
+                    continue
                 
                 try:
-                    receive_time = datetime.now().timestamp()
+                    receive_time = datetime.now(timezone.utc).timestamp()
                     # 1. De-duplication
                     m_id = msg.get('message_id')
                     if m_id:
                         if m_id in self.processed_message_ids:
                             continue
                         self.processed_message_ids.add(m_id)
-                        self._save_system_state() # Persist de-dup IDs
-                        # Keep set size reasonable (last 1000 IDs)
-                        if len(self.processed_message_ids) > 1000:
-                            # Convert to list to pop first element (simple FIFO)
-                            l = list(self.processed_message_ids)
-                            self.processed_message_ids = set(l[100:])
-                            
+                        
+                    # Normalize Sender ID (Hex ID)
+                    sender_id = self._normalize_session_id(sender_id) or "unknown_sender"
+                    
+                    # 1.1 Self-Message Filtering
+                    if p2p_service.local_node and sender_id == p2p_service.local_node.node_id:
+                        logger.debug(f"Skipping self-received P2P message {m_id}")
+                        continue
+                    
+                    # [ICE WARMUP] Proactively initiate WebRTC if message is direct
+                    if sender_id and sender_id != "unknown_sender":
+                        asyncio.create_task(p2p_service.warmup_webrtc(sender_id))
+                        
+                    # 1.2 Identify Message Nature (Refactored)
+                    raw_type = str(msg.get('message_type', msg.get('type', ''))).lower()
+                    
+                    # Package Type: What is being sent? (chat, file, gossip, error)
+                    package_type = "chat"
+                    if raw_type == "file" or (isinstance(content, dict) and "data" in content):
+                        package_type = "file"
+                    elif raw_type == "gossip":
+                        package_type = "gossip"
+                    elif raw_type == "system_error":
+                        package_type = "error"
+                    
+                    # Recipient Type: How is it addressed? (direct, group)
+                    recipient_id = self._normalize_session_id(msg.get('recipient_id'))
+                    recipient_type = "direct"
+                    if raw_type == "group":
+                        recipient_type = "group"
+                    elif recipient_id and p2p_service.local_node:
+                        if recipient_id in p2p_service.local_node.group_ids:
+                            recipient_type = "group"
+                    
                     # Process based on type
-                    logger.info(f"Processing P2P message type {msg_type} from {sender_id[:8]}...")
+                    sender_display = sender_id[:8] if sender_id else "unknown"
+                    logger.info(f"Processing P2P {package_type} from {sender_display} (addressed to {recipient_type})...")
                     
-                    recipient_id = msg.get('recipient_id')
+                    # Determine effective session_id (The session key)
+                    effective_session_id = sender_id
+                    if recipient_type == "group" and recipient_id:
+                        effective_session_id = recipient_id
                     
-                    # Determine chat_id: Group ID if group message, else Sender ID
-                    effective_chat_id = sender_id
-                    if msg_type == "GROUP" and recipient_id:
-                        effective_chat_id = recipient_id
+                    effective_session_id = self._normalize_session_id(effective_session_id) or "unknown_session"
 
                     # Use 'content' text if available
                     text_content = str(content)
@@ -922,14 +1120,15 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         text_content = content['text']
                     
                     # Special Handling for FILE type
-                    if msg_type == "file" and isinstance(content, dict) and "data" in content:
+                    if package_type == "file" and isinstance(content, dict) and "data" in content:
                         try:
                             file_name = content.get("info", "downloaded_file")
                             file_data = base64.b64decode(content["data"])
                             
                             download_dir = "data/downloads"
                             os.makedirs(download_dir, exist_ok=True)
-                            file_path = os.path.join(download_dir, f"{sender_id[:8]}_{file_name}")
+                            s_id_short = sender_id[:8] if sender_id else "unknown"
+                            file_path = os.path.join(download_dir, f"{s_id_short}_{file_name}")
                             
                             with open(file_path, "wb") as f:
                                 f.write(file_data)
@@ -945,32 +1144,104 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         channel="p2p",
                         sender_id=sender_id,
                         content=text_content,
-                        chat_id=effective_chat_id,
-                        metadata={"message_id": m_id, "message_type": msg_type}
+                        session_id=effective_session_id,
+                        metadata={"message_id": m_id, "package_type": package_type, "recipient_type": recipient_type}
                     )
                     
                     # 2. Log Inbound Message to history
+                    msg_ts = msg.get('timestamp') or msg.get('metadata', {}).get('timestamp')
+                    original_ts = None
+                    try:
+                        if isinstance(msg_ts, str):
+                            msg_ts = datetime.fromisoformat(msg_ts)
+                            # Ensure aware immediately
+                            if msg_ts.tzinfo is None:
+                                msg_ts = msg_ts.replace(tzinfo=timezone.utc)
+                            original_ts = msg_ts
+                        elif not msg_ts:
+                            msg_ts = datetime.now(timezone.utc)
+                        else:
+                            # Ensure aware immediately
+                            if hasattr(msg_ts, 'tzinfo') and msg_ts.tzinfo is None:
+                                msg_ts = msg_ts.replace(tzinfo=timezone.utc)
+                            original_ts = msg_ts
+                    except:
+                        msg_ts = datetime.now(timezone.utc)
+
+                    # Calculate and log delivery latency
+                    if original_ts:
+                        try:
+                            # Ensure UTC for comparison
+                            calc_ts = original_ts
+                            if calc_ts.tzinfo is None:
+                                calc_ts = calc_ts.replace(tzinfo=timezone.utc)
+                            latency = (datetime.now(timezone.utc) - calc_ts).total_seconds()
+                            logger.info(f"P2P Latency (Polling): Receiving message {m_id} from {sender_id}. Latency: {latency:.3f}s")
+                        except Exception as le:
+                            logger.debug(f"Could not calculate latency (Polling): {le}")
+
                     self.history.append(Message(
-                        id=str(uuid.uuid4()), 
+                        id=m_id or str(uuid.uuid4()), 
                         content=text_content, 
                         sender=sender_id, 
-                        timestamp=datetime.now(),
-                        chat_id=effective_chat_id
+                        timestamp=msg_ts,
+                        session_id=effective_session_id
                     ))
-                    self.resident_memory.log_interaction(sender_id, text_content, msg_type="chat", chat_id=effective_chat_id)
+                    self.resident_memory.log_interaction(sender_id, text_content, msg_type=package_type, session_id=effective_session_id, timestamp=msg_ts, msg_id=m_id)
+                    
+                    # DUAL BROADCAST: Inform UI and other listeners
                     await self.message_bus.publish_outbound(OutboundMessage(
-                        channel="p2p",
-                        chat_id=effective_chat_id,
+                        channel="gateway",
+                        session_id=effective_session_id,
                         content=text_content,
                         type="chat",
-                        sender=sender_id
+                        sender=sender_id,
+                        timestamp=msg_ts
+                    ))
+                    # Also publish to p2p for internal listeners
+                    await self.message_bus.publish_outbound(OutboundMessage(
+                        channel="p2p",
+                        session_id=effective_session_id,
+                        content=text_content,
+                        type="chat",
+                        sender=sender_id,
+                        timestamp=msg_ts
                     ))
                     
-                    # 3. Run Pipeline to get Response
-                    # p2p_logger.info(f"DEBUG: process_network_inbox calling run_pipeline. Channel={msg_obj.channel}, Sender={msg_obj.sender_id}")
+                    # 3. Check for lapsed messages (30 mins = 1800 seconds)
+                    now = datetime.now(timezone.utc)
+                    delay_seconds = (now - msg_ts).total_seconds()
+                    skip_delay = False
+                    
+                    if delay_seconds > 1800 and inbox:
+                        # Only skip lapsed messages if there are MORE messages in the queue
+                        logger.info(f"Lapsed message detected ({int(delay_seconds)}s delay) with {len(inbox)} more in queue. Skipping agent processing for session {effective_session_id}.")
+                        await self.message_bus.publish_outbound(OutboundMessage(
+                            channel="gateway",
+                            session_id=effective_session_id,
+                            content=f"Message received with {int(delay_seconds/60)}m delay. Stored in history without auto-processing.",
+                            type="thought"
+                        ))
+                        continue
+                    elif delay_seconds > 1800 and not inbox:
+                        # Last message in queue but lapsed: process it immediately, skip reply delay
+                        logger.info(f"Lapsed message detected ({int(delay_seconds)}s delay) but it's the LAST in queue. Processing immediately.")
+                        skip_delay = True
+
+                    # 3.5 Smart Reply Delay: Calculate remaining delay
+                    if not skip_delay:
+                        configured_delay = getattr(self, 'p2p_reply_delay', 5)
+                        remaining_delay = max(0, configured_delay - delay_seconds)
+                        if remaining_delay > 0:
+                            logger.info(f"P2P Reply Delay: waiting {remaining_delay:.1f}s (configured={configured_delay}s, elapsed={delay_seconds:.1f}s)")
+                            await asyncio.sleep(remaining_delay)
+                        else:
+                            logger.info(f"P2P Reply Delay: already elapsed ({delay_seconds:.1f}s >= {configured_delay}s). Processing immediately.")
+
+                    # 4. Run Pipeline to get Response
                     response_text, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
                     
-                    # 4. Agent's Final Answer is for internal record, NOT sent over P2P.
+                    # 5. Agent's Final Answer is for internal record, NOT sent over P2P.
                     # All outbound P2P communication must be done explicitly by the LLM via `send_p2p_message` tool.
                     if response_text and "[NO_RESPONSE_NEEDED]" not in str(response_text) and response_text != "No response generated.":
                         # Log the agent's final conclusion of this P2P interaction to local history so the resident sees it
@@ -978,31 +1249,60 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                             id=str(uuid.uuid4()),
                             content=f"[Agent completed P2P task]: {response_text}",
                             sender="agent",
-                            timestamp=datetime.now(),
-                            chat_id=effective_chat_id
+                            timestamp=datetime.now(timezone.utc),
+                            session_id=effective_session_id
                         ))
-                        # Also notify the UI safely
+                        # Ensure Gateway knows processing is done
+                        s_id_short = sender_id[:8] if sender_id else "unknown"
                         await self.message_bus.publish_outbound(OutboundMessage(
                             channel="gateway",
-                            chat_id=effective_chat_id,
-                            content=f"Agent processed P2P message from {sender_id[:8]}",
+                            session_id=effective_session_id,
+                            content=f"Agent processed P2P message from {s_id_short}",
                             type="thought"
                         ))
+                except asyncio.CancelledError:
+                    logger.warning(f"Process Network Inbox was cancelled during message processing from {sender_id}. This usually happens on timeout or shutdown.")
+                    self._is_processing_inbox = False
+                    raise
                 except Exception as e:
                     logger.error(f"Error processing P2P message from {sender_id}: {e}")
                     # Optional: Push back to inbox or Dead Letter Queue?
                     # For now, just log to history so user sees something failed
+                    
+                    # Ensure effective_session_id is defined for logging
+                    try:
+                        err_session_id = effective_session_id
+                    except UnboundLocalError:
+                        err_session_id = sender_id or "unknown"
+
                     self.history.append(Message(
                         id=str(uuid.uuid4()),
                         content=f"Error processing P2P message: {e}",
                         sender="system",
-                        timestamp=datetime.now()
+                        timestamp=datetime.now(timezone.utc),
+                        session_id=err_session_id
                     ))
             
             # 6. Clear Disk Inbox after processing batch
             # We don't delete here anymore; hydration handles renaming to .processing
-            pass
-        
+            # CRITICAL: Save system state after processing messages to persist deduplication IDs
+            self._save_system_state()
+            
+            # 3. Post-Process: Clear disk inbox
+            # Since we already pop(0) from in-memory inbox, and p2p_service.local_node.save_message
+            # appends to the file, we can safely clear the file now that this specific batch is done.
+            # (Actually better to only clear what we processed, but for simplicity, clearing the file
+            # is effective since any NEW messages during processing will be in the next batch or appended after this clearing).
+            node_id = p2p_service.local_node.node_id
+            inbox_path = self.data_dir / "p2p" / f"inbox_{node_id}.jsonl"
+            if inbox_path.exists():
+                try:
+                    with open(inbox_path, 'w', encoding='utf-8') as f:
+                        pass # Truncate file
+                    logger.debug(f"Cleared disk inbox {inbox_path.name}")
+                except Exception as e:
+                    logger.error(f"Failed to clear disk inbox: {e}")
+
         finally:
             self._is_processing_inbox = False
 
@@ -1014,16 +1314,14 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         if self.reporter:
              interests = [self.research_field] 
              summary = await self.reporter.generate_daily_brief(interests)
-             
-             # Log this brief
-             self.resident_memory.log_interaction("agent_report", summary, "report", chat_id="resident")
+             await self.reporter.send_report_to_resident(summary)
         
         elif self.llm:
              msg_obj = InboundMessage(
                 channel="system",
                 sender_id="scheduler",
                 content="Generate a brief daily summary for the resident.",
-                chat_id="system"
+                session_id="system"
              )
              summary, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
         else:
@@ -1051,7 +1349,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             "system", 
             f"Received {reward_amount} STATER as Participation Reward.", 
             "income",
-            chat_id="resident"
+            session_id="resident"
         )
         
         # Push a visual notice to history AND broadcast to bridges
@@ -1084,8 +1382,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 id=entry.get('id', str(uuid.uuid4())),
                 content=entry.get('content', ''),
                 sender=entry.get('sender', 'unknown'),
-                timestamp=datetime.fromisoformat(entry.get('timestamp')) if entry.get('timestamp') else datetime.now(),
-                chat_id=entry.get('chat_id')
+                timestamp=datetime.fromisoformat(entry.get('timestamp')) if entry.get('timestamp') else datetime.now(timezone.utc),
+                session_id=entry.get('session_id') or entry.get('chat_id'),
+                status=entry.get('status')
             ))
         logger.info(f"AgentService: Loaded {len(self.history)} messages from persistent storage.")
 
@@ -1098,15 +1397,23 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             system_dir = self.data_dir / "system"
             system_dir.mkdir(parents=True, exist_ok=True)
             
+            # SLIDING WINDOW: Limit to 10,000 IDs to prevent JSON file bloat and memory pressure
+            id_list = list(self.processed_message_ids)
+            if len(id_list) > 10000:
+                id_list = id_list[-10000:]
+            
             state = {
-                "processed_message_ids": list(self.processed_message_ids),
-                "last_sync": datetime.now().isoformat(),
-                "resident_bridges": self.resident_bridges
+                "processed_message_ids": id_list,
+                "notified_governance_ids": list(self.notified_governance_ids),
+                "notified_error_signatures": list(self.notified_error_signatures),
+                "resident_bridges": self.resident_bridges,
+                "last_updated": datetime.now(timezone.utc).isoformat()
             }
             state_path = system_dir / "agent_state.json"
             
             with open(state_path, 'w', encoding='utf-8') as f:
-                json.dump(state, f, indent=2)
+                json.dump(state, f, ensure_ascii=False, indent=2)
+            # logger.debug(f"Saved system state: {len(self.processed_message_ids)} IDs.")
         except Exception as e:
             logger.error(f"Failed to save system state: {e}")
 
@@ -1121,9 +1428,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             if os.path.exists(state_path):
                 with open(state_path, 'r', encoding='utf-8') as f:
                     state = json.load(f)
-                    self.processed_message_ids = set(state.get("processed_message_ids", []))
+                    all_ids = state.get("processed_message_ids", [])
+                    # Limit to 10,000 recent IDs on load
+                    self.processed_message_ids = set(all_ids[-10000:])
+                    self.notified_governance_ids = set(state.get("notified_governance_ids", []))
+                    self.notified_error_signatures = set(state.get("notified_error_signatures", []))
                     self.resident_bridges = state.get("resident_bridges", {})
-                    logger.info(f"Hydrated {len(self.processed_message_ids)} de-dup IDs and {len(self.resident_bridges)} resident bridges.")
+                    logger.info(f"Hydrated {len(self.processed_message_ids)} de-dup IDs, {len(self.notified_governance_ids)} gov notifications, and {len(self.resident_bridges)} resident bridges.")
             
             # 2. Hydrate P2P Inbox
             # Wait for node initialization if needed? Usually called after config?
@@ -1207,7 +1518,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 content=entry.get('content', ''),
                 sender=entry.get('sender', 'unknown'),
                 timestamp=datetime.fromisoformat(entry.get('timestamp')),
-                chat_id=entry.get('chat_id')
+                session_id=entry.get('session_id') or entry.get('chat_id')
             ))
         return messages
 
@@ -1243,7 +1554,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         """Get list of known groups from P2P service."""
         return p2p_service.get_groups()
 
-    async def _check_compliance(self, content: str, target_id: str) -> tuple[bool, str]:
+    async def _check_compliance(self, content: str, recipient_id: str) -> tuple[bool, str]:
         """Audit message content against community rules."""
         if not self.llm:
             return True, "" 
@@ -1253,7 +1564,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             "Audit the following message for community rule violations (impolite, hate speech, spam, illegal). "
             "Reply EXACTLY with 'APPROVED' if compliant, or 'REJECTED: <reason>' if not."
         )
-        msg_text = f"Target: {target_id}\nContent: {content}"
+        msg_text = f"Target: {recipient_id}\nContent: {content}"
         
         try:
             # We use a distinct invocation to avoid polluting the main context
@@ -1279,7 +1590,30 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         if not self.governance_manager:
             return {"error": "Governance Manager not initialized"}
         
-        proposal, election = self.governance_manager.initiate_proposal(group_id, content, duration_minutes)
+        # Fetch eligible voters from group members
+        eligible_voters = set()
+        if p2p_service.local_node and group_id in p2p_service.local_node.network_manager.groups:
+             group = p2p_service.local_node.network_manager.groups[group_id]
+             eligible_voters = group.members.copy()
+             
+        proposal, election = self.governance_manager.initiate_proposal(group_id, content, duration_minutes, eligible_voters=eligible_voters)
+        
+        # Broadcast via P2P - Wait for broadcast to complete with timeout (Fixed: was asyncio.create_task without await)
+        try:
+            await asyncio.wait_for(
+                p2p_service.broadcast_governance_event(
+                    group_id, 
+                    "proposal", 
+                    {"proposal": proposal.to_dict(), "election": election.to_dict()}
+                ),
+                timeout=10.0
+            )
+            logger.info(f"Proposal broadcast successfully for group {group_id}")
+        except asyncio.TimeoutError:
+            logger.warning(f"Proposal broadcast timeout for group {group_id}")
+        except Exception as e:
+            logger.error(f"Proposal broadcast failed for group {group_id}: {e}")
+        
         return {
             "proposal": proposal.to_dict(),
             "election": election.to_dict()
@@ -1290,6 +1624,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             return []
         # Return list of proposals
         return [p.to_dict() for p in self.governance_manager.proposals.values()]
+
+    async def delete_proposal(self, proposal_id: str) -> bool:
+        """Remove a proposal and its associated election."""
+        if self.governance_manager:
+            return self.governance_manager.delete_proposal(proposal_id)
+        return False
 
     async def get_elections(self) -> list[dict]:
         if not self.governance_manager:
@@ -1302,6 +1642,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             data["tally"] = e.tally()
             elections.append(data)
         return elections
+
+    async def delete_election(self, election_id: str) -> bool:
+        """Remove a specific election."""
+        if self.governance_manager:
+            return self.governance_manager.delete_election(election_id)
+        return False
 
     async def cast_vote(self, election_id: str, approval: bool, reason: str = "", candidate_id: str = None) -> dict:
         if not self.governance_manager:
@@ -1317,11 +1663,30 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             candidate_id=candidate_id,
             approval=approval,
             reason=reason,
-            timestamp=datetime.now()
+            timestamp=datetime.now(timezone.utc)
         )
         
         success = self.governance_manager.receive_ballot(election_id, [vote])
         if success:
+            # Broadcast via P2P (方案 3: 同步等待 + 超时保护)
+            election = self.governance_manager.active_elections[election_id]
+            try:
+                # 同步等待广播完成，最多等待 5 秒
+                await asyncio.wait_for(
+                    p2p_service.broadcast_governance_event(
+                        election.group_id, 
+                        "vote", 
+                        {"election_id": election_id, "vote": vote.to_dict()}
+                    ),
+                    timeout=5.0
+                )
+                logger.info(f"Vote broadcast successfully for election {election_id[:8]}")
+            except asyncio.TimeoutError:
+                logger.warning(f"Vote broadcast timeout for election {election_id[:8]}, adding to retry queue")
+                # 加入重试队列（可后续实现）
+            except Exception as e:
+                logger.error(f"Vote broadcast failed for election {election_id[:8]}: {e}")
+            
             return {"status": "success", "election_id": election_id}
         else:
              return {"status": "failed", "reason": "Vote rejected (invalid or closed)"}
@@ -1345,14 +1710,14 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             logger.error(f"Error processing incoming direct HTTP P2P message: {e}")
             return {"status": "error", "message": str(e)}
 
-    async def send_p2p_message(self, target_id: str, content: Any, **kwargs) -> dict:
+    async def send_p2p_message(self, recipient_id: str, content: Any, is_retry: bool = False, original_msg_id: str = None, **kwargs) -> dict:
         """
         Send a P2P message to a specific peer.
         This method handles both WebRTC data channel (fast) and HTTP/Relay (reliable) paths.
         """
-        print(f"\n[DEBUG] send_p2p_message called for {target_id}, content: {str(content)[:50]}...", flush=True)
+        print(f"\n[DEBUG] send_p2p_message called for {recipient_id}, content: {str(content)[:50]}...", flush=True)
         if not p2p_service._initialized:
-             logger.error(f"P2P Message attempt failed: P2PService NOT INITIALIZED (target={target_id})")
+             logger.error(f"P2P Message attempt failed: P2PService NOT INITIALIZED (target={recipient_id})")
              return {"success": False, "error": "P2P not initialized"}
              
         # Normalize text for moderation and display
@@ -1362,58 +1727,123 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         elif not isinstance(content, str):
             text_to_check = str(content)
 
-        # 1. Moderation Check
-        is_compliant, reason = await self._check_compliance(text_to_check, target_id)
-        if not is_compliant:
-            msg = f"⚠️ Message Refused: {reason}"
-            
-            # Log refusal to history so user sees it in chat
-            self.history.append(Message(
-                id=str(uuid.uuid4()),
-                content=msg,
-                sender="agent",
-                timestamp=datetime.now(),
-                chat_id=target_id
-            ))
-            self.resident_memory.log_interaction("agent", msg, "moderation", chat_id=target_id)
-            
-            return {"success": True, "status": "refused", "reason": reason}
+        # 1. Moderation Check - Skip if retry
+        if not is_retry:
+            is_compliant, reason = await self._check_compliance(text_to_check, recipient_id)
+            if not is_compliant:
+                msg = f"⚠️ Message Refused: {reason}"
+                
+                # Log refusal to history so user sees it in chat
+                self.history.append(Message(
+                    id=str(uuid.uuid4()),
+                    content=msg,
+                    sender="agent",
+                    timestamp=datetime.now(timezone.utc),
+                    session_id=recipient_id
+                ))
+                self.resident_memory.log_interaction("agent", msg, "moderation", session_id=recipient_id, status="failed")
+                
+                return {"success": False, "status": "refused", "reason": reason}
+        else:
+            logger.info(f"Retrying message {original_msg_id} - skipping compliance check.")
              
-        # 2. Log Outbound Message (History)
-        self.history.append(Message(
-            id=str(uuid.uuid4()),
+        # 2. Identify Message Nature (Refactored)
+        # Package Type: What is being sent?
+        package_type = kwargs.get("package_type")
+        if not package_type:
+            # Fallback for legacy calls or tool-invoked calls
+            msg_type_kwarg = kwargs.get("message_type")
+            if msg_type_kwarg in ["file", "gossip", "chat"]:
+                package_type = msg_type_kwarg
+            elif isinstance(content, dict) and "data" in content:
+                package_type = "file"
+            else:
+                package_type = "chat"
+        
+        # Recipient Type: How is it addressed?
+        recipient_type = "direct"
+        if kwargs.get("message_type") == "group":
+            recipient_type = "group"
+        else:
+            from .p2p_service import p2p_service as _p2p
+            local_node = _p2p.local_node
+            if local_node and recipient_id in local_node.group_ids:
+                recipient_type = "group"
+        
+        # 3. Log Outbound Message (History) - Skip if retry (we update status later)
+        # Normalize recipient_id for history and UI consistency
+        norm_target = self._normalize_session_id(recipient_id)
+        msg_id = original_msg_id if is_retry and original_msg_id else str(uuid.uuid4())
+        
+        # Use a single UTC timestamp for consistent tracking
+        from datetime import timezone
+        msg_timestamp = datetime.now(timezone.utc)
+        
+        if not is_retry:
+            self.processed_message_ids.add(msg_id) # Track our own messages to avoid loopback
+            msg_obj = Message(
+                id=msg_id,
+                content=f"{text_to_check}",
+                sender="agent",
+                timestamp=msg_timestamp,
+                session_id=norm_target,
+                status="pending"
+            )
+            self.history.append(msg_obj)
+            self.resident_memory.log_interaction("agent", text_to_check, msg_type=package_type, session_id=norm_target, status="pending", msg_id=msg_id)
+        else:
+            logger.info(f"Retrying message {msg_id} - skipping duplicate history log.")
+        
+        # Dual broadcast to UI (Initial Pending)
+        await self.message_bus.publish_outbound(OutboundMessage(
+            channel="gateway",
+            session_id=norm_target,
             content=f"{text_to_check}",
+            type=package_type,
             sender="agent",
-            timestamp=datetime.now(),
-            chat_id=target_id
+            timestamp=msg_timestamp,
+            metadata={"message_id": msg_id, "status": "pending", "package_type": package_type, "recipient_type": recipient_type}
         ))
-        self.resident_memory.log_interaction("agent", text_to_check, msg_type="chat", chat_id=target_id)
+        
+        # Publish to p2p for internal tracking if needed
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="p2p",
-            chat_id=target_id,
+            session_id=recipient_id, # Use raw recipient for P2P routing
             content=f"{text_to_check}",
             type="chat",
-            sender="agent"
+            sender="agent",
+            timestamp=msg_timestamp,
+            metadata={"message_id": msg_id, "recipient_id": recipient_id, "package_type": package_type}
         ))
         
         # 3. Direct Transmission
-        # PROACTIVE TOPOLOGY CHECK: Log if we actually know this peer
-        network_status = p2p_service.get_network_status()
+        # PROACTIVE TOPOLOGY CHECK: Log if we actually know this peer or group
         peer_name = "Unknown"
-        if network_status and "nodes" in network_status:
-            if target_id in network_status["nodes"]:
-                peer_name = network_status["nodes"][target_id].get("name", "Unknown")
-                logger.info(f"Recipient {target_id} identified as '{peer_name}' in topology.")
-            else:
-                logger.warning(f"Recipient {target_id} NOT found in local topology nodes. It might be a group or an offline node.")
+        is_group = False
+        
+        # Check nodes first
+        target_node = p2p_service.network_manager.nodes.get(recipient_id)
+        if target_node:
+            peer_name = target_node.name
+            logger.info(f"Recipient {recipient_id} identified as peer '{peer_name}' in topology.")
+        # Check groups
+        elif recipient_id in p2p_service.network_manager.groups:
+            peer_name = p2p_service.network_manager.groups[recipient_id].name
+            is_group = True
+            logger.info(f"Recipient {recipient_id} identified as group '{peer_name}'.")
+        else:
+            logger.warning(f"Recipient {recipient_id} NOT found in local topology nodes or groups. It might be an offline node or a new group.")
 
-        logger.info(f"Transmitting P2P message to {target_id} ({peer_name})...")
+        target_label = f"Group: {peer_name}" if is_group else peer_name
+        logger.info(f"Transmitting P2P message to {recipient_id} ({target_label})...")
         
         try:
             # Differentiate simple string vs complex dictionary payload
             if isinstance(content, dict):
                 msg_content = content
                 webrtc_payload_dict = content.copy()
+                webrtc_payload_dict["message_id"] = msg_id # CRITICAL: Include unique ID
+                webrtc_payload_dict["timestamp"] = msg_timestamp.isoformat() # PROPAGATE SOURCE TIMESTAMP
                 if "message_type" not in webrtc_payload_dict:
                     webrtc_payload_dict["message_type"] = "DIRECT"
                 import json
@@ -1421,40 +1851,142 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             else:
                 msg_content = {"text": text_to_check}
                 import json
-                webrtc_payload = json.dumps({"text": text_to_check, "message_type": "DIRECT"})
+                webrtc_payload = json.dumps({
+                    "text": text_to_check, 
+                    "message_type": "DIRECT", 
+                    "message_id": msg_id,
+                    "timestamp": msg_timestamp.isoformat() # PROPAGATE SOURCE TIMESTAMP
+                })
 
-            # Try WebRTC First
-            sent_via_webrtc = await p2p_service.webrtc_manager.send_message(target_id, webrtc_payload)
+            
+            # Map to protocol message types
+            # GROUP messages should NOT use WebRTC (WebRTC is for peer-to-peer)
+            # Only use WebRTC for DIRECT TEXT messages
+            use_webrtc = (recipient_type == "direct" and package_type == "chat")
+            
+            sent_via_webrtc = False
+            if use_webrtc:
+                sent_via_webrtc = await p2p_service.webrtc_manager.send_message(recipient_id, webrtc_payload)
             
             if sent_via_webrtc:
-                logger.info(f"[{target_id}] Message transmitted via WebRTC: {text_to_check[:100]}...")
-                return {"success": True, "mode": "webrtc"}
+                logger.info(f"[{recipient_id}] Message transmitted via WebRTC: {text_to_check[:100]}...")
+                success_final = True
+                mode = "webrtc"
             else:
-                # Fallback to HTTP/Relay
-                explicit_type = kwargs.get("message_type")
-                if explicit_type:
-                    custom_type = explicit_type
+                # Fallback to HTTP/Relay (or direct for GROUP messages)
+                # For GROUP messages, use broadcast_to_group if available, otherwise use send_message
+                if recipient_type == "group":
+                    # Use the dedicated group broadcast method
+                    success = await p2p_service.broadcast_to_group(
+                        recipient_id,
+                        text_to_check,
+                        message_id=msg_id,
+                        timestamp=msg_timestamp
+                    )
+                    mode = "group_broadcast"
                 else:
-                    custom_type = content.get("type", "DIRECT") if isinstance(content, dict) else "DIRECT"
-                
-                # Check for explicit 'file' type mappings
-                out_type = "file" if custom_type == "file" else "DIRECT"
-                success = await p2p_service.send_message(target_id, msg_content, msg_type=out_type)
+                    # Pass the unique business-level msg_id to the protocol layer
+                    success = await p2p_service.send_message(
+                        recipient_id, 
+                        msg_content, 
+                        msg_type=package_type,
+                        message_id=msg_id,
+                        timestamp=msg_timestamp
+                    )
+                    mode = "http_relay"
                 if success:
-                    logger.info(f"[{target_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
+                    success_final = True
+                    # Log based on transmission mode
+                    if mode == "group_broadcast":
+                        logger.info(f"[{recipient_id}] Group Broadcast successfully initiated: {text_to_check[:100]}...")
+                    else:
+                        logger.info(f"[{recipient_id}] Message transmitted via HTTP/Relay: {text_to_check[:100]}...")
                     # Trigger Upgrade if simple text and not already connected/connecting
-                    if not isinstance(content, dict):
-                        pc = p2p_service.webrtc_manager.pcs.get(target_id.lower())
+                    # CRITICAL: Only for DIRECT messages!
+                    if not isinstance(content, dict) and recipient_type == "direct":
+                        pc = p2p_service.webrtc_manager.pcs.get(recipient_id.lower())
                         if not pc or (pc.signalingState == "stable" and pc.connectionState not in ["connecting", "connected"]):
-                            asyncio.create_task(p2p_service.webrtc_manager.initiate_connection(target_id))
-                    return {"success": True, "mode": "http_relay"}
+                            asyncio.create_task(p2p_service.webrtc_manager.initiate_connection(recipient_id))
                 else:
-                    logger.error(f"[{target_id}] FINAL FAILURE: Failed to transmit P2P message via ANY path (target={target_id})")
-                    return {"success": False, "error": "All transport paths failed"}
+                    logger.error(f"[{recipient_id}] FINAL FAILURE: Failed to transmit P2P message via ANY path (target={recipient_id})")
+                    success_final = False
+
+            # 4. Update Status and Notify Gateway
+            new_status = "sent" if success_final else "failed"
+            
+            # Find the message object to update status
+            target_msg = None
+            for m in reversed(self.history):
+                if m.id == msg_id:
+                    target_msg = m
+                    break
+            
+            if target_msg:
+                target_msg.status = new_status
+            
+            self.resident_memory.update_message_status(msg_id, new_status, topic=package_type)
+            
+            await self.message_bus.publish_outbound(OutboundMessage(
+                channel="gateway",
+                session_id=norm_target,
+                content=msg_id,
+                type="status_update",
+                metadata={"message_id": msg_id, "status": new_status}
+            ))
+
+            if success_final:
+                return {"success": True, "mode": mode}
+            else:
+                return {"success": False, "error": "All transport paths failed"}
 
         except Exception as e:
-            logger.error(f"Failed to transmit P2P message to {target_id}: {e}")
+            logger.error(f"Failed to transmit P2P message to {recipient_id}: {e}")
             return {"success": False, "error": str(e)}
+
+    async def handle_remote_delivery_error(self, message_id: str, error_content: Any):
+        """
+        Handle asynchronous delivery failure reported by the P2P network (e.g., from Relay).
+        Updates local history and notifies the UI.
+        """
+        logger.warning(f"Handling remote delivery error for message {message_id}: {error_content}")
+        
+        # 1. Update status in local memory history
+        found_in_history = False
+        target_session_id = "resident" # Default to main resident chat
+        
+        for msg in self.history:
+            # Check both internal UUID (msg.id) and P2P network ID (msg.metadata.message_id)
+            p2p_msg_id = msg.metadata.get("message_id") if msg.metadata else None
+            if msg.id == message_id or p2p_msg_id == message_id:
+                msg.status = "failed"
+                if not msg.metadata: msg.metadata = {}
+                msg.metadata["delivery_error"] = str(error_content)
+                target_session_id = msg.session_id
+                found_in_history = True
+                logger.info(f"Updated message {msg.id} status to 'failed' in active history.")
+                break
+        
+        # 2. Update status in persistent resident memory (JSONL logs)
+        self.resident_memory.update_message_status(message_id, "failed")
+        
+        # 3. Notify Gateway/UI via Message Bus
+        await self.message_bus.publish_outbound(OutboundMessage(
+            channel="gateway",
+            session_id=target_session_id,
+            content=message_id,
+            type="status_update",
+            metadata={
+                "message_id": message_id,
+                "status": "failed",
+                "error": str(error_content),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        ))
+        
+        if found_in_history:
+            logger.info(f"Successfully updated status to 'failed' for message {message_id}")
+        else:
+            logger.debug(f"Message ID {message_id} not found in current history buffer. Still updated disk logs.")
 
     async def get_chat_history_with_peer(self, peer_id: str, limit: int = 20) -> str:
         """
@@ -1529,35 +2061,58 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
              group = p2p_service.local_node.network_manager.groups[group_id]
              election.eligible_voters = group.members.copy()
         
+        # Broadcast via P2P - Wait for broadcast to complete with timeout (Fixed: was asyncio.create_task without await)
+        try:
+            await asyncio.wait_for(
+                p2p_service.broadcast_governance_event(
+                    group_id, 
+                    "proposal", 
+                    {"proposal": {"proposal_id": "", "content": "Election"}, "election": election.to_dict()}
+                ),
+                timeout=10.0
+            )
+            logger.info(f"Election broadcast successfully for group {group_id}")
+        except asyncio.TimeoutError:
+            logger.warning(f"Election broadcast timeout for group {group_id}")
+        except Exception as e:
+            logger.error(f"Election broadcast failed for group {group_id}: {e}")
+        
         return str(election.election_id)
 
     async def submit_proposal(self, group_id: str, content: str) -> str:
-        if not self.governance_manager:
-            return "Governance Manager not initialized"
-            
-        proposal, election = self.governance_manager.initiate_proposal(group_id, content)
-        
-        # Determine scope (mock behavior: if content implies sub-groups, set scope)
-        if "all groups" in content.lower():
-            proposal.scope = "inclusive_subgroups"
-        
-        # Mock eligible voters
-        if p2p_service.local_node and group_id in p2p_service.local_node.network_manager.groups:
-             group = p2p_service.local_node.network_manager.groups[group_id]
-             election.eligible_voters = group.members.copy()
-             
-        return f"Proposal {proposal.proposal_id} initiated. Voting ID: {election.election_id}"
+        """Alias for create_proposal returning string for tool compatibility."""
+        result = await self.create_proposal(group_id, content)
+        if "error" in result:
+            return result["error"]
+        return f"Proposal {result['proposal']['proposal_id']} initiated. Voting ID: {result['election']['election_id']}"
 
-    async def publish_research(self, group_id: str, content: str, pdf_hash: str) -> str:
+    async def publish_research(self, group_id: str, content: str, pdf_hash: str, duration_minutes: int = 60) -> str:
          if not self.governance_manager:
             return "Governance Manager not initialized"
             
-         proposal, election = self.governance_manager.initiate_research_publication(group_id, content, pdf_hash)
-         
-         # Mock eligible voters (Same as proposal)
+         # Fetch eligible voters from group members
+         eligible_voters = set()
          if p2p_service.local_node and group_id in p2p_service.local_node.network_manager.groups:
-             group = p2p_service.local_node.network_manager.groups[group_id]
-             election.eligible_voters = group.members.copy()
+              group = p2p_service.local_node.network_manager.groups[group_id]
+              eligible_voters = group.members.copy()
+
+         proposal, election = self.governance_manager.initiate_research_publication(group_id, content, pdf_hash, duration_minutes, eligible_voters=eligible_voters)
+             
+         # Broadcast via P2P - Wait for broadcast to complete with timeout (Fixed: was asyncio.create_task without await)
+         try:
+             await asyncio.wait_for(
+                 p2p_service.broadcast_governance_event(
+                     group_id, 
+                     "proposal", 
+                     {"proposal": proposal.to_dict(), "election": election.to_dict()}
+                 ),
+                 timeout=10.0
+             )
+             logger.info(f"Research proposal broadcast successfully for group {group_id}")
+         except asyncio.TimeoutError:
+             logger.warning(f"Research proposal broadcast timeout for group {group_id}")
+         except Exception as e:
+             logger.error(f"Research proposal broadcast failed for group {group_id}: {e}")
              
          return f"Research published {proposal.pdf_hash}. Evaluation ID: {election.election_id}"
 
@@ -1574,7 +2129,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             ballot.append(Vote(
                  voter_id=self.governance_manager.node_id,
                  candidate_id=v_data.get("candidate_id"), # Can be None for proposal
-                 timestamp=datetime.now(),
+                 timestamp=datetime.now(timezone.utc),
                  approval=v_data.get("approve", False),
                  reason=v_data.get("reason", ""),
                  reward_amount=v_data.get("reward_amount", 0.0)
@@ -1582,7 +2137,32 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         
         success = self.governance_manager.receive_ballot(election_id, ballot)
         if success:
-             return "Ballot registered locally"
+             # Broadcast via P2P - Wait for broadcast to complete with timeout
+             election = self.governance_manager.active_elections[election_id]
+             broadcast_tasks = []
+             for v in ballot:
+                 task = asyncio.create_task(p2p_service.broadcast_governance_event(
+                     election.group_id, 
+                     "vote", 
+                     {"election_id": election_id, "vote": v.to_dict()}
+                 ))
+                 broadcast_tasks.append(task)
+             
+             # Wait for all broadcasts to complete (with timeout)
+             try:
+                 await asyncio.wait_for(
+                     asyncio.gather(*broadcast_tasks, return_exceptions=True),
+                     timeout=10.0
+                 )
+                 logger.info(f"Vote broadcast successfully for election {election_id[:8]} ({len(ballot)} votes)")
+             except asyncio.TimeoutError:
+                 logger.warning(f"Vote broadcast timeout for election {election_id[:8]}")
+                 return "Ballot registered locally but broadcast timed out"
+             except Exception as e:
+                 logger.error(f"Vote broadcast failed for election {election_id[:8]}: {e}")
+                 return f"Ballot registered locally but broadcast failed: {e}"
+             
+             return "Ballot registered and broadcast successfully"
         else:
              return "Ballot rejected (invalid, closed, or validation failed)"
 
@@ -1640,8 +2220,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         # Gathering P2P messages exclusively
         p2p_messages = []
         for msg in self.history:
-            # Exclude resident-agent chat and system notifications
-            if msg.chat_id != "resident" and msg.sender != "system":
+            # ONLY log messages that are part of an actual conversation (ignore system pings)
+            if msg.session_id != "resident" and msg.sender != "system":
                 p2p_messages.append(msg.dict())
 
         # Create Block
@@ -1653,6 +2233,145 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         )
         
         return f"Archived Block #{block.index} Hash: {block.hash}"
+
+    async def check_tasks_monitor(self):
+        """Background job to check status of long-term tasks."""
+        if not self.task_manager:
+            return
+            
+        if not self.llm:
+            logger.info("Task Monitor: Agent LLM not yet configured. Postponing startup task check by 5 seconds...")
+            from datetime import timedelta
+            self.scheduler.add_job(
+                "app.services.agent_service:check_tasks_monitor_proxy", 
+                trigger='date', 
+                run_date=datetime.now(timezone.utc) + timedelta(seconds=5), 
+                id="task_monitor_startup_retry", 
+                replace_existing=True
+            )
+            return
+            
+        active_tasks = self.task_manager.get_active_tasks()
+        if not active_tasks:
+            return
+            
+        logger.info(f"Task Monitor: Checking {len(active_tasks)} active tasks...")
+        
+        for task in active_tasks:
+            # Logic: If pending, move to active and poke immediately
+            if task.status == TaskStatus.PENDING:
+                logger.info(f"Task Monitor: Activating pending task '{task.goal}'")
+                task.update_status(TaskStatus.ACTIVE)
+                self.task_manager.save_tasks()
+                
+                poke_msg = InboundMessage(
+                    channel="internal",
+                    sender_id="system",
+                    session_id="resident",
+                    content=(
+                        f"[INTERNAL MONITOR]: 发现一个待处理的新任务 \"{task.goal}\"。请立刻开始执行任务并更新 Checkpoint。\n"
+                        f"[CRITICAL INSTRUCTION: You are awakened by an automated background loop. You are an AUTONOMOUS agent. "
+                        f"You MUST proactively take action by calling a tool (e.g. send_p2p_message, execute_shell_command) to push the task forward. "
+                        f"Do NOT ask the resident for permission or instructions on how to proceed unless completely blocked. "
+                        f"Do NOT output conversational text just to acknowledge this message. If you have absolutely nothing to do, output exactly [NO_RESPONSE_NEEDED].]"
+                    )
+                )
+                asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
+                
+            elif task.status == TaskStatus.ACTIVE:
+                last_update = task.updated_at
+                now = datetime.now(timezone.utc)
+                # If no update for 30 mins, or if it's a fresh start check
+                # Note: On a fresh reboot, this might still be > 1800s if the task was saved long ago
+                if (now - last_update).total_seconds() > 1800:
+                    logger.info(f"Task Monitor: Task '{task.goal}' seems idle. Triggering self-poke.")
+                    
+                    # Synthesize an internal message
+                    poke_msg = InboundMessage(
+                        channel="internal",
+                        sender_id="system",
+                        session_id="resident",
+                        content=(
+                            f"[INTERNAL MONITOR]: 正在推进长期任务 \"{task.goal}\"。当前状态: {task.status}。请检查 Checkpoint 并决定下一步行动。\n"
+                            f"[CRITICAL INSTRUCTION: You are awakened by an automated background loop. You are an AUTONOMOUS agent. "
+                            f"You MUST proactively take action by calling a tool (e.g. send_p2p_message, execute_shell_command) to push the task forward. "
+                            f"Do NOT ask the resident for permission or instructions on how to proceed unless completely blocked. "
+                            f"Do NOT output conversational text just to acknowledge this message. If you have absolutely nothing to do, output exactly [NO_RESPONSE_NEEDED].]"
+                        )
+                    )
+                    
+                    # Run the loop in the background
+                    asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
+                    
+                    # Explicitly bump the updated_at timestamp to reset the 30-minute idle clock
+                    # This prevents the monitor from spamming the agent if the monitor interval is shorter than 30 mins
+                    task.updated_at = datetime.now(timezone.utc)
+                    self.task_manager.save_tasks()
+                else:
+                    logger.info(f"Task Monitor: Task '{task.goal}' is ongoing (Updated {(now-last_update).total_seconds()/60:.1f}m ago).")
+            elif task.status == TaskStatus.BLOCKED:
+                 logger.info(f"Task Monitor: Task '{task.goal}' is BLOCKED. Waiting for resumption condition.")
+
+    async def check_governance_proposals(self):
+        """Background job to scan for unhandled governance proposals and notify the agent."""
+        if not self.governance_manager or not self.llm:
+            return
+            
+        active_elections = self.governance_manager.active_elections
+        # Find elections we haven't voted in AND haven't been notified about locally
+        my_id = p2p_service.local_node.node_id if p2p_service.local_node else None
+        if not my_id:
+            return
+        
+        logger.debug(f"Governance Monitor: Checking {len(active_elections)} active elections...")
+        found_new = False
+
+        for eid, election in active_elections.items():
+            # Focus on proposal votes
+            if election.election_type != ElectionType.PROPOSAL_VOTE:
+                continue
+            
+            # Skip if we already voted
+            if my_id in election.votes:
+                continue
+                
+            # Skip if we were already notified (Check both instance state and persistence)
+            if eid in self.notified_governance_ids:
+                continue
+            
+            # Found a new proposal!
+            proposal_id = election.proposal_id
+            proposal = self.governance_manager.proposals.get(proposal_id)
+            if not proposal:
+                logger.warning(f"Governance Monitor: Election {eid} found but proposal {proposal_id} is missing.")
+                continue
+            
+            logger.info(f"Governance Monitor: New unhandled proposal detected: {proposal_id}. Awakening agent...")
+            
+            # Create internal probe message
+            poke_msg = InboundMessage(
+                channel="internal",
+                sender_id="system",
+                session_id="resident",
+                content=(
+                    f"[治理监控]: 系统检测到一项新的社区提案 (ID: {proposal_id}) 需要您的评审。\n"
+                    f"提案发起人: {proposal.initiator_id[:8]}\n"
+                    f"提案内容: {proposal.content}\n"
+                    f"投票截止日期: {election.end_time}\n"
+                    f"所在小组: {proposal.group_id}\n\n"
+                    f"[自治指令]: 请评估该提案的价值和风险。您可以直接调用 `cast_vote` 工具进行投票，或者如果您认为该提案需要更深入的研究，请使用 `publish_research` 发表您的专业见解以引导社区共识。"
+                )
+            )
+            
+            # Fire and forget pipeline execution
+            asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
+            
+            # Mark as notified and mark for persistence
+            self.notified_governance_ids.add(eid)
+            found_new = True
+
+        if found_new:
+            self._save_system_state()
 
     async def get_latest_archive_report(self) -> dict:
         if not self.archive_manager:
@@ -1670,11 +2389,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         
         # 1. Internal Log
         await self.message_bus.publish_outbound(OutboundMessage(
-            id=str(uuid.uuid4()),
+            channel="gateway",
+            session_id="system", 
             content=f"Delegated Task Received: {task}",
-            sender=sender_id,
-            timestamp=datetime.now(),
-            type="thought"
+            type="thought",
+            metadata={"handoff_id": handoff_id, "sender_id": sender_id}
         ))
 
         # 2. Resolve Task using standard Agent Flow
@@ -1741,16 +2460,234 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         
         msg = f"Task Result ({handoff_id}): {output}" if not error else f"Task Error ({handoff_id}): {error}"
         await self.message_bus.publish_outbound(OutboundMessage(
-            id=str(uuid.uuid4()),
+            channel="gateway",
+            session_id="system",
             content=msg,
-            sender=sender_id,
-            timestamp=datetime.now(),
-            type="thought"
+            type="thought",
+            metadata={"handoff_id": handoff_id, "sender_id": sender_id}
         ))
 
+    async def _self_reflection(self):
+        """Periodic job to scan logs for errors and trigger autonomous repair."""
+        log_path = "backend/data/logs/p2p_network.log"
+        if not os.path.exists(log_path):
+            return
+            
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 10000))
+                chunk = f.read()
+                
+            lines = chunk.splitlines()
+            # Only look for actual ERROR or CRITICAL lines
+            errors = [l for l in lines if "ERROR: " in l or "CRITICAL: " in l]
+            
+            for error in errors:
+                # Basic signature extraction
+                sig = ""
+                if " - ERROR: " in error:
+                    sig = error.split(" - ERROR: ", 1)[1][:100]
+                elif " - CRITICAL: " in error:
+                    sig = error.split(" - CRITICAL: ", 1)[1][:100]
+                else:
+                    sig = error[-100:]
+                    
+                if sig and sig not in self.notified_error_signatures:
+                    logger.info(f"Self-Reflection: Detected new error signature: {sig}")
+                    self.notified_error_signatures.add(sig)
+                    self._save_system_state()
+                    
+                    # Notify the resident via thought
+                    await self.message_bus.publish_outbound(OutboundMessage(
+                        channel="gateway",
+                        session_id="system_health",
+                        content=f"System Health Alert: Error signature detected: {sig}. Launching autonomous repair sub-agent...",
+                        type="thought"
+                    ))
+                    
+                    # Launch the sub-agent task
+                    asyncio.create_task(self._run_autonomous_repair_subagent(error))
+                    
+                    # Only notify one new error per scan to avoid overwhelming the agent
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Error in self_reflection job: {e}")
 
+    async def _run_autonomous_repair_subagent(self, error_message: str):
+        """Invoke a specialized sub-agent to diagnose and fix a system error."""
+        if not self.api_key or not os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes"):
+            return
+            
+        logger.info(f"Sub-Agent: Starting autonomous repair for error: {error_message[:100]}...")
+        
+        try:
+            # 1. Initialize specialized LLM for repair
+            repair_llm = ChatOpenAI(
+                base_url=self.base_url,
+                api_key=self.api_key,
+                model=self.model,
+                temperature=0.2 # Lower temperature for precision repair
+            ).bind_tools(REPAIR_TOOLS)
+            
+            repair_tools_map = {t.name: t for t in REPAIR_TOOLS}
+            
+            # 2. Build initial context
+            messages = [
+                SystemMessage(content=SELF_HEALING_SUBAGENT_PROMPT),
+                HumanMessage(content=f"The following error was detected in your logs:\n\n{error_message}\n\nPlease analyze and repair it.")
+            ]
+            
+            # 3. Execution Loop (simplified ReAct)
+            max_iters = 10
+            for i in range(max_iters):
+                try:
+                    response = await repair_llm.ainvoke(messages)
+                    messages.append(response)
+                    
+                    # Extract Reasoning/Thought
+                    thought = ""
+                    if "reasoning_content" in response.additional_kwargs:
+                        thought = response.additional_kwargs["reasoning_content"]
+                    elif response.content:
+                        thought = response.content
 
-# -------------------------------------------------------------------------
+                    # Emit thought to UI
+                    if thought:
+                        await self.message_bus.publish_outbound(OutboundMessage(
+                            channel="gateway",
+                            session_id="system_health",
+                            content=f"[Repair Sub-Agent] {thought}",
+                            type="thought"
+                        ))
+                    
+                    if not response.tool_calls:
+                        break
+                        
+                    for tc in response.tool_calls:
+                        t_name = tc["name"]
+                        t_args = tc["args"]
+                        t_id = tc["id"]
+                        
+                        await self.message_bus.publish_outbound(OutboundMessage(
+                            channel="gateway",
+                            session_id="system_health",
+                            content=f"[Repair Sub-Agent] Invoking {t_name}...",
+                            type="tool_call",
+                            metadata={"tool": t_name, "args": t_args}
+                        ))
+                        
+                        if t_name in repair_tools_map:
+                            logger.info(f"Repair Sub-Agent Invoking Tool: {t_name}")
+                            output = await repair_tools_map[t_name].ainvoke(t_args)
+                            messages.append(ToolMessage(tool_call_id=t_id, content=str(output), name=t_name))
+                        else:
+                            messages.append(ToolMessage(tool_call_id=t_id, content=f"Error: Tool {t_name} not found.", name=t_name))
+                except Exception as e:
+                    logger.error(f"Error in repair sub-agent iteration {i}: {e}")
+                    break
+            
+            logger.info("Sub-Agent: Autonomous repair task completed.")
+        except Exception as e:
+            logger.error(f"Failed to run autonomous repair sub-agent: {e}")
+
+    async def check_unhandled_messages(self):
+        """Watchdog: Scan all active sessions for unhandled inbound messages older than 5 minutes."""
+        try:
+            from .session_service import session_manager
+            from ..bus.events import InboundMessage
+            now = datetime.now(timezone.utc)
+            five_minutes_ago = now - timedelta(minutes=5)
+
+            # Gather all unique session IDs from history
+            session_ids = set()
+            for msg in self.history:
+                sid = getattr(msg, 'session_id', None)
+                if sid and sid not in ['resident', 'system', 'system_health', 'global']:
+                    session_ids.add(sid)
+
+            for sid in session_ids:
+                # Find the last inbound message for this session
+                last_inbound = None
+                for msg in reversed(self.history):
+                    if getattr(msg, 'session_id', None) == sid and getattr(msg, 'sender', '') != 'agent':
+                        last_inbound = msg
+                        break
+
+                if not last_inbound:
+                    continue
+
+                # Check if the last message in this session is from the agent (i.e., already handled)
+                last_msg_in_session = None
+                for msg in reversed(self.history):
+                    if getattr(msg, 'session_id', None) == sid:
+                        last_msg_in_session = msg
+                        break
+
+                if last_msg_in_session and getattr(last_msg_in_session, 'sender', '') == 'agent':
+                    continue  # Already responded
+
+                # Check if the last inbound is older than 5 minutes
+                msg_ts = getattr(last_inbound, 'timestamp', None)
+                if msg_ts:
+                    if msg_ts.tzinfo is None:
+                        msg_ts = msg_ts.replace(tzinfo=timezone.utc)
+                    if msg_ts < five_minutes_ago:
+                        msg_id = getattr(last_inbound, 'id', 'unknown')
+                        if msg_id in self.notified_watchdog_ids:
+                            continue  # Already triggered for this message
+
+                        logger.warning(f"[WATCHDOG] Unhandled message detected in session {sid[:8]}... (msg_id={msg_id}, age={(now - msg_ts).total_seconds():.0f}s). Triggering immediate processing.")
+                        self.notified_watchdog_ids.add(msg_id)
+
+                        # Trigger immediate processing via pipeline
+                        poke_msg = InboundMessage(
+                            channel="p2p",
+                            sender_id=getattr(last_inbound, 'sender', sid),
+                            session_id=sid,
+                            content=getattr(last_inbound, 'content', ''),
+                            metadata={"watchdog": True, "original_msg_id": msg_id}
+                        )
+                        asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
+
+            # Prune old watchdog IDs (keep last 200)
+            if len(self.notified_watchdog_ids) > 200:
+                self.notified_watchdog_ids = set(list(self.notified_watchdog_ids)[-100:])
+
+        except Exception as e:
+            logger.error(f"Error in check_unhandled_messages watchdog: {e}")
+
+    async def gossip_state_sync(self):
+        """
+        Periodic Gossip state synchronization for eventual consistency.
+        Requests state sync from group members to catch missed proposals/votes.
+        """
+        try:
+            if not p2p_service._initialized or not self.governance_manager:
+                return
+            
+            # Get all groups the local node is a member of
+            my_groups = p2p_service.get_my_groups()
+            if not my_groups:
+                return
+            
+            logger.info(f"[GossipSync] Starting periodic state sync for {len(my_groups)} groups")
+            
+            for group_id in my_groups:
+                try:
+                    # Request state sync from this group
+                    await p2p_service.network_manager.request_state_sync(group_id)
+                    # Small delay between groups to avoid flooding
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.debug(f"[GossipSync] Failed to sync group {group_id}: {e}")
+            
+            logger.info(f"[GossipSync] Completed state sync for {len(my_groups)} groups")
+            
+        except Exception as e:
+            logger.error(f"Error in gossip_state_sync: {e}")
 # Standalone Proxy Functions for Scheduler
 # These avoid pickling the 'self' (AgentService instance) which contains the unpickleable scheduler.
 # -------------------------------------------------------------------------
@@ -1779,6 +2716,108 @@ async def run_consolidation_proxy():
     """Proxy for agent_service.consolidation_service.run_daily_consolidation"""
     if agent_service and agent_service.consolidation_service:
         await agent_service.consolidation_service.run_daily_consolidation()
+
+async def check_tasks_monitor_proxy():
+    """Proxy for agent_service.check_tasks_monitor"""
+    if agent_service:
+        await agent_service.check_tasks_monitor()
+
+async def check_governance_proposals_proxy():
+    """Proxy for agent_service.check_governance_proposals"""
+    if agent_service:
+        await agent_service.check_governance_proposals()
+
+async def retry_failed_messages_proxy():
+    """Proxy for agent_service._retry_failed_messages"""
+    if agent_service:
+        await agent_service._retry_failed_messages()
+
+async def self_reflection_proxy():
+    """Proxy for agent_service._self_reflection"""
+    if agent_service:
+        await agent_service._self_reflection()
+
+async def check_unhandled_messages_proxy():
+    """Proxy for agent_service.check_unhandled_messages"""
+    if agent_service:
+        await agent_service.check_unhandled_messages()
+
+async def gossip_state_sync_proxy():
+    """Proxy for agent_service.gossip_state_sync"""
+    if agent_service:
+        await agent_service.gossip_state_sync()
+
+async def code_supervisor_proxy():
+    """Integrated code supervisor: polls pending.json and processes code updates."""
+    if not agent_service:
+        return
+    import json
+    from pathlib import Path
+    
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    WATCH_FILE = PROJECT_ROOT / "data" / "code_updates" / "pending.json"
+    LOG_DIR = PROJECT_ROOT / "data" / "logs"
+    
+    if not WATCH_FILE.exists():
+        return
+    
+    logger.info(f"[CodeSupervisor] Detected pending update at {WATCH_FILE}")
+    processing_file = WATCH_FILE.with_suffix(".json.processing")
+    
+    try:
+        # Rename to prevent double-processing
+        WATCH_FILE.rename(processing_file)
+        
+        with open(processing_file, "r", encoding="utf-8") as f:
+            request = json.load(f)
+        
+        file_path = request.get("file_path")
+        new_content = request.get("new_content")
+        explanation = request.get("explanation", "No explanation")
+        
+        if not file_path or not os.path.exists(file_path):
+            logger.error(f"[CodeSupervisor] Target file not found: {file_path}")
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            processing_file.rename(WATCH_FILE.parent / f"failed_{ts}.json")
+            return
+        
+        # 1. Syntax check
+        import subprocess
+        code = subprocess.run(["python", "-m", "py_compile", file_path], capture_output=True, text=True)
+        
+        # Backup original
+        original_content = None
+        with open(file_path, "r", encoding="utf-8") as f:
+            original_content = f.read()
+        
+        # Apply change
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        
+        # Verify syntax of new content
+        result = subprocess.run(["python", "-m", "py_compile", file_path], capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            logger.error(f"[CodeSupervisor] Syntax error in patch. Rolling back. stderr: {result.stderr}")
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(original_content)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            processing_file.rename(WATCH_FILE.parent / f"failed_{ts}.json")
+            return
+        
+        # Success
+        logger.info(f"[CodeSupervisor] Patch applied successfully: {explanation}")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        processing_file.rename(WATCH_FILE.parent / f"success_{ts}.json")
+        
+        # Log to supervisor log
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOG_DIR / "supervisor.log", "a", encoding="utf-8") as lf:
+            lf.write(f"[{datetime.now().isoformat()}] Applied: {file_path} - {explanation}\n")
+            
+    except Exception as e:
+        logger.error(f"[CodeSupervisor] Error processing update: {e}")
+        if processing_file.exists():
+            processing_file.unlink()
 
 
 agent_service = AgentService()

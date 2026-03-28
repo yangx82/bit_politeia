@@ -23,7 +23,7 @@ async def dump_history():
     history = await agent_service.get_history()
     
     # Filter for resident chat messages
-    resident_msgs = [m for m in history if m.chat_id == 'resident']
+    resident_msgs = [m for m in history if m.session_id == 'resident']
     
     print(f"\n[Resident Messages Dump] (Count: {len(resident_msgs)})")
     # Show last 5

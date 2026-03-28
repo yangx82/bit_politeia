@@ -42,7 +42,7 @@ async def get_history():
     history = await agent_service.get_history()
     # DEBUG: Print last few messages to check chat_id/sender format
     if history:
-        print(f"\n[DEBUG-HISTORY] Last message: sender={history[-1].sender}, chat_id={history[-1].chat_id}")
+        print(f"\n[DEBUG-HISTORY] Last message: sender={history[-1].sender}, session_id={history[-1].session_id}")
     return history
 
 @router.get("/history/search", response_model=list[Message])
@@ -74,23 +74,38 @@ async def get_groups():
 
 @router.post("/p2p/send")
 async def send_p2p_message(payload: dict = Body(...)):
-    """Send a suggestion to the agent to send a P2P message."""
+    """Send a P2P message to a node or group."""
     target_id = payload.get("target_id")
     content = payload.get("content")
+    message_type = payload.get("message_type", "DIRECT")  # 允许指定消息类型
+    
     if not target_id or not content:
         raise HTTPException(status_code=400, detail="target_id and content required")
     
     text_content = content.get("text") if isinstance(content, dict) else str(content)
     
-    instruction = (
-        f"【RESIDENT SUGGESTION】 I suggest you send the following message to '{target_id}':\n"
-        f"\"{text_content}\"\n"
-        f"Please evaluate this, and if you agree, use the 'send_p2p_message' tool to send it."
-    )
+    # 检查目标是否是小组 (根据命名约定或已知小组ID)
+    # 如果target_id看起来像小组ID，强制使用GROUP类型
+    effective_msg_type = message_type
+    if target_id.startswith("L") and "-" in target_id:
+        effective_msg_type = "GROUP"
     
-    import asyncio
-    asyncio.create_task(agent_service.process_user_instruction(instruction))
-    return {"status": "suggestion_forwarded", "message": "Suggestion forwarded to your agent. Please check the Chat for their decision."}
+    # 直接调用 agent_service 发送消息，而不是通过建议机制
+    # 这样可以确保消息立即发送
+    try:
+        result = await agent_service.send_p2p_message(
+            target_id, 
+            {"text": text_content},
+            message_type=effective_msg_type
+        )
+        
+        if result.get("success"):
+            return {"status": "sent", "mode": result.get("mode", "unknown")}
+        else:
+            return {"status": "failed", "error": result.get("error", "Unknown error")}
+    except Exception as e:
+        logger.error(f"Failed to send P2P message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/archive/chain")
 async def get_archive_chain():
@@ -148,3 +163,20 @@ async def cast_vote(request: VoteRequest):
     import asyncio
     asyncio.create_task(agent_service.process_user_instruction(instruction))
     return {"status": "suggestion_forwarded", "message": "Suggestion forwarded to your agent. Please check the Chat for their decision."}
+@router.delete("/governance/proposals/{proposal_id}")
+async def delete_proposal(proposal_id: str):
+    """Remove a proposal and its associated election."""
+    success = await agent_service.delete_proposal(proposal_id)
+    if success:
+        return {"status": "success", "message": f"Proposal {proposal_id} removed."}
+    else:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+
+@router.delete("/governance/elections/{election_id}")
+async def delete_election(election_id: str):
+    """Remove a specific election."""
+    success = await agent_service.delete_election(election_id)
+    if success:
+        return {"status": "success", "message": f"Election {election_id} removed."}
+    else:
+        raise HTTPException(status_code=404, detail="Election not found")

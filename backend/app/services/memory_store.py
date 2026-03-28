@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 logger = logging.getLogger(__name__)
@@ -15,7 +15,7 @@ def ensure_dir(path: Path) -> Path:
 
 def today_date() -> str:
     """Get today's date string."""
-    return datetime.now().strftime("%Y-%m-%d")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 class MemoryStore:
     """
@@ -79,7 +79,7 @@ class MemoryStore:
         from datetime import timedelta
         
         memories = []
-        today = datetime.now().date()
+        today = datetime.now(timezone.utc).date()
         
         for i in range(days):
             date = today - timedelta(days=i)

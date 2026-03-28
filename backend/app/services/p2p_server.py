@@ -191,24 +191,30 @@ async def websocket_relay(websocket: WebSocket, node_id: str):
 
                 # Check for standard SignedMessage format or specific relay envelope
                 # Expecting SignedMessage which has 'recipient_id'
-                target_id = message.get("recipient_id")
+                recipient_id = message.get("recipient_id")
+                msg_type = message.get("message_type")
                 
-                if target_id:
-                     if target_id == "bootstrap":
-                         # Handle control messages to bootstrap if needed
-                         pass
+                if recipient_id:
+                     is_group = bootstrap_service.is_valid_group(recipient_id)
+                     logger.info(f"Relay Handler: Received {msg_type} from {node_id}. recipient={recipient_id} (IsGroup: {is_group})")
+                     
+                     if is_group or (msg_type and str(msg_type).lower() == "group"):
+                         # Group Broadcast (including Governance events like VOTE/PROPOSAL)
+                         success = await relay_manager.broadcast_to_group(node_id, recipient_id, message)
                      else:
-                         # Relay to target
-                         success = await relay_manager.route_message(node_id, target_id, message)
-                         if not success:
-                             # Send error back to sender
-                             error_msg = {
-                                 "type": "SYSTEM_ERROR",
-                                 "error_code": "DELIVERY_FAILED",
-                                 "recipient_id": target_id,
-                                 "content": "Target node is not connected to relay."
-                             }
-                             await websocket.send_text(json.dumps(error_msg))
+                         # Direct Relay to node
+                         success = await relay_manager.route_message(node_id, recipient_id, message)
+                         
+                     if not success:
+                         # Send error back to sender
+                         error_msg = {
+                             "type": "SYSTEM_ERROR",
+                             "error_code": "DELIVERY_FAILED",
+                             "recipient_id": recipient_id,
+                             "message_id": message.get("message_id"),  # Track which message failed
+                             "content": f"Recipient {recipient_id} not reachable via relay."
+                         }
+                         await websocket.send_text(json.dumps(error_msg))
                 else:
                     logger.warning(f"Relay: Received malformed message from {node_id} (No recipient_id or type)")
                     

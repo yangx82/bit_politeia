@@ -58,8 +58,32 @@ Adopted Nanobot's memory architecture for better context management.
 - Addressed an issue where the agent would parrot the last user message ("What did I just ask?").
 - **Solution**: Implemented recursive removal of trailing duplicate messages in `AgentService._think_and_act` history slice.
 - **Result**: Agent now correctly looks past repeated meta-questions to find the actual conversational context.
+- Modify `ResidentMemory.log_interaction` to handle explicit timestamps.
+- Update `process_network_inbox` backwards-compatibility loops to avoid dropping real timestamps during queue un-marshaling.
 
-## 5. Agent ReAct Loop & ContextBuilder
+### Resolution of Perpetual "Pending" UI Status
+- **Root Cause**: An earlier architectural change mistakenly routed the Agent's internal "thought" summaries (such as confirming `[NO_RESPONSE_NEEDED]`) to the P2P connection `session_id`, meaning these logs correctly showed up in the frontend's P2P conversation views. However, because they are internal agent thoughts, they lacked a network `status` (such as `sent` or `failed`), appearing as `null` in the payload. The `Chat.jsx` frontend falls back to displaying a spinning pending loader for any `activeSessionId !== 'resident'` message that lacks a `status`.
+- **Fix Applied**: 
+### Resolution of Stalled Task Monitor
+- **Root Cause**: The background task monitor (`check_tasks_monitor`) only parsed tasks with an explicit `active` status. Newly created tasks with a `pending` status were ignored. Additionally, the 30-minute idle threshold meant that even active tasks appeared "stalled" to users who expected immediate action after a reboot. Finally, a race condition occurred during startup where `configure_agent` (called synchronously from `.env`) would start the APScheduler *before* `start_scheduler` could add the background jobs, causing all background tracking loops to be silently discarded. Further debugging revealed a silent `TaskStatus` import error crashing the proxy subroutine, APScheduler's `SQLAlchemyJobStore` incorrectly suppressing fresh boot triggers due to locally-cached SQLite misfire grace time violations, an extreme initialization race condition where the rapid memory job execution aborted silently because `agent.llm` wasn't fully connected yet by the async backend boot sequence, and finally, a conversational loophole where the LLM would acknowledge the internal monitor "system" poke with a text response rather than executing a strict action/tool, causing the pipeline to silently terminate the reasoning branch after outputting a "thought".
+- **Fix Applied**: 
+  - Updated `check_tasks_monitor` to automatically detect and activate `pending` tasks, triggering an immediate "self-poke" to the agent.
+  - Improved logging levels from `DEBUG` to `INFO` for better visibility in the backend console during task monitoring.
+  - Fixed a missing python import for `TaskStatus` successfully resolving the sub-process silent crashes.
+  - Replaced the persistent `SQLAlchemyJobStore` implementation with the default non-persistent `MemoryJobStore` for APScheduler, ensuring cached schedules are completely purged each reboot to force strict static interval execution bounds.
+  - Decoupled `add_job` background task registration from the scheduler's running state in `start_scheduler` to ensure monitor loops are fundamentally registered regardless of which component boot-straps the APScheduler first.
+  - Added an LLM initialization guard into `check_tasks_monitor`. If the LLM isn't hooked up yet during the swift boot schedule, it logs the delay and correctly spawns a precise 5-second delayed `date` job to try again.
+  - Injected an un-ignorable `[CRITICAL INSTRUCTION]` directly into the monitor's trigger message bounding the LLM to explicitly execute an action framework tool proactively, explicitly forbidding the passive fallback of calling `ask_resident` for permission or instructions unless critically blocked.
+  - Rectified a >30-minute idle threshold sub-second race condition by decoupling the APScheduler polling frequency (now 5 minutes) from the evaluation threshold (>1800s), combined with an explicitly injected timestamp bump during dispatch to thwart rapid-fire agent spam.
+  - Fortified `update_task_status` tool definitions and global system prompts with strict technical constraints, defining absolute 100% success for `completed` usage to categorically eliminate the LLM 'tried and gave up -> completed' semantic semantic hallucination, rigidly enforcing the adoption of `failed` or `blocked` instead.
+  - Fixed a P2P message status persistence mismatch where status updates were being sent to the `agent` topic (mapping to `agent.jsonl`) while original messages were logged to `chat` topic (mapping to `chat.jsonl`). Refactored `ResidentMemory.update_message_status` to be topic-agnostic, ensuring 'sent' status correctly overwrites 'pending' across all JSONL logs.
+
+## 5. Agent Self-Awareness & Maintenance
+- **Architecture Mapping**: Created `backend/CODEBASE_MAP.md` as a persistent "Internal Anatomy" reference for the agent.
+- **Constitutional Update**: Added `LAYER 4: SELF-AWARENESS` to `AGENT_SYSTEM_PROMPT`, formally authorizing the agent to inspect its own source code.
+- **Autonomous Maintenance**: Instructed the agent to use its file tools to diagnose internal logic flaws and propose technical fixes rather than generic apologies.
+
+## 6. Agent ReAct Loop & ContextBuilder
 - **ContextBuilder**: Implemented `backend/app/agent/context.py` to centrally manage system prompts, memory injection, and skill definitions, adopting the Nanobot architecture.
 - **ReAct Loop**: Refactored `AgentService._think_and_act` to use a `while` loop (max 5 iterations). This allows the agent to:
     - Execute a tool.
@@ -67,11 +91,24 @@ Adopted Nanobot's memory architecture for better context management.
     - Decide on the next action (or finish) based on that output.
 - **Verification**: Created and ran `verify_react.py`, confirming multi-turn reasoning capabilities.
 
-## 6. Python Code Execution Capability
-- **Tool**: Implemented `execute_shell_command` (ported from Nanobot's `ExecTool`).
-- **Capability**: Agent can now run shell commands, including `python script.py` or `python -c "..."`.
-- **Safety**: Includes basic guardrails against destructive commands (`rm -rf`, `format`, etc.).
-- **Verification**: Verified via `test_exec_tool.py`.
+### 7. Agent Self-Awareness & WebRTC Self-Correction (Phase 16 & 17)
+The agent now possesses "Internal Anatomy" awareness via `CODEBASE_MAP.md` and is authorized to inspect its own code. Based on the agent's own analysis, we implemented:
+- **ICE Candidate Buffering**: Prevents race conditions during connection establishment.
+- **Negotiation Timeouts**: Prevents "negotiating" state locks.
+- **DataChannel Heartbeats**: Detects zombie connections via periodic ping/pong.
+- **Verification**: Validated via `tests/test_webrtc_logic.py`.
+
+### 8. Deceptive Hallucination Fix (Phase 18)
+Addressed the issue where the agent reports success before tool execution:
+- **Pipeline Refactor**: `PlanStage` now labels premature responses as `[计划执行中]`.
+- **Result-Aware Notify**: `NotifyStage` provides definitive confirmation based on `tool_results`.
+- **Strict Protocol**: Updated `AGENT_SYSTEM_PROMPT` to forbid reporting "sent" in the same turn as tool invocation.
+
+### 9. Group Broadcast Optimization (Phase 19)
+Massively reduced group messaging latency and redundancy:
+- **Parallel Relay**: `RelayManager` now uses `asyncio.gather` for concurrent WebSocket writes.
+- **Direct-First Policy**: `NetworkManager` prioritizes parallel direct HTTP delivery to known members.
+- **Partial Relay Broadcast**: Introduced `target_node_ids` support in the relay server. Only members that fail direct delivery are targeted by the relay, eliminating redundant traffic for others.
 
 ### Troubleshooting PDF Capability
 If the agent fails to read a PDF, use the diagnostic script:

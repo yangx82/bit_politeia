@@ -17,7 +17,7 @@ backend/
 │   │   ├── agent_service.py # MAIN AGENT LOOP (LLM, Tools, Scheduling)
 │   │   ├── p2p_server.py    # BOOTSTRAP API SERVER (FastAPI)
 │   │   ├── knowledge_base.py# RAG System (Retrieval Augmented Generation)
-│   │   ├── resident_link.py # Private Resident Chat & Reporting
+│   │   ├── resident_memory_service.py # Private Resident Chat & Reporting
 │   │   ├── bootstrap_service.py # Bootstrap Logic
 │   ├── api/                 # Agent API Endpoints
 ├── main.py                  # AGENT NODE Entry Point (FastAPI)
@@ -69,7 +69,7 @@ uvicorn backend.main:app --port 8001
 *   **Context Aware**: The Agent indexes private chat history and public archives.
 *   **Web Research**: The Agent proactively searches the web for resident interests (e.g., scientific progress) and includes findings in daily briefs.
 
-### Resident Privacy (`app/services/resident_link.py`)
+### Resident Privacy (`app/services/resident_memory_service.py`)
 *   **Private Logs**: Chat history with the resident is stored locally (`resident_memory.json`) and **NEVER** uploaded to the public chain.
 *   **Reporting**: Automated daily briefings summarizing community events and research findings.
 

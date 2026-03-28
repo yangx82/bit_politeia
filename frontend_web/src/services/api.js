@@ -50,4 +50,14 @@ export const castVote = async (electionId, approval, reason = "", candidateId = 
     return response.data;
 }
 
+export const deleteProposal = async (proposalId) => {
+    const response = await api.delete(`/api/v1/governance/proposals/${proposalId}`)
+    return response.data;
+}
+
+export const deleteElection = async (electionId) => {
+    const response = await api.delete(`/api/v1/governance/elections/${electionId}`)
+    return response.data;
+}
+
 export default api

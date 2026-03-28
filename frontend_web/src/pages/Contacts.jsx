@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api, { getGroups } from '../services/api'
 import { Users, User, MessageSquare, ExternalLink } from 'lucide-react'
+import { formatTime } from '../utils/date'
 
 const Contacts = () => {
     const navigate = useNavigate()
@@ -79,7 +80,7 @@ const Contacts = () => {
                                     </div>
                                     {peer.last_seen && (
                                         <span className="text-[9px] text-slate-400">
-                                            {new Date(peer.last_seen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                            {formatTime(peer.last_seen)}
                                         </span>
                                     )}
                                 </div>

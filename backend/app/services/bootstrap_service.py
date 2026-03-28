@@ -81,6 +81,10 @@ class BootstrapService:
         
         logger.info(f"Bootstrap: Initialized with single Level 1 group: {first_group_id} ({self._groups[first_group_id].name})")
 
+    def is_valid_group(self, group_id: str) -> bool:
+        """Check if group_id exists in the topology."""
+        return group_id in self._groups
+
     def get_topology_info(self, node_id: Optional[str] = None) -> Dict:
         """
         Returns full network topology: groups, nodes, and hierarchy.

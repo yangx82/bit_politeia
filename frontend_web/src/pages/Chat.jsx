@@ -1,20 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import api from '../services/api'
-import { Send, Search, Users, User, MessageSquare } from 'lucide-react'
+import { Send, Search, Users, User, MessageSquare, Clock, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react'
+import { formatTime } from '../utils/date'
 
-// Helper to format time
-const formatTime = (isoString) => {
-    if (!isoString) return ''
-    const date = new Date(isoString);
-    const now = new Date();
-    const isToday = date.toDateString() === now.toDateString();
 
-    if (isToday) {
-        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-}
 
 const Chat = () => {
     // URL Params
@@ -151,6 +141,13 @@ const Chat = () => {
                                 timestamp: new Date()
                             }]);
                             scrollToBottom();
+                        } else if (eventType === 'agent_status_update') {
+                            const { message_id, status } = payload.metadata || {};
+                            if (message_id && status) {
+                                setMessages(prev => prev.map(m => 
+                                    m.id === message_id ? { ...m, status } : m
+                                ));
+                            }
                         } else if (eventType === 'agent_message') {
                             // Clear logs when a final message arrives
                             setAgentLogs([]);
@@ -184,8 +181,8 @@ const Chat = () => {
         const query = searchQuery.toLowerCase().trim()
 
         messages.forEach(msg => {
-            // Use chat_id if available (new backend), fallback to sender (old logic)
-            let sessionId = msg.chat_id || (isInternalSender(msg.sender) ? 'resident' : msg.sender)
+            // Use session_id if available (new backend), fallback to sender (old logic)
+            let sessionId = msg.session_id || msg.chat_id || (isInternalSender(msg.sender) ? 'resident' : msg.sender)
 
             // Merge Bridge messages into resident session
             if (
@@ -287,11 +284,11 @@ const Chat = () => {
 
                 // 1. Explicitly EXCLUDE any outgoing P2P messages from polluting the Resident console
                 // This MUST happen before isInternalSender(msg.sender) check because agent is an internal sender.
-                if (msg.chat_id && msg.chat_id !== 'resident' && !msg.chat_id.startsWith('[')) {
+                if (msg.session_id && msg.session_id !== 'resident' && !msg.session_id.startsWith('[')) {
                     return false;
                 }
 
-                if (msg.chat_id === 'resident') return true;
+                if (msg.session_id === 'resident') return true;
 
                 return isInternalSender(msg.sender) ||
                     (msg.sender && (
@@ -299,16 +296,16 @@ const Chat = () => {
                         msg.sender.startsWith('[telegram]') ||
                         msg.sender.startsWith('[gateway]')
                     )) ||
-                    (msg.chat_id && (
-                        msg.chat_id.startsWith('[feishu]') ||
-                        msg.chat_id.startsWith('[telegram]') ||
-                        msg.chat_id.startsWith('[gateway]')
+                    (msg.session_id && (
+                        msg.session_id.startsWith('[feishu]') ||
+                        msg.session_id.startsWith('[telegram]') ||
+                        msg.session_id.startsWith('[gateway]')
                     ))
             }
 
             // Normal Sessions (P2P, Groups, or specific unmerged sessions)
-            if (msg.chat_id) {
-                return msg.chat_id === activeSessionId
+            if (msg.session_id) {
+                return msg.session_id === activeSessionId
             }
             return msg.sender === activeSessionId
         }).filter(msg => {
@@ -635,8 +632,8 @@ const Chat = () => {
                                 }
 
                                 // Tag: To Target
-                                if (isAgent && msg.chat_id && msg.chat_id.startsWith('[')) {
-                                    const match = msg.chat_id.match(/^\[(.*?)\].*/)
+                                if (isAgent && msg.session_id && msg.session_id.startsWith('[')) {
+                                    const match = msg.session_id.match(/^\[(.*?)\].*/)
                                     if (match && match[1] !== 'p2p') {
                                         displayContent = (
                                             <span>
@@ -650,8 +647,21 @@ const Chat = () => {
                                     <div key={msg.id || idx} className={`flex ${align === 'right' ? 'justify-end' : 'justify-start'} mb-4`}>
                                         <div className={`max-w-[70%] rounded-2xl p-4 shadow-sm ${styleClass}`}>
                                             <div className="text-sm whitespace-pre-wrap leading-relaxed">{displayContent}</div>
-                                            <div className={`text-[10px] mt-1 text-right ${timeClass}`}>
+                                            <div className={`text-[10px] mt-1 flex items-center justify-end gap-1 ${timeClass}`}>
                                                 {formatTime(msg.timestamp)}
+                                                {isAgent && activeSessionId !== 'resident' && (
+                                                    <span title={msg.status || 'pending'}>
+                                                        {(msg.status === 'pending' || !msg.status) && (
+                                                            <Loader2 size={12} className="animate-spin text-blue-400" />
+                                                        )}
+                                                        {msg.status === 'sent' && (
+                                                            <CheckCircle2 size={12} className="text-emerald-500 fill-emerald-50" />
+                                                        )}
+                                                        {msg.status === 'failed' && (
+                                                            <AlertCircle size={12} className="text-rose-500" />
+                                                        )}
+                                                    </span>
+                                                )}
                                             </div>
                                         </div>
                                     </div>

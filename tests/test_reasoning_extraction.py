@@ -34,7 +34,7 @@ async def test_reasoning_extraction():
     input_msg = InboundMessage(
         channel="resident",
         sender_id="user123",
-        chat_id="resident",
+        session_id="resident",
         content="Dummy query"
     )
     

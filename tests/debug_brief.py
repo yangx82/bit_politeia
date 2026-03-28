@@ -11,7 +11,7 @@ backend_dir = os.path.join(project_root, 'backend')
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-from app.services.resident_link import ResidentMemory, ResidentReporter
+from app.services.resident_memory_service import ResidentMemory, ResidentReporter
 from app.services.knowledge_base import knowledge_base
 
 # Setup logging
