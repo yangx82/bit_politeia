@@ -52,7 +52,9 @@ const Profile = () => {
             setUser(prev => ({
                 ...prev,
                 balance: statusData.balance,
-                relayConnected: statusData.relay_connected
+                relayConnected: statusData.relay_connected,
+                nodeId: statusData.node_id,
+                agentPubKey: statusData.public_key
             }))
         } catch (err) {
             console.error('Failed to fetch balance:', err)
@@ -166,10 +168,20 @@ const Profile = () => {
                 </div>
 
                 <div className="md:col-span-2">
-                    <Card title="Wallet Address" icon={Shield}>
+                    <Card title="Agent Identity (Node ID)" icon={Shield}>
                         <div className="bg-slate-50 p-4 rounded-lg break-all font-mono text-xs text-slate-600 border border-slate-200">
+                            {user.nodeId || 'Connecting to Node...'}
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-2 italic">This is your Agent's persistent P2P identity. It owns the balance and reputation shown below.</p>
+                    </Card>
+                </div>
+
+                <div className="md:col-span-2">
+                    <Card title="Operator Identity (Current Device)" icon={User}>
+                        <div className="bg-slate-50 p-4 rounded-lg break-all font-mono text-xs text-slate-400 border border-slate-200">
                             {pubKey}
                         </div>
+                        <p className="text-[10px] text-slate-400 mt-2 italic">This key identifies your current browser as the authorized operator for this node. Resetting identity updates this key.</p>
                     </Card>
                 </div>
 

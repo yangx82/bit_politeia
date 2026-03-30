@@ -49,7 +49,7 @@ class AgentService:
         self.notified_error_signatures: Set[str] = set() # Track error signatures for self-reflection
         self.notified_watchdog_ids: Set[str] = set() # Track watchdog-triggered message IDs
         self._is_processing_inbox = False # Concurrency Guard
-        self.status = AgentStatus(is_online=True, reputation=10, balance=100.0)
+        self.status = AgentStatus(is_online=True, reputation=10, balance=0.0)
         self.message_bus = message_bus
         self.resident_bridges: Dict[str, str] = {} # Bridge Name -> Chat/OpenID
         
@@ -1407,6 +1407,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 "notified_governance_ids": list(self.notified_governance_ids),
                 "notified_error_signatures": list(self.notified_error_signatures),
                 "resident_bridges": self.resident_bridges,
+                "balance": self.status.balance,
+                "reputation": self.status.reputation,
                 "last_updated": datetime.now(timezone.utc).isoformat()
             }
             state_path = system_dir / "agent_state.json"
@@ -1434,7 +1436,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     self.notified_governance_ids = set(state.get("notified_governance_ids", []))
                     self.notified_error_signatures = set(state.get("notified_error_signatures", []))
                     self.resident_bridges = state.get("resident_bridges", {})
-                    logger.info(f"Hydrated {len(self.processed_message_ids)} de-dup IDs, {len(self.notified_governance_ids)} gov notifications, and {len(self.resident_bridges)} resident bridges.")
+                    self.status.balance = state.get("balance", 0.0)
+                    self.status.reputation = state.get("reputation", 10)
+                    logger.info(f"Hydrated {len(self.processed_message_ids)} de-dup IDs, balance={self.status.balance}, reputation={self.status.reputation}")
             
             # 2. Hydrate P2P Inbox
             # Wait for node initialization if needed? Usually called after config?

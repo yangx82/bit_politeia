@@ -1,5 +1,10 @@
 from fastapi import FastAPI
 import sys
+import warnings
+# Suppress pkg_resources deprecation warning from lark-oapi and other legacy packages
+warnings.filterwarnings("ignore", category=UserWarning, module="lark_oapi")
+warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
+
 print("\n[!!!] STARTING main.py from " + __file__ + " [!!!]\n", flush=True)
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import router as api_router
