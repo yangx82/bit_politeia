@@ -22,8 +22,13 @@ class TunnelClient:
     async def request_tunnel(self) -> bool:
         """Request a tunnel from the Bootstrap Server."""
         logger.info(f"[Tunnel] Requesting tunnel for node {self.node_id} from {self.bootstrap_url}")
+        
+        # Respect AGENT_BOOTSTRAP_VERIFY setting
+        import os
+        verify_ssl = os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true"
+        
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, verify=verify_ssl) as client:
                 resp = await client.post(
                     f"{self.bootstrap_url}/tunnel/v1/request",
                     json={"node_id": self.node_id}

@@ -9,8 +9,8 @@ import signal
 import time
 import threading
 
-from .bootstrap_service import bootstrap_service
-from ..p2p_community.bootstrap_client import NodeRegistration
+from backend.app.services.bootstrap_service import bootstrap_service
+from backend.app.p2p_community.bootstrap_client import NodeRegistration
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
