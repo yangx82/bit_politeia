@@ -96,6 +96,7 @@ class AgentService:
         self.resident_memory = ResidentMemory() 
         self.reporter = None 
         self.research_field = "AI Governance"
+        self.enable_welcome = True
         self.task_manager = TaskManager()
         self.context_builder = ContextBuilder(task_manager=self.task_manager)
         self.consolidation_service = ConsolidationService(self)
@@ -417,6 +418,9 @@ class AgentService:
             # Hydrate system state (inbox, de-dup IDs) after potential initialization
             self._hydrate_system_state()
             
+            # Check if we should send a first-time welcome message
+            await self._check_first_run_welcome()
+            
         except Exception as e:
             logger.error(f"Failed to initialize Agent LLM: {e}")
             
@@ -441,6 +445,7 @@ class AgentService:
         p2p_reply_delay = int(os.getenv("AGENT_P2P_REPLY_DELAY", "5"))
         agent_language = os.getenv("AGENT_LANGUAGE", "中文")
         ralph_wiggum_mode = os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true"
+        self.enable_welcome = os.getenv("AGENT_ENABLE_WELCOME", "true").lower() == "true"
         
         # Load identity from JSON config explicitly to override ENV
         json_config = self._load_config()
@@ -1512,6 +1517,43 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     logger.error(f"Failed to delete processing file: {e}")
         except Exception as e:
             logger.error(f"Failed to hydrate system state: {e}")
+
+    async def _check_first_run_welcome(self):
+        """Check if this is the first run and send a welcome message if so."""
+        if not self.enable_welcome:
+            return
+            
+        # Check if any chat history exists with the resident
+        chat_history = self.resident_memory.get_all_history()
+        # Filter for actual chat messages (excluding metadata)
+        actual_messages = [m for m in chat_history if m.get("_type") != "metadata"]
+        
+        if not actual_messages:
+            logger.info("No resident history found. Sending first-time welcome message...")
+            await self._send_welcome_message()
+
+    async def _send_welcome_message(self):
+        """Send a built-in professional introduction to the resident."""
+        welcome_text = (
+            "你好！我是你的智能代理（Bit-Politeia Agent）。\n\n"
+            "我已经在 Bit-Politeia 科学社区中为你完成了初始化。作为你的专属代理，我将协助你处理社区事务，包括：\n"
+            "1. 🔍 追踪科研动态与文献评价\n"
+            "2. 🗳️ 参与社区提案投票与治理\n"
+            "3. 💰 管理你的社区资产与声誉\n"
+            "4. 🛠️ 自主进行系统维护与优化\n\n"
+            "你可以随时通过聊天窗口向我下达指令，或者询问我关于社区规则的问题。很高兴为你服务！"
+        )
+        
+        from ..bus.events import OutboundMessage
+        await self.message_bus.publish_outbound(OutboundMessage(
+            channel="gateway",
+            session_id="resident",
+            content=welcome_text,
+            type="message"
+        ))
+        
+        # Log to resident memory as well to prevent re-triggering
+        self.resident_memory.log_interaction("agent", welcome_text, "chat", session_id="resident", status="sent")
 
     async def search_history(self, query: str = None, date_from: str = None, date_to: str = None) -> list[Message]:
         results = self.resident_memory.search_history(query, date_from, date_to)
