@@ -1058,15 +1058,20 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             inbox = p2p_service.local_node.inbox
             while inbox:
                 msg = inbox.pop(0)
-                sender_id = msg.get('sender_id')
-                content = msg.get('content')
-                msg_type = msg.get('message_type', msg.get('type'))
                 
-                # Filter out system messages that are handled elsewhere (e.g., in handle_p2p_message)
-                if msg_type == "SYSTEM_ERROR":
+                if not isinstance(msg, dict):
+                    logger.warning(f"Malformed P2P message discarded (not a dict): {msg}")
                     continue
-                
+                    
                 try:
+                    sender_id = msg.get('sender_id')
+                    content = msg.get('content')
+                    msg_type = msg.get('message_type', msg.get('type'))
+                    
+                    # Filter out system messages that are handled elsewhere (e.g., in handle_p2p_message)
+                    if msg_type == "SYSTEM_ERROR":
+                        continue
+                        
                     receive_time = datetime.now(timezone.utc).timestamp()
                     # 1. De-duplication
                     m_id = msg.get('message_id')
@@ -1244,8 +1249,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                             logger.info(f"P2P Reply Delay: already elapsed ({delay_seconds:.1f}s >= {configured_delay}s). Processing immediately.")
 
                     # 4. Run Pipeline to get Response
-                    response_text, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
-                    
+                    try:
+                        pipeline_task = self._run_ralph_wiggum_loop(msg_obj)
+                        response_text, _, _ = await asyncio.wait_for(pipeline_task, timeout=300.0) # 5 min timeout
+                    except asyncio.TimeoutError:
+                        logger.error(f"P2P processing PIPELINE TIMEOUT for message from {sender_id}. Skipped.")
+                        response_text = "Processing timed out."
+                        
                     # 5. Agent's Final Answer is for internal record, NOT sent over P2P.
                     # All outbound P2P communication must be done explicitly by the LLM via `send_p2p_message` tool.
                     if response_text and "[NO_RESPONSE_NEEDED]" not in str(response_text) and response_text != "No response generated.":
