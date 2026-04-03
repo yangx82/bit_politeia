@@ -44,7 +44,7 @@ class WebResearcher:
                 f"start=0&max_results=100&"
                 f"sortBy=relevance&sortOrder=descending"
             )
-            response = httpx.get(arxiv_url, timeout=15.0)
+            response = httpx.get(arxiv_url, timeout=30.0)
             print(f"ArXiv Status: {response.status_code}")
             if response.status_code == 200:
                 root = ET.fromstring(response.text)
@@ -69,6 +69,9 @@ class WebResearcher:
                             "source": paper_id,
                             "published": published
                         })
+        except httpx.TimeoutException as e:
+            logger.error(f"ArXiv search timed out: {e}")
+            print(f"ArXiv Timeout: {e}")
         except Exception as e:
             logger.error(f"ArXiv search failed: {e}")
             print(f"ArXiv Error: {e}")
@@ -78,7 +81,7 @@ class WebResearcher:
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             # Using a fixed start date for 2025 or relative past
             biorxiv_url = f"https://api.biorxiv.org/details/biorxiv/2025-01-01/{today}/0"
-            resp = httpx.get(biorxiv_url, timeout=12.0)
+            resp = httpx.get(biorxiv_url, timeout=30.0)
             print(f"BioRxiv Status: {resp.status_code}")
             if resp.status_code == 200:
                 biorxiv_data = resp.json()
@@ -96,6 +99,9 @@ class WebResearcher:
                             match_count += 1
                             if match_count >= 2: break
                     print(f"BioRxiv Relevant Matches: {match_count}")
+        except httpx.TimeoutException as e:
+            logger.error(f"BioRxiv search timed out: {e}")
+            print(f"BioRxiv Timeout: {e}")
         except Exception as e:
             logger.error(f"BioRxiv search failed: {e}")
             print(f"BioRxiv Error: {e}")
@@ -241,7 +247,7 @@ class KnowledgeBase:
 
         return model
 
-                
+          
 
 
         # Hybrid Search Init
