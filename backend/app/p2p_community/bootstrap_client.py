@@ -14,6 +14,7 @@ class PeerAddress:
     port: int
     name: Optional[str] = None
     last_seen: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    status: str = "ACTIVE" # ACTIVE, PENDING
 
     @property
     def is_online(self) -> bool:
@@ -34,7 +35,8 @@ class PeerAddress:
             "port": self.port,
             "name": self.name,
             "last_seen": self.last_seen.isoformat(),
-            "is_online": self.is_online
+            "is_online": self.is_online,
+            "status": self.status
         }
 
 @dataclass

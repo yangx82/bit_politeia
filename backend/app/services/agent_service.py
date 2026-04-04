@@ -1636,10 +1636,45 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             ))
         return messages
 
+    async def check_core_node_election_trigger(self):
+        """
+        Background task for Temporary Core Node to trigger a formal election
+        once the group reaches 3 members.
+        """
+        if not self.governance_manager or not p2p_service.local_node:
+            return
+            
+        local_node_id = p2p_service.local_node.node_id
+        
+        # We only trigger if we belong to a group
+        for group_id, group in p2p_service.local_node.network_manager.groups.items():
+            # RULE: If member count is 3 AND we are the ONLY core node (Temporary Core)
+            if len(group.members) >= 3 and len(group.core_node_ids) == 1:
+                # Are WE the temporary core node?
+                if local_node_id in group.core_node_ids:
+                    # Check if an election is already active for this group
+                    active_core_elections = [
+                        e for e in self.governance_manager.active_elections.values() 
+                        if e.group_id == group_id and e.election_type == ElectionType.CORE_NODE and e.status == "active"
+                    ]
+                    
+                    if not active_core_elections:
+                        logger.info(f"Election: Formal election trigger conditions met for Group {group_id}. Initiating...")
+                        
+                        # Get candidates from Bootstrap (or local list)
+                        # Normally we use reputation-based ranking, but for 3-node phase, all are candidates
+                        candidates = list(group.members)
+                        
+                        # Start Election (broadcasts via P2P)
+                        await self.start_election(group_id, candidates)
+
     async def sync_network(self):
         """Periodically refresh network topology."""
         if p2p_service._initialized:
             await p2p_service.network_manager.sync_topology()
+            # Also check governance triggers
+            await self.check_core_node_election_trigger()
+
 
     async def get_peers(self) -> list[dict]:
         """Get list of known peers from network manager."""

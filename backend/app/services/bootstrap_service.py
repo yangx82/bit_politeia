@@ -111,6 +111,9 @@ class BootstrapService:
             "hierarchy": {
                 gid: list(members) for gid, members in self._group_members.items()
             },
+            "pending": {
+                gid: [r.to_dict() for r in requests] for gid, requests in self._pending_joins.items()
+            },
             "stats": {
                 "total_nodes": len(self._peers),
                 "total_groups": len(self._groups),
@@ -217,6 +220,8 @@ class BootstrapService:
             
         is_already_pending = any(r.node_id == registration.node_id for r in self._pending_joins[target_group_id])
         if not is_already_pending:
+            self._peers[registration.node_id].status = "PENDING"
+            self.storage.upsert_node(self._peers[registration.node_id])
             self._pending_joins[target_group_id].append(registration)
             self.storage.add_pending_join(target_group_id, registration)
             logger.info(f"Bootstrap: Node {registration.node_id} request to join Group {target_group_id} is PENDING approval.")
@@ -329,8 +334,11 @@ class BootstrapService:
         group = self._groups[group_id]
         members = self._group_members.get(group_id, set())
         
-        # Filter out existing core nodes
-        potentials = [mid for mid in members if mid not in group.core_node_ids]
+        # Filter out existing core nodes (unless it's the 1st node undergoing formal transition)
+        if len(group.core_node_ids) <= 1:
+             potentials = list(members)
+        else:
+             potentials = [mid for mid in members if mid not in group.core_node_ids]
         
         if not potentials:
             return []
@@ -440,6 +448,11 @@ class BootstrapService:
         # Persist Membership and Group State (Core Nodes, Rankings, Count)
         self.storage.add_group_member(target_group_id, registration.node_id)
         self.storage.upsert_group(group)
+            
+        # Update Node Status to ACTIVE
+        if registration.node_id in self._peers:
+            self._peers[registration.node_id].status = "ACTIVE"
+            self.storage.upsert_node(self._peers[registration.node_id])
             
         self._last_update = datetime.now()
         logger.info(f"Bootstrap: Node {registration.node_id} joined L{group.level} group {target_group_id}")

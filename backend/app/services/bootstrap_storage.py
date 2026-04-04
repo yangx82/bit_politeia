@@ -46,7 +46,8 @@ class BootstrapStorage:
                 ip_address TEXT,
                 port INTEGER,
                 name TEXT,
-                last_seen TIMESTAMP
+                last_seen TIMESTAMP,
+                status TEXT DEFAULT 'ACTIVE'
             )
         ''')
 
@@ -209,17 +210,19 @@ class BootstrapStorage:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO nodes (node_id, public_key, ip_address, port, name, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO nodes (node_id, public_key, ip_address, port, name, last_seen, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(node_id) DO UPDATE SET
                 public_key=excluded.public_key,
                 ip_address=excluded.ip_address,
                 port=excluded.port,
                 name=excluded.name,
-                last_seen=excluded.last_seen
+                last_seen=excluded.last_seen,
+                status=excluded.status
         ''', (
             node.node_id, node.public_key, node.ip_address, node.port, 
-            node.name, node.last_seen.isoformat() if node.last_seen else None
+            node.name, node.last_seen.isoformat() if node.last_seen else None,
+            node.status
         ))
         conn.commit()
         conn.close()
@@ -241,7 +244,8 @@ class BootstrapStorage:
                 ip_address=row['ip_address'],
                 port=row['port'],
                 name=row['name'],
-                last_seen=datetime.fromisoformat(row['last_seen']) if row['last_seen'] else datetime.now(timezone.utc)
+                last_seen=datetime.fromisoformat(row['last_seen']) if row['last_seen'] else datetime.now(timezone.utc),
+                status=row['status'] if 'status' in row.keys() else "ACTIVE"
             )
         return nodes
 
