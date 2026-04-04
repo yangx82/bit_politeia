@@ -130,7 +130,7 @@ def main():
                 os.remove(RESTART_SIGNAL)
                 log("Restart signal processed. Killing uvicorn instances to trigger shell-loop restart.")
                 # Kill uvicorn (the start_with_supervisor.sh loop will restart it)
-                subprocess.run(["pkill", "-f", "uvicorn.*main:app"])
+                subprocess.run(["pkill", "-f", "uvicorn"])
             except Exception as e:
                 log(f"Error processing restart signal: {e}")
         # -------------------------------------

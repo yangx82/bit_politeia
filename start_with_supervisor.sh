@@ -5,7 +5,7 @@
 
 # 1. Kill any existing background processes in this project
 echo "[*] Cleaning up old processes..."
-pkill -f "python3.*code_supervisor.py" || true
+pkill -f "python.*code_supervisor.py" || true
 pkill -f "uvicorn.*main:app" || true
 pkill -f "python.*backend/main.py" || true
 
@@ -15,7 +15,7 @@ mkdir -p backend/data/code_updates
 
 # 3. Start Code Supervisor in the background
 echo "[*] Starting Code Supervisor..."
-python3 backend/scripts/code_supervisor.py > backend/data/logs/supervisor_stdout.log 2>&1 &
+python backend/scripts/code_supervisor.py > backend/data/logs/supervisor_stdout.log 2>&1 &
 SUPERVISOR_PID=$!
 
 # 4. Start Backend with auto-restart loop
@@ -30,7 +30,7 @@ while true; do
     fi
     
     # Launch equivalent to manual execution so that sys.path and cwd behave EXACTLY as they did before
-    python3 backend/main.py > backend/data/logs/backend_stdout.log 2>&1
+    cd backend && uv run --no-sync uvicorn main:app --host 0.0.0.0 --port 8001
     
     EXIT_CODE=$?
     echo "[!] Backend exited with code $EXIT_CODE. Restarting in 2 seconds..."
