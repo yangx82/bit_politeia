@@ -8,6 +8,7 @@ import httpx
 import xml.etree.ElementTree as ET
 import re
 import urllib.parse
+import ssl
 
 logger = logging.getLogger(__name__)
 
@@ -35,46 +36,89 @@ class WebResearcher:
         print(f"\n[Search Run] Query: {query}")
         search_results = []
         
-        # 1. ArXiv Search
-        try:
-            # Fetch 100 results and sort by relevance to get "importance"
-            arxiv_url = (
-                f"https://export.arxiv.org/api/query?"
-                f"search_query=all:{encoded_query}&"
-                f"start=0&max_results=100&"
-                f"sortBy=relevance&sortOrder=descending"
-            )
-            response = httpx.get(arxiv_url, timeout=30.0)
-            print(f"ArXiv Status: {response.status_code}")
-            if response.status_code == 200:
-                root = ET.fromstring(response.text)
-                ns = {'atom': 'http://www.w3.org/2005/Atom'}
-                arxiv_entries = root.findall('atom:entry', ns)
-                print(f"ArXiv Entries Found: {len(arxiv_entries)}")
-                for entry in arxiv_entries:
-                    title_elem = entry.find('atom:title', ns)
-                    summary_elem = entry.find('atom:summary', ns)
-                    id_elem = entry.find('atom:id', ns)
-                    published_elem = entry.find('atom:published', ns)
-                    
-                    if title_elem is not None and summary_elem is not None:
-                        title = title_elem.text.strip().replace('\n', ' ')
-                        summary = summary_elem.text.strip().replace('\n', ' ')
-                        paper_id = id_elem.text if id_elem is not None else "Unknown ID"
-                        published = published_elem.text if published_elem is not None else ""
+        # 1. ArXiv Search with retry logic
+        max_retries = 2
+        timeout_seconds = 60.0
+        
+        for attempt in range(max_retries + 1):
+            try:
+                # Fetch 100 results and sort by relevance to get "importance"
+                arxiv_url = (
+                    f"https://export.arxiv.org/api/query?"
+                    f"search_query=all:{encoded_query}&"
+                    f"start=0&max_results=100&"
+                    f"sortBy=relevance&sortOrder=descending"
+                )
+                response = httpx.get(arxiv_url, timeout=timeout_seconds)
+                print(f"ArXiv Status: {response.status_code}")
+                if response.status_code == 200:
+                    root = ET.fromstring(response.text)
+                    ns = {'atom': 'http://www.w3.org/2005/Atom'}
+                    arxiv_entries = root.findall('atom:entry', ns)
+                    print(f"ArXiv Entries Found: {len(arxiv_entries)}")
+                    for entry in arxiv_entries:
+                        title_elem = entry.find('atom:title', ns)
+                        summary_elem = entry.find('atom:summary', ns)
+                        id_elem = entry.find('atom:id', ns)
+                        published_elem = entry.find('atom:published', ns)
                         
-                        search_results.append({
-                            "title": title,
-                            "abstract": summary, # Keep full abstract for translation
-                            "source": paper_id,
-                            "published": published
-                        })
-        except httpx.TimeoutException as e:
-            logger.error(f"ArXiv search timed out: {e}")
-            print(f"ArXiv Timeout: {e}")
-        except Exception as e:
-            logger.error(f"ArXiv search failed: {e}")
-            print(f"ArXiv Error: {e}")
+                        if title_elem is not None and summary_elem is not None:
+                            title = title_elem.text.strip().replace('\n', ' ')
+                            summary = summary_elem.text.strip().replace('\n', ' ')
+                            paper_id = id_elem.text if id_elem is not None else "Unknown ID"
+                            published = published_elem.text if published_elem is not None else ""
+                            
+                            search_results.append({
+                                "title": title,
+                                "abstract": summary, # Keep full abstract for translation
+                                "source": paper_id,
+                                "published": published
+                            })
+                    break  # Success, exit retry loop
+                else:
+                    logger.warning(f"ArXiv returned non-200 status: {response.status_code}")
+                    if attempt < max_retries:
+                        wait_time = (2 ** attempt) * 1  # Exponential backoff starting at 1s
+                        logger.info(f"Retrying ArXiv in {wait_time}s...")
+                        time.sleep(wait_time)
+            except httpx.TimeoutException as e:
+                if attempt < max_retries:
+                    wait_time = (2 ** attempt) * 2  # Exponential backoff starting at 2s for timeouts
+                    logger.warning(f"ArXiv search timed out (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s...")
+                    print(f"ArXiv Timeout: {e} - Retrying...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"ArXiv search timed out after {max_retries + 1} attempts: {e}")
+                    print(f"ArXiv Timeout (final): {e}")
+            except httpx.ConnectError as e:
+                # Handle connection errors including SSL issues
+                if attempt < max_retries:
+                    wait_time = (2 ** attempt) * 2  # Exponential backoff starting at 2s for connection errors
+                    logger.warning(f"ArXiv connection error (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s...")
+                    print(f"ArXiv Connection Error: {e} - Retrying...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"ArXiv connection failed after {max_retries + 1} attempts: {e}")
+                    print(f"ArXiv Connection Error (final): {e}")
+            except ssl.SSLError as e:
+                # Handle SSL errors specifically (including UNEXPECTED_EOF_WHILE_READING)
+                if attempt < max_retries:
+                    wait_time = (2 ** attempt) * 2  # Exponential backoff starting at 2s for SSL errors
+                    logger.warning(f"ArXiv SSL error (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s...")
+                    print(f"ArXiv SSL Error: {e} - Retrying...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"ArXiv SSL error after {max_retries + 1} attempts: {e}")
+                    print(f"ArXiv SSL Error (final): {e}")
+            except Exception as e:
+                if attempt < max_retries:
+                    wait_time = (2 ** attempt) * 1
+                    logger.warning(f"ArXiv search failed (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s...")
+                    print(f"ArXiv Error: {e} - Retrying...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"ArXiv search failed after {max_retries + 1} attempts: {e}")
+                    print(f"ArXiv Error (final): {e}")
 
         # 2. BioRxiv Search (Metadata interval - expand to last 30 days)
         try:
