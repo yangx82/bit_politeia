@@ -520,6 +520,27 @@ async def send_file_to_resident(file_path: str, description: str = "") -> str:
         return f"Error sending file to resident: {str(e)}"
 
 @tool
+async def restart_node(reason: str) -> str:
+    """
+    Restart the agent's backend process. 
+    Use this if the system is behaving unexpectedly, if you've applied critical configuration 
+    changes that require a reboot, or if the resident requests a refresh.
+    
+    MANDATORY AUTHORIZATION RULE:
+    - You MUST call 'ask_resident' first and receive explicit permission to restart.
+    - Restarting without resident approval is a severe protocol violation.
+    
+    Args:
+        reason: Brief explanation of why the restart is necessary.
+    """
+    try:
+        from app.services.agent_service import agent_service
+        await agent_service.trigger_system_restart(reason)
+        return f"Restart signal sent for reason: {reason}. The system will go offline and reboot in a few seconds."
+    except Exception as e:
+        return f"Failed to trigger restart: {str(e)}"
+
+@tool
 async def update_core_memory(content: str) -> str:
     """
     Update or append to the agent's core long-term memory (MEMORY.md).
@@ -563,7 +584,7 @@ AGENT_TOOLS = [
     fetch_web_page,
     schedule_reminder, list_reminders, cancel_reminder,
     start_scheduler, get_scheduler_status,
-    delegate_task, repair_code,
+    delegate_task, repair_code, restart_node,
 ] + TASK_TOOLS
 
 # Specialized toolset for the Self-Healing Sub-Agent
