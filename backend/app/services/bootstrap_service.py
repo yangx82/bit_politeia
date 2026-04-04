@@ -3,7 +3,7 @@ import uuid
 import json
 import os
 from typing import Dict, List, Optional, Set
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Import models from p2p_community (adjust path as needed)
 from ..p2p_community.bootstrap_client import GroupInfo, PeerAddress, NodeRegistration
@@ -52,6 +52,11 @@ class BootstrapService:
         # Initialize Topology if empty
         if not self._groups:
             self._initialize_root_group()
+        
+        # Ensure all groups have a set in _group_members
+        for gid in self._groups:
+            if gid not in self._group_members:
+                self._group_members[gid] = set()
             
         self._initialized = True
         logger.info("BootstrapService initialized successfully.")
@@ -112,8 +117,21 @@ class BootstrapService:
                 "last_update": self._last_update.isoformat()
             }
         }
-    
-    # ... (get_community_rules, get_joinable_groups, get_pending_joins unchanged) ...
+    def get_community_rules(self) -> Dict:
+        """Return the current community rules/constitution."""
+        return community_config.rules
+
+    def get_joinable_groups(self, preferred_level: int = 1) -> List[GroupInfo]:
+        """Find groups at the given level that have not reached max capacity."""
+        joinable = []
+        for g in self._groups.values():
+            if g.level == preferred_level and g.has_space:
+                joinable.append(g)
+        return joinable
+
+    def get_pending_joins(self, group_id: str) -> List[NodeRegistration]:
+        """Return the list of nodes pending approval to join a specific group."""
+        return self._pending_joins.get(group_id, [])
 
     def _create_child_group(self, parent_id: str) -> Optional[GroupInfo]:
         if parent_id not in self._groups: return None
@@ -392,15 +410,15 @@ class BootstrapService:
         self._group_members[target_group_id].add(registration.node_id)
         group.member_count = len(self._group_members[target_group_id])
         
-        # REVISED RULE 1: First 2 nodes are proxy core nodes
-        if group.member_count <= 2:
+        # REVISED RULE 1: Only the 1st node is the Temporary Core Node
+        if group.member_count == 1:
             if registration.node_id not in group.core_node_ids:
                 group.core_node_ids.append(registration.node_id)
-                logger.info(f"Bootstrap: Node {registration.node_id} designated as Proxy Core Node for Group {target_group_id}")
+                logger.info(f"Bootstrap: Node {registration.node_id} designated as Temporary Core Node for Group {target_group_id}")
         
         # REVISED RULE 2: Election Triggers
         if group.member_count == 3:
-            logger.info(f"ELECTION TRIGGER: Group {target_group_id} reached 3 members. Triggering election for 1st formal core node.")
+            logger.info(f"ELECTION TRIGGER: Group {target_group_id} reached 3 members. Temporary Core should initiate formal election.")
         elif group.member_count == 11:
             logger.info(f"ELECTION TRIGGER: Group {target_group_id} reached 11 members. Triggering election for 2nd formal core node.")
         elif group.member_count == 19:

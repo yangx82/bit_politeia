@@ -2,7 +2,7 @@ import httpx
 import logging
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,6 @@ class PeerAddress:
     ip_address: str
     port: int
     name: Optional[str] = None
-    from datetime import timezone
     last_seen: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
