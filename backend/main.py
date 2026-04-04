@@ -19,10 +19,10 @@ if sys.platform == 'win32':
 # Critical for China: Set HuggingFace Mirror before any imports that might use it
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
-from dotenv import load_dotenv
+from app.utils.env_utils import load_dotenv_safe
 
 # Load env vars
-load_dotenv()
+load_dotenv_safe()
 
 from app.bus.queue import message_bus
 from app.channels.telegram import TelegramChannel

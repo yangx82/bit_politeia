@@ -83,9 +83,9 @@ class AgentService:
         self.config_path = "agent_config.json"
         
         # P2P Reply Delay Default
-        from dotenv import load_dotenv
+        from ..utils.env_utils import load_dotenv_safe
         import os
-        load_dotenv()
+        load_dotenv_safe()
         self.p2p_reply_delay = 60 
         
         # Initialization logic (Moved to __init__)
@@ -422,7 +422,6 @@ class AgentService:
             
             # Hydrate system state (inbox, de-dup IDs) after potential initialization
             self._hydrate_system_state()
-            
             # Check if we should send a first-time welcome message
             await self._check_first_run_welcome()
             
@@ -431,12 +430,63 @@ class AgentService:
             
         return self.status
 
+    async def _check_first_run_welcome(self):
+        """Send a welcome message if this is the first time the agent is starting with no history."""
+        if not getattr(self, "enable_welcome", True):
+            return
+            
+        # Check if we have any human history (session_id="resident")
+        # _hydrate_history loads persistent data into self.history
+        has_resident_history = any(m.session_id == "resident" for m in self.history)
+        
+        if has_resident_history:
+            return
+            
+        # Hardcoded introduction (Built-in, no LLM call)
+        intro_content = (
+            "您好！我是您的 AI 控制塔（Bit-Politeia 智能体）。很高兴能为您服务。\n\n"
+            "作为一个去中心化治理系统的核心，我可以协助您管理 P2P 网络、参与社区提案、监控节点状态以及处理各类自动化任务。\n\n"
+            "您可以随时向我咨询系统运行状态或下达管理指令。让我们开始构建更加智能和公正的社区吧！"
+        )
+        
+        logger.info("First-run detected for resident session. Sending welcome greeting...")
+        
+        # 1. Log to in-memory history
+        welcome_id = str(uuid.uuid4())
+        welcome_msg = Message(
+            id=welcome_id,
+            content=intro_content,
+            sender="agent",
+            timestamp=datetime.now(timezone.utc),
+            session_id="resident"
+        )
+        self.history.append(welcome_msg)
+        
+        # 2. Log to persistent episodic memory (ResidentMemory)
+        self.resident_memory.log_interaction(
+            sender="agent",
+            content=intro_content,
+            msg_type="chat",
+            session_id="resident",
+            msg_id=welcome_id
+        )
+        
+        # 3. Publish to Gateway so it shows up in UI immediately
+        await self.message_bus.publish_outbound(OutboundMessage(
+            channel="gateway",
+            session_id="resident",
+            content=intro_content,
+            type="chat",
+            sender="agent",
+            timestamp=welcome_msg.timestamp
+        ))
+
     # ... (process_message, etc.) ...
     
     def load_config_from_env(self):
         """Load configuration from environment variables."""
-        from dotenv import load_dotenv
-        load_dotenv()
+        from ..utils.env_utils import load_dotenv_safe
+        load_dotenv_safe()
         import os
         base_url = os.getenv("AGENT_BASE_URL")
         api_key = os.getenv("AGENT_API_KEY")
