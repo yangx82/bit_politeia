@@ -19,7 +19,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logger = logging.getLogger(__name__)
 p2p_logger = logging.getLogger("p2p_network")
-
+import langchain
+langchain.debug = True
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
@@ -233,7 +234,7 @@ class AgentService:
         return sid
 
 
-    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None, p2p_reply_delay: int = 5, agent_language: str = "中文", ralph_wiggum_mode: bool = False):
+    async def configure_agent(self, base_url: str, api_key: str, model: str = "gpt-4o", research_field: str = "AI Governance", bootstrap_url: str = None, verbose_llm: bool = False, bootstrap_verify: bool = True, name: str = None, personality: str = None, p2p_reply_delay: int = 5, agent_language: str = "中文", ralph_wiggum_mode: bool = False, llm_timeout: float = 60.0):
         try:
              self.scheduler.start()
         except Exception:
@@ -255,6 +256,7 @@ class AgentService:
         self.p2p_reply_delay = p2p_reply_delay
         self.agent_language = agent_language
         self.ralph_wiggum_mode = ralph_wiggum_mode
+        self.llm_timeout = llm_timeout
         
         # Save to JSON
         self._save_config({
@@ -269,7 +271,8 @@ class AgentService:
             "bootstrap_verify": self.bootstrap_verify,
             "p2p_reply_delay": self.p2p_reply_delay,
             "agent_language": self.agent_language,
-            "ralph_wiggum_mode": self.ralph_wiggum_mode
+            "ralph_wiggum_mode": self.ralph_wiggum_mode,
+            "llm_timeout": self.llm_timeout
         })
         
         logger.info(f"Agent Configured: Name={self.name}, Model={model}")
@@ -381,7 +384,9 @@ class AgentService:
                 base_url=base_url,
                 api_key=api_key,
                 model=model, 
-                temperature=1#0.7
+                temperature=0.7, # Default to 1 for generic providers,
+                request_timeout=llm_timeout,
+                max_tokens=1000
             )
             # Load custom skills (Run in thread to avoid blocking loop)
             # Load custom skills (Run in thread to avoid blocking loop)
@@ -446,6 +451,7 @@ class AgentService:
         agent_language = os.getenv("AGENT_LANGUAGE", "中文")
         ralph_wiggum_mode = os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true"
         self.enable_welcome = os.getenv("AGENT_ENABLE_WELCOME", "true").lower() == "true"
+        llm_timeout = float(os.getenv("AGENT_LLM_TIMEOUT", "60.0"))
         
         # Load identity from JSON config explicitly to override ENV
         json_config = self._load_config()
@@ -454,6 +460,7 @@ class AgentService:
         p2p_reply_delay = json_config.get("p2p_reply_delay", p2p_reply_delay)
         agent_language = json_config.get("agent_language", agent_language)
         ralph_wiggum_mode = json_config.get("ralph_wiggum_mode", ralph_wiggum_mode)
+        llm_timeout = json_config.get("llm_timeout", llm_timeout)
             
         if base_url and api_key:
             return {
@@ -468,7 +475,8 @@ class AgentService:
                 "personality": personality,
                 "p2p_reply_delay": p2p_reply_delay,
                 "agent_language": agent_language,
-                "ralph_wiggum_mode": ralph_wiggum_mode
+                "ralph_wiggum_mode": ralph_wiggum_mode,
+                "llm_timeout": llm_timeout
             }
         return None
 
@@ -2744,6 +2752,27 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             
         except Exception as e:
             logger.error(f"Error in gossip_state_sync: {e}")
+
+    async def trigger_system_restart(self, reason: str):
+        """Writes a restart signal file for the code supervisor to process."""
+        logger.warning(f"SYSTEM RESTART REQUESTED BY AGENT. Reason: {reason}")
+        
+        from pathlib import Path
+        import os
+        import json
+        
+        signal_path = self.backend_dir / "data" / "code_updates" / "restart.signal"
+        os.makedirs(signal_path.parent, exist_ok=True)
+        
+        with open(signal_path, "w") as f:
+            f.write(json.dumps({
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }))
+            
+        logger.info(f"Restart signal written to {signal_path}. Supervisor will process shortly.")
+        return True
+
 # Standalone Proxy Functions for Scheduler
 # These avoid pickling the 'self' (AgentService instance) which contains the unpickleable scheduler.
 # -------------------------------------------------------------------------
@@ -2820,60 +2849,5 @@ async def code_supervisor_proxy():
     logger.info(f"[CodeSupervisor] Detected pending update at {WATCH_FILE}")
     processing_file = WATCH_FILE.with_suffix(".json.processing")
     
-    try:
-        # Rename to prevent double-processing
-        WATCH_FILE.rename(processing_file)
-        
-        with open(processing_file, "r", encoding="utf-8") as f:
-            request = json.load(f)
-        
-        file_path = request.get("file_path")
-        new_content = request.get("new_content")
-        explanation = request.get("explanation", "No explanation")
-        
-        if not file_path or not os.path.exists(file_path):
-            logger.error(f"[CodeSupervisor] Target file not found: {file_path}")
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            processing_file.rename(WATCH_FILE.parent / f"failed_{ts}.json")
-            return
-        
-        # 1. Syntax check
-        import subprocess
-        code = subprocess.run(["python", "-m", "py_compile", file_path], capture_output=True, text=True)
-        
-        # Backup original
-        original_content = None
-        with open(file_path, "r", encoding="utf-8") as f:
-            original_content = f.read()
-        
-        # Apply change
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(new_content)
-        
-        # Verify syntax of new content
-        result = subprocess.run(["python", "-m", "py_compile", file_path], capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            logger.error(f"[CodeSupervisor] Syntax error in patch. Rolling back. stderr: {result.stderr}")
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(original_content)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            processing_file.rename(WATCH_FILE.parent / f"failed_{ts}.json")
-            return
-        
-        # Success
-        logger.info(f"[CodeSupervisor] Patch applied successfully: {explanation}")
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        processing_file.rename(WATCH_FILE.parent / f"success_{ts}.json")
-        
-        # Log to supervisor log
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        with open(LOG_DIR / "supervisor.log", "a", encoding="utf-8") as lf:
-            lf.write(f"[{datetime.now().isoformat()}] Applied: {file_path} - {explanation}\n")
-            
-    except Exception as e:
-        logger.error(f"[CodeSupervisor] Error processing update: {e}")
-        if processing_file.exists():
-            processing_file.unlink()
-
 
 agent_service = AgentService()

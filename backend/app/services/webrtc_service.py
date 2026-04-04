@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 # Feature: Conditional Debug File Logging
 ENABLE_DEBUG_LOG = os.getenv("ENABLE_DEBUG_LOGGING", "true").lower() == "true"
 if ENABLE_DEBUG_LOG:
-    log_dir = "data/logs"
+    log_dir = "backend/data/logs"
     os.makedirs(log_dir, exist_ok=True)
     file_handler = logging.FileHandler(os.path.join(log_dir, 'webrtc_prod.log'), mode='a', encoding='utf-8')
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))

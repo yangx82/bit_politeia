@@ -88,7 +88,7 @@ async def lifespan(app: FastAPI):
         await feishu_channel.stop()
 
 # Ensure log directory exists
-os.makedirs("data/logs", exist_ok=True)
+os.makedirs("backend/data/logs", exist_ok=True)
 
 # Configure logging
 console_handler = logging.StreamHandler()
@@ -99,7 +99,7 @@ handlers = [console_handler]
 # Feature: Conditional Debug File Logging
 ENABLE_DEBUG_LOG = os.getenv("ENABLE_DEBUG_LOGGING", "true").lower() == "true"
 if ENABLE_DEBUG_LOG:
-    file_handler = logging.FileHandler("data/logs/p2p_network.log", encoding="utf-8")
+    file_handler = logging.FileHandler("backend/data/logs/p2p_network.log", encoding="utf-8")
     file_handler.setFormatter(logging.Formatter(log_format))
     
     # Optional filter based on DEBUG_MODULES

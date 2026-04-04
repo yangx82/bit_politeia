@@ -122,6 +122,19 @@ def main():
                 if os.path.exists(WATCH_FILE):
                     os.remove(WATCH_FILE)
         
+        # --- NEW: Restart Signal Handling ---
+        RESTART_SIGNAL = str(SCRIPT_DIR / "data" / "code_updates" / "restart.signal")
+        if os.path.exists(RESTART_SIGNAL):
+            log(f"Detected restart signal at {RESTART_SIGNAL}")
+            try:
+                os.remove(RESTART_SIGNAL)
+                log("Restart signal processed. Killing uvicorn instances to trigger shell-loop restart.")
+                # Kill uvicorn (the start_with_supervisor.sh loop will restart it)
+                subprocess.run(["pkill", "-f", "uvicorn"])
+            except Exception as e:
+                log(f"Error processing restart signal: {e}")
+        # -------------------------------------
+
         # Recovery: check for stale .processing files
         processing_file = WATCH_FILE + ".processing"
         if os.path.exists(processing_file):
