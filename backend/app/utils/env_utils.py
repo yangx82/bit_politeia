@@ -1,7 +1,7 @@
 import os
 import io
 import logging
-from dotenv import load_dotenv as _load_dotenv
+from dotenv import load_dotenv as _load_dotenv, find_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -9,11 +9,12 @@ def load_dotenv_safe(dotenv_path: str = None, **kwargs):
     """
     Enhanced load_dotenv that strips null characters (\x00) from the .env file.
     Null characters cause ValueError: embedded null character when set to os.environ.
+    Uses find_dotenv() to support parent-directory search if no path specified.
     """
-    # Prefer .env in the root project directory (current working directory)
-    path = dotenv_path or ".env"
+    # Use find_dotenv() to mirror standard load_dotenv behavior if no path given
+    path = dotenv_path or find_dotenv()
     
-    if os.path.exists(path):
+    if path and os.path.exists(path):
         try:
             with open(path, "rb") as f:
                 content = f.read()
@@ -31,4 +32,6 @@ def load_dotenv_safe(dotenv_path: str = None, **kwargs):
             # Fallback to standard loading if something goes wrong
             return _load_dotenv(dotenv_path=path, **kwargs)
     
-    return _load_dotenv(dotenv_path=path, **kwargs)
+    # If find_dotenv() failed or file doesn't exist, fallback to standard load_dotenv
+    return _load_dotenv(dotenv_path=dotenv_path, **kwargs)
+
