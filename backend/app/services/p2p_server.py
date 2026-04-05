@@ -9,9 +9,9 @@ import signal
 import time
 import threading
 
-from backend.app.utils.env_utils import load_dotenv_safe
-from backend.app.services.bootstrap_service import bootstrap_service
-from backend.app.p2p_community.bootstrap_client import NodeRegistration
+from ..utils.env_utils import load_dotenv_safe
+from .bootstrap_service import bootstrap_service
+from ..p2p_community.bootstrap_client import NodeRegistration
 
 # Load Environment Variables from .env
 load_dotenv_safe()
