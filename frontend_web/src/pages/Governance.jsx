@@ -65,59 +65,114 @@ const Governance = () => {
         }
     };
 
-    const renderProposalCard = (proposal) => {
-        const election = elections.find(e => e.proposal_id === proposal.proposal_id);
-        const tally = election?.tally || { approvals: 0, rejections: 0, total_votes: 0 };
+    const renderGovernanceCard = (election) => {
+        const proposal = proposals.find(p => p.proposal_id === election.proposal_id);
+        const tally = election.tally || { approvals: 0, rejections: 0, total_votes: 0, winners: [] };
+        
+        // Determine display title and content
+        let title = "Governance Action";
+        let content = "No content provided";
+        let badgeColor = "bg-slate-100 text-slate-600";
+        let typeLabel = election.election_type || "Election";
+
+        if (election.election_type === 'CORE_NODE') {
+            title = "Core Node Selection";
+            content = `Selecting new core nodes for the group. Candidates: ${election.candidates?.join(', ') || 'None'}`;
+            badgeColor = "bg-purple-100 text-purple-700";
+            typeLabel = "Core Node";
+        } else if (proposal) {
+            title = proposal.content;
+            content = proposal.content;
+            badgeColor = "bg-primary/10 text-primary";
+            typeLabel = proposal.scope || "Proposal";
+        }
+
         const percentage = tally.total_votes > 0
             ? Math.round((tally.approvals / tally.total_votes) * 100)
             : 0;
 
         return (
-            <div key={proposal.proposal_id} className="bg-surface p-6 rounded-xl border border-slate-200 shadow-sm mb-4">
+            <div key={election.election_id} className="bg-surface p-6 rounded-xl border border-slate-200 shadow-sm mb-4">
                 <div className="flex justify-between items-start mb-4">
-                    <div>
+                    <div className="flex-1">
                         <div className="flex items-center gap-2 mb-2">
-                            <span className="bg-primary/10 text-primary px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wide">
-                                {proposal.scope}
+                            <span className={`${badgeColor} px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wide`}>
+                                {typeLabel}
                             </span>
                             <span className="text-xs text-slate-500">
-                                {new Date(proposal.timestamp).toLocaleString()}
+                                {new Date(election.start_time).toLocaleString()}
+                            </span>
+                            <span className={`text-xs ml-auto ${election.status === 'active' ? 'text-green-500' : 'text-slate-400'}`}>
+                                ● {election.status === 'active' ? 'Active' : 'Finished'}
                             </span>
                         </div>
-                        <h3 className="text-lg font-semibold text-primary">{proposal.content}</h3>
+                        <h3 className="text-lg font-semibold text-primary">{title}</h3>
+                        {election.election_type === 'CORE_NODE' && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                                {election.candidates?.map(c => (
+                                    <span key={c} className="text-[10px] bg-slate-50 border border-slate-200 px-1.5 py-0.5 rounded text-slate-500">
+                                        {c.slice(0, 8)}...
+                                    </span>
+                                ))}
+                            </div>
+                        )}
                     </div>
-                    <div className="text-right">
-                        <div className="text-2xl font-bold text-primary">{percentage}%</div>
-                        <div className="text-xs text-slate-500">Approval</div>
-                    </div>
+                    {election.election_type !== 'CORE_NODE' && (
+                        <div className="text-right ml-4">
+                            <div className="text-2xl font-bold text-primary">{percentage}%</div>
+                            <div className="text-xs text-slate-500">Approval</div>
+                        </div>
+                    )}
                 </div>
 
                 <div className="flex items-center gap-6 border-t border-slate-100 pt-4">
                     <div className="flex-1">
-                        <div className="flex justify-between text-xs mb-1">
-                            <span className="text-green-600 font-medium">Yes: {tally.approvals}</span>
-                            <span className="text-red-500 font-medium">No: {tally.rejections}</span>
-                        </div>
-                        <div className="h-2 bg-slate-100 rounded-full overflow-hidden flex">
-                            <div style={{ width: `${percentage}%` }} className="bg-green-500 h-full" />
-                            <div style={{ width: `${100 - percentage}%` }} className="bg-red-400 h-full" />
-                        </div>
+                        {election.election_type === 'CORE_NODE' ? (
+                             <div className="text-xs text-slate-500 italic">
+                                Participation: {tally.total_votes} votes cast ({Math.round(election.participation_rate * 100 || 0)}% of group)
+                             </div>
+                        ) : (
+                            <>
+                                <div className="flex justify-between text-xs mb-1">
+                                    <span className="text-green-600 font-medium">Yes: {tally.approvals}</span>
+                                    <span className="text-red-500 font-medium">No: {tally.rejections}</span>
+                                </div>
+                                <div className="h-2 bg-slate-100 rounded-full overflow-hidden flex">
+                                    <div style={{ width: `${percentage}%` }} className="bg-green-500 h-full" />
+                                    <div style={{ width: `${100 - percentage}%` }} className="bg-red-400 h-full" />
+                                </div>
+                            </>
+                        )}
                     </div>
 
-                    {election && election.status === 'active' && (
+                    {election.status === 'active' && (
                         <div className="flex gap-2">
-                            <button
-                                onClick={() => handleVote(election.election_id, true)}
-                                className="px-4 py-2 bg-green-50 text-green-700 rounded-lg hover:bg-green-100 text-sm font-medium transition-colors"
-                            >
-                                Vote Yes
-                            </button>
-                            <button
-                                onClick={() => handleVote(election.election_id, false)}
-                                className="px-4 py-2 bg-red-50 text-red-700 rounded-lg hover:bg-red-100 text-sm font-medium transition-colors"
-                            >
-                                Vote No
-                            </button>
+                             {election.election_type === 'CORE_NODE' ? (
+                                 election.candidates?.map(candidate => (
+                                    <button
+                                        key={candidate}
+                                        onClick={() => handleVote(election.election_id, true, candidate)}
+                                        className="px-3 py-1.5 bg-purple-50 text-purple-700 rounded-lg hover:bg-purple-100 text-xs font-medium transition-colors"
+                                    >
+                                        Vote {candidate.slice(0, 4)}
+                                    </button>
+                                 ))
+                             ) : (
+                                <>
+                                    <button
+                                        onClick={() => handleVote(election.election_id, true)}
+                                        className="px-4 py-2 bg-green-50 text-green-700 rounded-lg hover:bg-green-100 text-sm font-medium transition-colors"
+                                    >
+                                        Vote Yes
+                                    </button>
+                                    <button
+                                        onClick={() => handleVote(election.election_id, false)}
+                                        className="px-4 py-2 bg-red-50 text-red-700 rounded-lg hover:bg-red-100 text-sm font-medium transition-colors"
+                                    >
+                                        Vote No
+                                    </button>
+                                </>
+                             )}
                         </div>
                     )}
                 </div>
@@ -148,13 +203,13 @@ const Governance = () => {
                     onClick={() => setActiveTab('proposals')}
                     className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${activeTab === 'proposals' ? 'bg-white text-primary shadow-sm' : 'text-slate-500 hover:text-primary'}`}
                 >
-                    Active Proposals
+                    Active Governance
                 </button>
                 <button
                     onClick={() => setActiveTab('history')}
                     className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${activeTab === 'history' ? 'bg-white text-primary shadow-sm' : 'text-slate-500 hover:text-primary'}`}
                 >
-                    Past Votes
+                    Archive
                 </button>
             </div>
 
@@ -163,12 +218,14 @@ const Governance = () => {
                 {loading ? (
                     <div className="text-center py-12 text-slate-400">Loading governance data...</div>
                 ) : (
-                    proposals.length > 0 ? (
-                        proposals.map(renderProposalCard)
+                    elections.length > 0 ? (
+                        elections
+                            .filter(e => activeTab === 'proposals' ? e.status === 'active' : e.status !== 'active')
+                            .map(renderGovernanceCard)
                     ) : (
                         <div className="text-center py-12 bg-slate-50 rounded-xl border border-dashed border-slate-300">
                             <Scale className="mx-auto text-slate-300 mb-3" size={48} />
-                            <p className="text-slate-500 font-medium">No active proposals found</p>
+                            <p className="text-slate-500 font-medium">No governance events found</p>
                             <p className="text-sm text-slate-400">Be the first to propose a change!</p>
                         </div>
                     )
