@@ -308,8 +308,9 @@ class BootstrapService:
         
         # 2. Find available port
         used_ports = set(self._tunnel_allocations.values())
-        port_start = 60000
-        port_end = 61000
+        port_start = int(os.getenv("BOOTSTRAP_TUNNEL_PORT_START", "60000"))
+        port_end = int(os.getenv("BOOTSTRAP_TUNNEL_PORT_END", "61000"))
+        
         for port in range(port_start, port_end + 1):
             if port not in used_ports:
                 # Assign and Persist

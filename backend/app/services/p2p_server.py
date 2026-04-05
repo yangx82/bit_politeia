@@ -9,8 +9,12 @@ import signal
 import time
 import threading
 
+from backend.app.utils.env_utils import load_dotenv_safe
 from backend.app.services.bootstrap_service import bootstrap_service
 from backend.app.p2p_community.bootstrap_client import NodeRegistration
+
+# Load Environment Variables from .env
+load_dotenv_safe()
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -331,8 +335,10 @@ async def websocket_relay(websocket: WebSocket, node_id: str):
         logger.error(f"Relay Error for {node_id}: {e}")
         relay_manager.disconnect(node_id)
 
-def run_server(host: str = "0.0.0.0", port: int = 8000):
+def run_server():
     """Run the server programmatically."""
+    host = os.getenv("BOOTSTRAP_HOST", "0.0.0.0")
+    port = int(os.getenv("BOOTSTRAP_PORT", "8000"))
     uvicorn.run(app, host=host, port=port)
 
 if __name__ == "__main__":

@@ -51,6 +51,13 @@ class BootstrapStorage:
             )
         ''')
 
+        # SAFE MIGRATION: Check if status column exists for existing DBs
+        cursor.execute("PRAGMA table_info(nodes)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'status' not in columns:
+            logger.info("BootstrapStorage: Migrating database - adding 'status' column to 'nodes' table.")
+            cursor.execute("ALTER TABLE nodes ADD COLUMN status TEXT DEFAULT 'ACTIVE'")
+
         # Group Members (Many-to-Many)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS group_members (
