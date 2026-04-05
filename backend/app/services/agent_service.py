@@ -455,19 +455,9 @@ class AgentService:
             "您可以随时向我咨询系统运行状态或下达管理指令。让我们开始构建更加智能和公正的社区吧！"
         )
         
-        welcome_msg = InboundMessage(
-            channel="internal",
-            sender_id="system",
-            session_id="resident",
-            content=welcome_text
-        )
-        # Add to history and notify observers (frontend)
-        self.history.append(welcome_msg)
-        self._notify_observers()
-        
         logger.info("First-run detected for resident session. Sending welcome greeting...")
         
-        # 1. Log to history
+        # 1. Create and log to history
         welcome_id = str(uuid.uuid4())
         welcome_msg = Message(
             id=welcome_id,
@@ -478,10 +468,11 @@ class AgentService:
         )
         self.history.append(welcome_msg)
         self._notify_observers()
+        
         # 2. Log to persistent episodic memory (ResidentMemory)
         self.resident_memory.log_interaction(
             sender="agent",
-            content=intro_content,
+            content=welcome_text,
             msg_type="chat",
             session_id="resident",
             msg_id=welcome_id
@@ -491,7 +482,7 @@ class AgentService:
         await self.message_bus.publish_outbound(OutboundMessage(
             channel="gateway",
             session_id="resident",
-            content=intro_content,
+            content=welcome_text,
             type="chat",
             sender="agent",
             timestamp=welcome_msg.timestamp
