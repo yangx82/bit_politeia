@@ -1787,15 +1787,26 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         return False
 
     async def get_elections(self) -> list[dict]:
+        """Get list of active and recently finished elections."""
         if not self.governance_manager:
             return []
-        
+
         elections = []
+        # 1. Active Elections
         for e in self.governance_manager.active_elections.values():
             data = e.to_dict()
-            # Add realtime tally
             data["tally"] = e.tally()
+            data["is_active"] = True
             elections.append(data)
+            
+        # 2. Finished Elections (History)
+        if hasattr(self.governance_manager, 'finished_elections'):
+            for e in self.governance_manager.finished_elections.values():
+                data = e.to_dict()
+                data["tally"] = e.tally()
+                data["is_active"] = False
+                elections.append(data)
+                
         return elections
 
     async def delete_election(self, election_id: str) -> bool:
@@ -2201,28 +2212,33 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
 
     # Governance Methods accessed by Tools
-    async def start_election(self, group_id: str, candidates: list[str]) -> str:
+    async def initiate_election(self, group_id: str, candidates: list[str], election_type: ElectionType = ElectionType.CORE_NODE, duration_minutes: int = 60) -> str:
+        """Initiate a formal election and notify the network and resident."""
         if not self.governance_manager:
             return "Governance Manager not initialized"
+
+        logger.info(f"Governance: Initiating {election_type.value} for group {group_id} with {len(candidates)} candidates.")
         
-        # P2P: In a real system, we'd broadcast this. 
-        # For simulation, we create it locally.
-        election = self.governance_manager.initiate_election(group_id, candidates)
-        
-        # Set eligible voters from Group info (if available via p2p_service)
-        # Mocking for now as we don't have full group state reflection yet
-        # p2p_service.network_manager.groups.get(group_id)
+        # 1. Create locally in GovernanceManager
+        # Note: If it's a CORE_NODE election, it uses the specialized initiate_election
+        if election_type == ElectionType.CORE_NODE:
+            election = self.governance_manager.initiate_election(group_id, candidates, duration_minutes)
+        else:
+            # Fallback/Generic creation for other types if needed
+            election = self.governance_manager.initiate_election(group_id, candidates, duration_minutes)
+
+        # 2. Add eligible voters if group info is available
         if p2p_service.local_node and group_id in p2p_service.local_node.network_manager.groups:
              group = p2p_service.local_node.network_manager.groups[group_id]
              election.eligible_voters = group.members.copy()
-        
-        # Broadcast via P2P - Wait for broadcast to complete with timeout (Fixed: was asyncio.create_task without await)
+
+        # 3. Broadcast via P2P
         try:
             await asyncio.wait_for(
                 p2p_service.broadcast_governance_event(
-                    group_id, 
-                    "proposal", 
-                    {"proposal": {"proposal_id": "", "content": "Election"}, "election": election.to_dict()}
+                    group_id,
+                    "election_started",
+                    {"election": election.to_dict()}
                 ),
                 timeout=10.0
             )
