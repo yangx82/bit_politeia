@@ -78,6 +78,9 @@ def get_frps_path():
     return shutil.which(f"frps{ext}")
 
 def generate_frps_config():
+    port_start = int(os.getenv("BOOTSTRAP_TUNNEL_PORT_START", "60000"))
+    port_end = int(os.getenv("BOOTSTRAP_TUNNEL_PORT_END", "61000"))
+    
     config_content = f"""
 bindPort = {FRPS_BIND_PORT}
 auth.token = "{FRPS_TOKEN}"
@@ -88,7 +91,7 @@ auth.token = "{FRPS_TOKEN}"
 # webServer.password = "admin"
 
 allowPorts = [
-  {{ start = 60000, end = 61000 }}
+  {{ start = {port_start}, end = {port_end} }}
 ]
 """
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
