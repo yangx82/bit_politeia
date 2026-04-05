@@ -1648,10 +1648,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         
         # We only trigger if we belong to a group
         for group_id, group in p2p_service.local_node.network_manager.groups.items():
-            # RULE: If member count is 3 AND we are the ONLY core node (Temporary Core)
-            if len(group.members) >= 3 and len(group.core_node_ids) == 1:
-                # Are WE the temporary core node?
-                if local_node_id in group.core_node_ids:
+            # RULE: If member count is 3 AND we haven't reached the formal core node target (3 nodes)
+            if len(group.members) >= 3 and len(group.core_node_ids) < 3:
+                # Are WE the primary temporary core node (the first in the list)?
+                # This ensures only one node triggers the election if there are multiple cores
+                if local_node_id == group.core_node_ids[0]:
                     # Check if an election is already active for this group
                     active_core_elections = [
                         e for e in self.governance_manager.active_elections.values() 
