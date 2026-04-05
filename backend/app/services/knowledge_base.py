@@ -485,8 +485,8 @@ class KnowledgeBase:
             # Sanitize query for FTS5 to prevent syntax errors like "fts5: syntax error near '['"
             # We remove reserved FTS5 operators and treat the query as a set of simple tokens.
             import re
-            # Replace special characters with spaces
-            safe_query = re.sub(r'[[\]"*:(^)]', ' ', query).strip()
+            # Replace all non-alphanumeric characters with spaces for a 100% safe FTS5 query
+            safe_query = re.sub(r'[^\w\s]', ' ', query).strip()
             
             if not safe_query:
                 return []

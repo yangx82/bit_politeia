@@ -8,8 +8,8 @@ class Message(BaseModel):
     sender: str  # "user" or "agent"
     timestamp: datetime
     session_id: Optional[str] = None
-    status: Optional[str] = None
-  # pending, sent, failed
+    status: Optional[str] = None  # pending, sent, failed
+    metadata: Optional[dict] = None # For internal flags (e.g., is_p2p)
 
 class ChatRequest(BaseModel):
     content: str

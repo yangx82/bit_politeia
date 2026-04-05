@@ -245,7 +245,7 @@ class PlanStage(PipelineStage):
             logger.info(f"Pipeline: Publishing thought to gateway: {content_to_publish[:50]}...")
             out_msg = OutboundMessage(
                 channel="gateway", 
-                session_id=context.input_message.session_id,
+                session_id="resident", # ALWAYS route thoughts to resident for privacy
                 content=content_to_publish,
                 type="thought"
             )
@@ -285,14 +285,22 @@ class ExecuteStage(PipelineStage):
             await agent.message_bus.publish_outbound(out_msg)
 
             try:
+                # HEARTBEAT: Notify user/network before invoking slow tools
+                slow_tools = ["execute_shell_command", "academic_research", "submit_code_fix", "repair_code"]
+                if tool_name in slow_tools:
+                    heartbeat_msg = f"**[執行中]**: 正在啟動 {tool_name}，這可能需要一點時間..."
+                    await agent.message_bus.publish_outbound(OutboundMessage(
+                        channel="gateway",
+                        session_id=context.input_message.session_id,
+                        content=heartbeat_msg,
+                        type="thought"
+                    ))
+
                 # Actual Tool Execution
                 if tool_name not in agent.tools_map:
                     result = f"Error: Tool {tool_name} not found."
                 else:
                     tool_func = agent.tools_map[tool_name]
-                    # Pass sandbox if the tool expects it or if we are using sandboxed tools
-                    # tools_exec.py already uses get_default_sandbox(), which we should ideally
-                    # redirect to this context's sandbox.
                     result = await tool_func.ainvoke(args)
                 
                 # Record result
@@ -347,6 +355,26 @@ class NotifyStage(PipelineStage):
                 else:
                     # Just mirror the status for visibility if the answer is already descriptive
                     pass
+
+            # 1.5 Safety Filter for P2P Privacy: Active Interception & Redirection
+            if context.input_message.channel == "p2p" and confirmation:
+                sensitive_keywords = ["居民", "指示", "汇报", "请示", "Owner", "Resident", "報告", "請示"]
+                if any(kw in confirmation for kw in sensitive_keywords):
+                    logger.warning(f"[{context.session.session_id}] Privacy Breach Detected: Intercepting Resident-specific content in P2P channel.")
+                    
+                    # REROUTE original content to Resident Channel as a private thought
+                    await agent.message_bus.publish_outbound(OutboundMessage(
+                        channel="gateway",
+                        session_id="resident",
+                        content=f"[AUTO-REDIRECTED PRIVACY ALERT]: The agent attempted to send the following to a P2P ID {context.session.session_id}:\n\n{confirmation}",
+                        type="thought"
+                    ))
+                    
+                    # TAG metadata for visibility
+                    context.metadata["privacy_breach_suppressed"] = True
+                    
+                    # FORCEFULLY TRUNCATE the message sent to the P2P group
+                    confirmation = "[SECURITY SUPPRESSION: Internal report misrouted. Please check Resident tab for details.]"
 
             # 2. Always mirror to Gateway for Observability
             if confirmation:

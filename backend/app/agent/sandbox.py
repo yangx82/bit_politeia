@@ -12,7 +12,7 @@ class Sandbox(ABC):
     """Abstract interface for tool execution environments."""
     
     @abstractmethod
-    async def execute(self, command: str, working_dir: Optional[str] = None, timeout: int = 60) -> Tuple[str, str, int]:
+    async def execute(self, command: str, working_dir: Optional[str] = None, timeout: int = 300) -> Tuple[str, str, int]:
         """
         Execute a command in the sandbox.
         Returns: (stdout, stderr, exit_code)
@@ -36,7 +36,7 @@ class LocalSandbox(Sandbox):
         self.temp_dir = tempfile.mkdtemp(prefix="agent_sandbox_", dir=base_dir)
         logger.info(f"Initialized LocalSandbox at {self.temp_dir}")
         
-    def execute_sync(self, command: str, working_dir: Optional[str] = None, timeout: int = 60) -> Tuple[str, str, int]:
+    def execute_sync(self, command: str, working_dir: Optional[str] = None, timeout: int = 300) -> Tuple[str, str, int]:
         cwd = working_dir or self.temp_dir
         
         # Ensure working_dir is within temp_dir or base_dir (security check)
@@ -90,7 +90,7 @@ class LocalSandbox(Sandbox):
             logger.error(f"Sandbox execution error: {repr(e)}", exc_info=True)
             return ("", f"Sandbox Error ({type(e).__name__}): {str(e)}", -1)
 
-    async def execute(self, command: str, working_dir: Optional[str] = None, timeout: int = 60) -> Tuple[str, str, int]:
+    async def execute(self, command: str, working_dir: Optional[str] = None, timeout: int = 300) -> Tuple[str, str, int]:
         # Keep async interface for backwards compatibility if needed elsewhere
         return await asyncio.to_thread(self.execute_sync, command, working_dir, timeout)
 

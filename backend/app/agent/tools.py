@@ -468,8 +468,15 @@ from ..agent.tools_task import TASK_TOOLS
 @tool
 async def ask_resident(question: str) -> str:
     """
-    Ask the local resident (human user) for advice, instructions, or approval.
-    The question will appear in the resident's chat window.
+    Ask your human Resident/Owner for help, clarification, or permission.
+    
+    IMPORTANT PRIVACY RULE: 
+    - This is the ONLY private and secure bridge to your human owner.
+    - If you are currently in a P2P or Group conversation and need to report a governance crisis or ask for instructions, you **MUST** use this tool.
+    - Your 'Final Answer' in P2P mode is public to the network; this tool is private to the resident.
+    
+    Args:
+        question: The specific question or report for the Resident.
     """
     try:
         from app.services.agent_service import agent_service

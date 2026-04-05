@@ -178,9 +178,19 @@ class AgentService:
                 # We use is_retry=True to skip moderation and history duplication
                 # We pass original_msg_id to ensure the P2P network deduplicates if needed
                 recipient_id = msg.session_id
-                # Avoid retrying if it's not a P2P session (resident or system)
-                if recipient_id in ["resident", "system"] or "[" in recipient_id:
+                
+                # 1.5 CIRCUIT BREAKER: Only retry if it looks like a P2P ID and is NOT resident/system
+                # We also check for an explicit metadata flag that we'll add to real P2P messages
+                is_p2p_meta = False
+                if hasattr(msg, "metadata") and msg.metadata:
+                    is_p2p_meta = msg.metadata.get("is_p2p", False)
+                
+                if not is_p2p_meta and (recipient_id in ["resident", "system"] or "[" in recipient_id):
                     continue
+                
+                # Double-check: If it's not a known P2P session ID or hex ID, don't retry it over P2P
+                if not is_p2p_meta and len(recipient_id) < 16:
+                     continue
                     
                 logger.info(f"Triggering automatic retry for message {msg.id} to {recipient_id}")
                 await self.send_p2p_message(
@@ -1042,7 +1052,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             content=content,
             sender="agent",
             timestamp=datetime.now(timezone.utc),
-            session_id=session_id
+            session_id=session_id,
+            status="resident_only" # Prevents P2P retry scheduler from picking this up
         ))
         self.resident_memory.log_interaction("agent", content, msg_type="chat", session_id=session_id)
         
@@ -1316,7 +1327,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     # 4. Run Pipeline to get Response
                     try:
                         pipeline_task = self._run_ralph_wiggum_loop(msg_obj)
-                        response_text, _, _ = await asyncio.wait_for(pipeline_task, timeout=300.0) # 5 min timeout
+                        response_text, _, _ = await asyncio.wait_for(pipeline_task, timeout=900.0) # 15 min timeout (Extended for long network tasks)
                     except asyncio.TimeoutError:
                         logger.error(f"P2P processing PIPELINE TIMEOUT for message from {sender_id}. Skipped.")
                         response_text = "Processing timed out."
@@ -1956,7 +1967,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 sender="agent",
                 timestamp=msg_timestamp,
                 session_id=norm_target,
-                status="pending"
+                status="pending",
+                metadata={"is_p2p": True}
             )
             self.history.append(msg_obj)
             self.resident_memory.log_interaction("agent", text_to_check, msg_type=package_type, session_id=norm_target, status="pending", msg_id=msg_id)

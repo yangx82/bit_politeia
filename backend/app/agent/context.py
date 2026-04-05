@@ -34,75 +34,17 @@ class ContextBuilder:
         """
         parts = []
         
-        # 1. Core Identity (From prompts.py)
-        parts.append(AGENT_SYSTEM_PROMPT)
-        
-        # 1.5 Resident-defined Identity
-        identity_block = f"""# Your Resident-Defined Identity
-You are currently identified as: **{name}**.
-Your designated personality and tone: **{personality}**.
-Please strictly adhere to this personality in your interactions."""
-        parts.append(identity_block)
-        
-        # 1.55 Role & Channel Awareness
-        if channel == "p2p":
-            role_block = f"""# CURRENT DOMAIN: Autonomous Peer-to-Peer Network
-[URGENT ROLE AWARENESS] You are communicating directly with another machine Node in the network.
-- Do NOT report to your human owner (resident).
-- Do NOT use a subservient reporting tone.
-- Communicate strictly logically, efficiently, and directly to the node on the other side.
-- **FINAL ANSWER DESTINATION**: Your 'Final Answer' in this mode is delivered DIRECTLY to the other machine node via the P2P transport. 
-- **CRITICAL**: Do NOT address your resident/user in the final answer. If you need to inform or ask the resident something, you MUST use the `ask_resident` tool first, but keep your final answer strictly for the peer node.
-- **TERMINATION PROTOCOL**: If the interaction is complete, a task is confirmed, or no further information is needed from the other node (e.g., both parties have acknowledged a plan), you MUST output exactly `[NO_RESPONSE_NEEDED]` as your final answer. This signals the system to stop the loop and avoid redundant 'ACK' messages.
-- **EFFICIENCY RULE**: Minimize external search tool usage. For routine P2P coordination, greetings, and status updates, depend strictly on your local knowledge base and the provided context. Use `academic_research` ONLY when the nature of the conversation is specifically technical or scientific and requires external validation.
-- If you still need a response, provide a brief technical confirmation (e.g., 'Task completed', 'Data synced')."""
-            parts.append(role_block)
-        else:
-            # Everything else (resident, feishu, telegram, cli, gateway) is a Resident-facing interface
-            role_block = f"""# CURRENT DOMAIN: Private User Interface
-[ROLE AWARENESS] You are communicating directly with your human Resident/Owner.
-- Explain your thoughts naturally.
-- Confirm actions you take on their behalf.
-- **CRITICAL**: If you successfully use a 'send_p2p_message' or 'send_file' tool, do NOT repeat the content of that message in your final response to the human. Just state 'Message sent to [Target Name/ID].' and offer further assistance if needed."""
-            parts.append(role_block)
-        
         # 1.6 Current Real-World Time
         from datetime import datetime
         current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         time_block = f"""# Current System Time
 The current real-world local server time is: **{current_time_str}**.
-Use this absolute time for any date calculations or temporal awareness. Do not rely on time information mentioned casually in user chats unless explicitly requested."""
+Use this absolute time for any date calculations or temporal awareness."""
         parts.append(time_block)
 
         if host_info:
             parts.append(host_info)
-            
-        # 1.8 Conversation Context Awareness (Group vs Direct)
-        if channel == "p2p":
-            if session_id:
-                is_group = False
-                # Simple check for group ID if possible, or we trust the passed info
-                # Here we assume if chat_name is provided or chat_id is known, we label it.
-                if chat_name and chat_name != "Unknown":
-                    is_group = True
-                
-                if is_group:
-                    group_block = f"""# CONVERSATION CONTEXT: GROUP CHAT
-You are currently participating in a group conversation.
-- **Group Name**: {chat_name}
-- **Group ID**: {session_id}
-- **IMPORTANT**: To reply to the entire group, you MUST use the `send_p2p_message` tool with:
-  - `recipient_id`: "{session_id}" (the Group ID)
-  - `message_type`: "GROUP"
-- Do NOT reply only to the individual sender unless you specifically intend to have a private side-conversation."""
-                    parts.append(group_block)
-                else:
-                    direct_block = f"""# CONVERSATION CONTEXT: DIRECT MESSAGE
-You are in a private one-to-one conversation with a single peer.
-- **Peer ID**: {session_id}
-- Use `message_type`: "DIRECT" (default) for your replies."""
-                    parts.append(direct_block)
-        
+
         # 2. Skill Index (Progressive Disclosure)
         skill_index = self.skill_manager.get_skill_index()
         if skill_index:
@@ -120,7 +62,6 @@ You are in a private one-to-one conversation with a single peer.
                 parts.append(task_context)
                 
         # 5. Governing Protocol (Constitution) - INHERENT AWARENESS
-        # This gives the agent direct knowledge of node ratios, group sizes, etc.
         rules_text = community_config.get_all_rules_text()
         if rules_text:
             protocol_block = f"""# GOVERNING PROTOCOL (CONSTITUTION)
@@ -130,6 +71,40 @@ Reference these rules for all governance decisions, election proposals, and grou
 {rules_text}
 ```"""
             parts.append(protocol_block)
+
+        # ---------------------------------------------------------------------
+        # CRITICAL RECENT INSTRUCTIONS (Placement here for high adherence)
+        # ---------------------------------------------------------------------
+
+        # 6. Role & Channel Awareness
+        if channel == "p2p":
+            role_block = f"""# CURRENT DOMAIN: Autonomous Peer-to-Peer Network
+[URGENT ROLE AWARENESS] You are communicating directly with another machine Node in the network.
+- **COMMUNICATION FIREWALL**: Do NOT report to your human owner (resident) in this channel.
+- **NO CHINESE POLITE GREETINGS**: Do NOT use greetings like '居民，您好' or '報告居民'. 
+- **NO DECORATIVE MARKDOWN**: Do NOT use markdown headers (###), bold headers, or report-style formatting in your 'Final Answer'.
+- **FINAL ANSWER DESTINATION**: Your 'Final Answer' is delivered DIRECTLY to the other machine node. It must be technical, objective, and brief.
+- **CRITICAL**: If you need instructions/reports from/to the resident, you **MUST MUST MUST** use the `ask_resident` tool. It is the ONLY private channel.
+- **TERMINATION**: Output exactly `[NO_RESPONSE_NEEDED]` if the interaction is complete."""
+            parts.append(role_block)
+        else:
+            role_block = f"""# CURRENT DOMAIN: Private User Interface
+[ROLE AWARENESS] You are communicating directly with your human Resident/Owner.
+- Explain your thoughts naturally and confirm actions."""
+            parts.append(role_block)
+            
+        # 7. Conversation Context Awareness (Group vs Direct)
+        if channel == "p2p" and session_id:
+            chat_name = chat_name or "Unknown"
+            is_group = chat_name != "Unknown"
+            if is_group:
+                group_block = f"""# CONVERSATION CONTEXT: GROUP CHAT ({chat_name})
+- To reply to all, use `send_p2p_message` with `id: "{session_id}"` and `type: "GROUP"`."""
+                parts.append(group_block)
+            else:
+                parts.append(f"# CONVERSATION CONTEXT: DIRECT MESSAGE with {session_id}")
+                
+        return "\n\n---\n\n".join(parts)
                 
         return "\n\n---\n\n".join(parts)
     
