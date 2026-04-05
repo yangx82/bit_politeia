@@ -431,37 +431,53 @@ class AgentService:
         return self.status
 
     async def _check_first_run_welcome(self):
-        """Send a welcome message if this is the first time the agent is starting with no history."""
+        """Check if this is the first run and send a welcome message if so."""
         if not getattr(self, "enable_welcome", True):
             return
             
-        # Check if we have any human history (session_id="resident")
-        # _hydrate_history loads persistent data into self.history
-        has_resident_history = any(m.session_id == "resident" for m in self.history)
+        # Check if any chat history exists with the resident via long-term memory
+        chat_history = self.resident_memory.get_all_history()
+        # Filter for actual chat messages (excluding metadata)
+        actual_messages = [m for m in chat_history if m.get("_type") != "metadata"]
         
-        if has_resident_history:
-            return
-            
-        # Hardcoded introduction (Built-in, no LLM call)
-        intro_content = (
+        if not actual_messages:
+            logger.info("First-run Detection: No resident history found. Sending welcome message...")
+            await self._send_welcome_message()
+
+    async def _send_welcome_message(self):
+        """Send a built-in professional introduction to the resident."""
+        welcome_text = (
             "您好！我是您的 AI 控制塔（Bit-Politeia 智能体）。很高兴能为您服务。\n\n"
-            "作为一个去中心化治理系统的核心，我可以协助您管理 P2P 网络、参与社区提案、监控节点状态以及处理各类自动化任务。\n\n"
+            "作为一个去中心化治理系统的核心，我可以协助您：\n"
+            "1. 🔍 追踪科研动态与文献评价\n"
+            "2. 🗳️ 参与社区提案投票与治理\n"
+            "3. 💰 管理您的社区资产与声誉\n\n"
             "您可以随时向我咨询系统运行状态或下达管理指令。让我们开始构建更加智能和公正的社区吧！"
         )
         
+        welcome_msg = InboundMessage(
+            channel="internal",
+            sender_id="system",
+            session_id="resident",
+            content=welcome_text
+        )
+        # Add to history and notify observers (frontend)
+        self.history.append(welcome_msg)
+        self._notify_observers()
+        
         logger.info("First-run detected for resident session. Sending welcome greeting...")
         
-        # 1. Log to in-memory history
+        # 1. Log to history
         welcome_id = str(uuid.uuid4())
         welcome_msg = Message(
             id=welcome_id,
-            content=intro_content,
+            content=welcome_text,
             sender="agent",
             timestamp=datetime.now(timezone.utc),
             session_id="resident"
         )
         self.history.append(welcome_msg)
-        
+        self._notify_observers()
         # 2. Log to persistent episodic memory (ResidentMemory)
         self.resident_memory.log_interaction(
             sender="agent",
@@ -1432,18 +1448,32 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         return self.history
 
     async def get_status(self) -> AgentStatus:
-        # Sync balance from ledger before returning
-        if self.ledger and p2p_service.local_node:
+        """Get current agent status including ledger and network info."""
+        # Ensure status object is up to date with instance attributes
+        self.status.name = self.name
+        self.status.personality = self.personality
+        
+        if p2p_service.local_node:
             node_id = p2p_service.local_node.node_id
-            self.status.balance = self.ledger.get_balance(node_id)
+            self.status.node_id = node_id
             
-            # Sync relay status
-            net_status = p2p_service.get_network_status()
-            self.status.relay_connected = net_status.get("relay_connected", False)
+            # 1. Sync Ledger Balance
+            if self.ledger:
+                self.status.balance = self.ledger.get_balance(node_id)
             
-            logger.info(f"Status Sync: UUID {node_id[:8]} Balance {self.status.balance} Relay: {self.status.relay_connected}")
+            # 2. Update Relay Connection Status
+            if p2p_service.network_manager and hasattr(p2p_service.network_manager, 'relay_client'):
+                rc = p2p_service.network_manager.relay_client
+                self.status.relay_connected = rc.running and rc.websocket is not None
+            else:
+                 # Fallback to network status dict
+                 net_status = p2p_service.get_network_status()
+                 self.status.relay_connected = net_status.get("relay_connected", False)
+                 
+            logger.debug(f"Status Sync: UUID {node_id[:8]} Balance {self.status.balance} Relay: {self.status.relay_connected}")
         else:
-            logger.warning("Status Sync Failed: P2P local_node not initialized")
+            logger.warning("Status Sync Partial: P2P service not fully initialized")
+            
         return self.status
 
     def _hydrate_history(self):
@@ -1586,43 +1616,6 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         except Exception as e:
             logger.error(f"Failed to hydrate system state: {e}")
 
-    async def _check_first_run_welcome(self):
-        """Check if this is the first run and send a welcome message if so."""
-        if not self.enable_welcome:
-            return
-            
-        # Check if any chat history exists with the resident
-        chat_history = self.resident_memory.get_all_history()
-        # Filter for actual chat messages (excluding metadata)
-        actual_messages = [m for m in chat_history if m.get("_type") != "metadata"]
-        
-        if not actual_messages:
-            logger.info("No resident history found. Sending first-time welcome message...")
-            await self._send_welcome_message()
-
-    async def _send_welcome_message(self):
-        """Send a built-in professional introduction to the resident."""
-        welcome_text = (
-            "你好！我是你的智能代理（Bit-Politeia Agent）。\n\n"
-            "我已经在 Bit-Politeia 科学社区中为你完成了初始化。作为你的专属代理，我将协助你处理社区事务，包括：\n"
-            "1. 🔍 追踪科研动态与文献评价\n"
-            "2. 🗳️ 参与社区提案投票与治理\n"
-            "3. 💰 管理你的社区资产与声誉\n"
-            "4. 🛠️ 自主进行系统维护与优化\n\n"
-            "你可以随时通过聊天窗口向我下达指令，或者询问我关于社区规则的问题。很高兴为你服务！"
-        )
-        
-        from ..bus.events import OutboundMessage
-        await self.message_bus.publish_outbound(OutboundMessage(
-            channel="gateway",
-            session_id="resident",
-            content=welcome_text,
-            type="message"
-        ))
-        
-        # Log to resident memory as well to prevent re-triggering
-        self.resident_memory.log_interaction("agent", welcome_text, "chat", session_id="resident", status="sent")
-
     async def search_history(self, query: str = None, date_from: str = None, date_to: str = None) -> list[Message]:
         results = self.resident_memory.search_history(query, date_from, date_to)
         messages = []
@@ -1639,35 +1632,56 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
     async def check_core_node_election_trigger(self):
         """
         Background task for Temporary Core Node to trigger a formal election
-        once the group reaches 3 members.
+        based on community_rules.json scaling and governance history.
         """
         if not self.governance_manager or not p2p_service.local_node:
             return
             
         local_node_id = p2p_service.local_node.node_id
+        from .community_config import community_config
         
         # We only trigger if we belong to a group
         for group_id, group in p2p_service.local_node.network_manager.groups.items():
-            # RULE: If member count is 3 AND we haven't reached the formal core node target (3 nodes)
-            if len(group.members) >= 3 and len(group.core_node_ids) < 3:
-                # Are WE the primary temporary core node (the first in the list)?
-                # This ensures only one node triggers the election if there are multiple cores
-                if local_node_id == group.core_node_ids[0]:
-                    # Check if an election is already active for this group
-                    active_core_elections = [
-                        e for e in self.governance_manager.active_elections.values() 
-                        if e.group_id == group_id and e.election_type == ElectionType.CORE_NODE and e.status == "active"
-                    ]
-                    
-                    if not active_core_elections:
-                        logger.info(f"Election: Formal election trigger conditions met for Group {group_id}. Initiating...")
+            # 1. Determine target core node count from rules
+            required_count = 1
+            ratios = community_config.rules.get("core_nodes", {}).get("selection_ratios", [])
+            member_count = len(group.members)
+            for ratio in ratios:
+                r_min, r_max = ratio.get("range", [0, 0])
+                if r_min <= member_count <= r_max:
+                    required_count = ratio.get("count", 1)
+                    break
+            
+            # 2. Check if a core node election has EVER been started for this group
+            active_history = [e for e in self.governance_manager.active_elections.values() 
+                             if e.group_id == group_id and e.election_type == ElectionType.CORE_NODE]
+            finished_history = [e for e in self.governance_manager.finished_elections.values() 
+                               if e.group_id == group_id and e.election_type == ElectionType.CORE_NODE]
+            
+            ever_started = len(active_history) > 0 or len(finished_history) > 0
+            
+            # 3. RULE EVALUATION:
+            # - Trigger if pop >= 3 but never had a formal election (Condition 1)
+            # - Trigger if current core count < rule-based target (Condition 2)
+            should_trigger = (member_count >= 3 and not ever_started) or (len(group.core_node_ids) < required_count)
+            
+            if should_trigger:
+                # Are WE the primary initiator (the first in the core list)?
+                if group.core_node_ids and local_node_id == group.core_node_ids[0]:
+                    # Check if an election is ALREADY active right now in locally to avoid spam
+                    if not active_history:
+                        logger.info(f"Governance: Triggering CORE_NODE election for {group_id}. Reason: Pop={member_count}, EverStarted={ever_started}, Count={len(group.core_node_ids)}, Required={required_count}")
                         
-                        # Get candidates from Bootstrap (or local list)
-                        # Normally we use reputation-based ranking, but for 3-node phase, all are candidates
+                        # Generate candidates from group members
                         candidates = list(group.members)
                         
-                        # Start Election (broadcasts via P2P)
-                        await self.start_election(group_id, candidates)
+                        # Initiate via governance manager (broadcasts via P2P)
+                        await self.initiate_election(
+                            group_id=group_id,
+                            election_type=ElectionType.CORE_NODE,
+                            candidates=candidates,
+                            duration_minutes=30
+                        )
 
     async def sync_network(self):
         """Periodically refresh network topology."""
@@ -2580,25 +2594,6 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         """Run the agent on a specific task prompt."""
         # For now, simulate execution. In reality, this would trigger a clean chain run.
         return f"Executed: {prompt[:100]}... [SIMULATED SUCCESS]"
-
-    async def get_status(self) -> AgentStatus:
-        """Get current agent status."""
-        # Ensure status object is up to date with instance attributes
-        self.status.name = self.name
-        self.status.personality = self.personality
-        
-        # P2P Info
-        if p2p_service.local_node:
-            self.status.node_id = p2p_service.local_node.node_id
-            
-            # Update Relay Connection Status
-            if p2p_service.network_manager and hasattr(p2p_service.network_manager, 'relay_client'):
-                rc = p2p_service.network_manager.relay_client
-                self.status.relay_connected = rc.running and rc.websocket is not None
-            
-            # TODO: Get actual balance, reputation
-            
-        return self.status
 
     async def handle_p2p_result(self, sender_id: str, payload: dict):
         """Process result from a previously delegated task."""

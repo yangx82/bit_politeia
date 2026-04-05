@@ -241,6 +241,7 @@ class GovernanceManager:
         path_obj.parent.mkdir(parents=True, exist_ok=True)
         
         self.active_elections: Dict[str, Election] = {}
+        self.finished_elections: Dict[str, Election] = {}
         self.proposals: Dict[str, Proposal] = {}
         self.load_state()
         
@@ -248,7 +249,8 @@ class GovernanceManager:
         import json
         data = {
             "proposals": {k: v.to_dict() for k, v in self.proposals.items()},
-            "elections": {k: v.to_dict() for k, v in self.active_elections.items()}
+            "active_elections": {k: v.to_dict() for k, v in self.active_elections.items()},
+            "finished_elections": {k: v.to_dict() for k, v in self.finished_elections.items()}
         }
         try:
             with open(self.storage_path, 'w', encoding='utf-8') as f:
@@ -269,8 +271,11 @@ class GovernanceManager:
             for k, v in data.get("proposals", {}).items():
                 self.proposals[k] = Proposal.from_dict(v)
                 
-            for k, v in data.get("elections", {}).items():
+            for k, v in data.get("active_elections", data.get("elections", {})).items():
                 self.active_elections[k] = Election.from_dict(v)
+            
+            for k, v in data.get("finished_elections", {}).items():
+                self.finished_elections[k] = Election.from_dict(v)
                 
             logger.info(f"Loaded {len(self.proposals)} proposals and {len(self.active_elections)} elections.")
         except Exception as e:
