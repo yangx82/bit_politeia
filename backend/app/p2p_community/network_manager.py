@@ -104,10 +104,12 @@ class NetworkManager:
                         parent_id=gdata["parent_id"],
                         name=gdata.get("name")
                     )
-                else:
-                    # Update name if changed
-                    if gdata.get("name"):
-                        self.groups[gid].name = gdata["name"]
+                
+                # Update attributes for all groups (newly created or existing)
+                if gdata.get("name"):
+                    self.groups[gid].name = gdata["name"]
+                if gdata.get("core_node_ids"):
+                     self.groups[gid].core_node_ids = gdata["core_node_ids"]
         
         # REMOVE Stale Groups
         stale_groups = [gid for gid in self.groups if gid not in server_group_ids]

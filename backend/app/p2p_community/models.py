@@ -13,6 +13,7 @@ class Group:
         self.parent_id = parent_id
         self.child_ids: List[str] = []
         self.members: Set[str] = set()  # Set of Node IDs
+        self.core_node_ids: List[str] = [] # Set of Core Node IDs (Governance)
         self.max_subgroups = 3 # Default max subgroups
 
     def add_member(self, node_id: str):
@@ -40,7 +41,8 @@ class Group:
             "level": self.level,
             "parent_id": self.parent_id,
             "child_ids": self.child_ids,
-            "members": list(self.members)
+            "members": list(self.members),
+            "core_node_ids": self.core_node_ids
         }
 
     def __repr__(self):
