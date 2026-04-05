@@ -5,7 +5,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
-RULES_FILE_PATH = os.path.join(os.path.dirname(__file__), "../agent/knowledge/community_rules.json")
+RULES_FILE_PATH = os.path.join(os.path.dirname(__file__), "../agent/protocol/community_rules.json")
 
 class CommunityConfig:
     _instance = None

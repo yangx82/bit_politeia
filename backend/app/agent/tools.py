@@ -234,7 +234,8 @@ async def propose_election(group_id: str, candidate_ids: str) -> str:
         import app.services.agent_service
         candidates = [c.strip() for c in candidate_ids.split(',')]
         # Access global service (pattern used in this file for p2p_service)
-        result = await app.services.agent_service.agent_service.start_election(group_id, candidates)
+        # FIX: AgentService uses initiate_election, not start_election
+        result = await app.services.agent_service.agent_service.initiate_election(group_id, candidates)
         return f"Election initiated: {result}"
     except Exception as e:
         return f"Failed to start election: {str(e)}"
@@ -460,7 +461,7 @@ async def delegate_task(recipient_id: str, task: str, context: Optional[str] = N
 # Import execution tool
 from ..agent.tools_exec import execute_shell_command
 from ..agent.tools_fs import list_dir, read_file, write_file, edit_file, copy_files, move_files
-from ..agent.tools_web import fetch_web_page
+from ..agent.tools_web import fetch_web_page, academic_research
 from ..agent.tools_cron import schedule_reminder, list_reminders, cancel_reminder, start_scheduler, get_scheduler_status
 from ..agent.tools_task import TASK_TOOLS
 
@@ -581,7 +582,7 @@ AGENT_TOOLS = [
     pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, 
     read_skill_guide, execute_shell_command,
     list_dir, read_file, write_file, edit_file, copy_files, move_files,
-    fetch_web_page,
+    fetch_web_page, academic_research,
     schedule_reminder, list_reminders, cancel_reminder,
     start_scheduler, get_scheduler_status,
     delegate_task, repair_code, restart_node,

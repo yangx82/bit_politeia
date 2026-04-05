@@ -60,7 +60,7 @@ class SenseStage(PipelineStage):
         if isinstance(query, dict):
             agent_query = query.get("text", str(query))
             
-        rag_context = knowledge_base.search_web_and_context(agent_query)
+        rag_context = knowledge_base.retrieve_local_context(agent_query)
         context.metadata["rag_context"] = rag_context
         
         # 2. Retrieve P2P Network Context
@@ -80,6 +80,23 @@ class SenseStage(PipelineStage):
         
         network_identity = f"- Node ID: {my_id}\n- My Groups: {my_groups}\n- My Monitoring Research Focus: {agent.research_field}{peers_info}"
         context.metadata["network_identity"] = network_identity
+
+        # 4. Retrieve Live Governance Context (Active Elections/Proposals)
+        from ..services.agent_service import agent_service
+        elections = await agent_service.get_elections()
+        active_elections = [e for e in elections if e.get("is_active")]
+        
+        # Build governance summary for prompt injection
+        gov_summary = ""
+        if active_elections:
+            gov_summary = "\n### Active Elections:\n"
+            for e in active_elections:
+                tally = e.get("tally", {})
+                gov_summary += f"- [{e.get('election_type', 'Election')}] ID: {e.get('election_id', 'Unknown')} (Ends in {e.get('duration_minutes', '?')} min). Participation: {tally.get('participation_rate', 0)}%\n"
+        else:
+            gov_summary = "\nNo active elections or proposals currently."
+            
+        context.metadata["governance_context"] = gov_summary
 
         # 3. Build Hybrid History Splice (Session Core + Global Periphery)
         effective_history = agent.history[:]
@@ -142,7 +159,8 @@ class SenseStage(PipelineStage):
             channel=context.input_message.channel,
             host_info=agent._get_host_info(),
             session_id=session_id,
-            chat_name=chat_name
+            chat_name=chat_name,
+            governance_context=gov_summary
         )
 
 class PlanStage(PipelineStage):

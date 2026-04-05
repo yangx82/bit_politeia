@@ -12,6 +12,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AI
 from ..services.memory_store import memory_store
 from ..services.skill_manager import skill_manager
 from ..agent.prompts import AGENT_SYSTEM_PROMPT
+from ..services.community_config import community_config
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ Please strictly adhere to this personality in your interactions."""
 - **FINAL ANSWER DESTINATION**: Your 'Final Answer' in this mode is delivered DIRECTLY to the other machine node via the P2P transport. 
 - **CRITICAL**: Do NOT address your resident/user in the final answer. If you need to inform or ask the resident something, you MUST use the `ask_resident` tool first, but keep your final answer strictly for the peer node.
 - **TERMINATION PROTOCOL**: If the interaction is complete, a task is confirmed, or no further information is needed from the other node (e.g., both parties have acknowledged a plan), you MUST output exactly `[NO_RESPONSE_NEEDED]` as your final answer. This signals the system to stop the loop and avoid redundant 'ACK' messages.
+- **EFFICIENCY RULE**: Minimize external search tool usage. For routine P2P coordination, greetings, and status updates, depend strictly on your local knowledge base and the provided context. Use `academic_research` ONLY when the nature of the conversation is specifically technical or scientific and requires external validation.
 - If you still need a response, provide a brief technical confirmation (e.g., 'Task completed', 'Data synced')."""
             parts.append(role_block)
         else:
@@ -117,6 +119,18 @@ You are in a private one-to-one conversation with a single peer.
             if task_context:
                 parts.append(task_context)
                 
+        # 5. Governing Protocol (Constitution) - INHERENT AWARENESS
+        # This gives the agent direct knowledge of node ratios, group sizes, etc.
+        rules_text = community_config.get_all_rules_text()
+        if rules_text:
+            protocol_block = f"""# GOVERNING PROTOCOL (CONSTITUTION)
+Below is the current community organization and election protocol. 
+Reference these rules for all governance decisions, election proposals, and group management tasks.
+```json
+{rules_text}
+```"""
+            parts.append(protocol_block)
+                
         return "\n\n---\n\n".join(parts)
     
     def build_messages(
@@ -134,7 +148,8 @@ You are in a private one-to-one conversation with a single peer.
         channel: str = "resident",
         host_info: str = None,
         session_id: str = None,
-        chat_name: str = None
+        chat_name: str = None,
+        governance_context: str = None
     ) -> List[BaseMessage]:
         """
         Build the complete message list for an LLM call.
@@ -169,6 +184,9 @@ You are in a private one-to-one conversation with a single peer.
             
         if rag_context:
             messages.append(SystemMessage(content=f"Relevant Knowledge Context:\n{rag_context}"))
+            
+        if governance_context:
+            messages.append(SystemMessage(content=f"LIVE GOVERNANCE STATE (Active Elections/Proposals):\n{governance_context}"))
 
         # 2. History (Existing conversation)
         # Assuming history is already a list of LangChain BaseMessage objects 

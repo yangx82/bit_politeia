@@ -98,3 +98,18 @@ async def fetch_web_page(url: str, extract_mode: str = "markdown") -> str:
         
     except Exception as e:
         return f"Error fetching URL {url}: {str(e)}"
+
+@tool
+async def academic_research(topic: str) -> str:
+    """
+    Conducts deep research on scientific or technical topics using ArXiv and BioRxiv.
+    Use this ONLY when the user's request specifically requires external scientific validation, 
+    latest research context, or technical evidence. 
+    DO NOT use for simple P2P greetings, status checks, or routine community tasks.
+    
+    Args:
+        topic: The scientific or technical topic to research.
+    """
+    from ..services.knowledge_base import knowledge_base
+    logger.info(f"Explicit academic research triggered for topic: {topic}")
+    return knowledge_base.search_web_and_context(topic)

@@ -122,9 +122,11 @@ class WebResearcher:
 
         # 2. BioRxiv Search (Metadata interval - expand to last 30 days)
         try:
+            # Shorten window to 30 days to avoid timeouts (prev search from 2025-01-01 was too large)
+            from datetime import timedelta
+            start_date = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            # Using a fixed start date for 2025 or relative past
-            biorxiv_url = f"https://api.biorxiv.org/details/biorxiv/2025-01-01/{today}/0"
+            biorxiv_url = f"https://api.biorxiv.org/details/biorxiv/{start_date}/{today}/0"
             resp = httpx.get(biorxiv_url, timeout=30.0)
             print(f"BioRxiv Status: {resp.status_code}")
             if resp.status_code == 200:
@@ -429,45 +431,23 @@ class KnowledgeBase:
         # For now, just logging
         logger.info(f"Archive ingestion not yet implemented for Vector Store")
 
+    def retrieve_local_context(self, query: str, limit: int = 3) -> str:
+        """
+        Retrieves context ONLY from local memory and FTS databases.
+        STRICTLY NO EXTERNAL ACADEMIC SEARCHES.
+        """
+        if not CHROMA_AVAILABLE or not self.collection:
+             return self._retrieve_context_fallback(query, limit)
+        
+        # Call hybrid search directly which uses Chroma + FTS
+        return self.retrieve_hybrid(query, limit)
+
     def retrieve_context(self, query: str, limit: int = 3) -> str:
         """
         Semantic retrieval using Vector Search.
+        By default, this is now a legacy wrapper that uses hybrid search.
         """
-        if not CHROMA_AVAILABLE or not self.collection:
-            return self._retrieve_context_fallback(query, limit)
-            
-        try:
-            # Encode Query
-            query_embedding = self.embedding_model.encode([query]).tolist()
-            
-            # Query Chroma
-            results = self.collection.query(
-                query_embeddings=query_embedding,
-                n_results=limit
-            )
-            
-            # Format Results
-            context_parts = []
-            
-            # results['documents'] is a list of lists (one list per query)
-            if results['documents']:
-                docs = results['documents'][0]
-                metas = results['metadatas'][0]
-                distances = results['distances'][0] if results['distances'] else []
-                
-                for i, doc_text in enumerate(docs):
-                    meta = metas[i]
-                    source = meta.get("source", "unknown")
-                    # sender = meta.get("sender", "unknown")
-                    timestamp = meta.get("timestamp", "")
-                    
-                    context_parts.append(f"[{source.upper()} {timestamp}] {doc_text}")
-            
-            return "\n\n".join(context_parts) if context_parts else "No relevant memory found."
-            
-        except Exception as e:
-            logger.error(f"Vector search failed: {e}")
-            return self._retrieve_context_fallback(query, limit)
+        return self.retrieve_local_context(query, limit)
 
 
     def _update_fts_index(self, history: List[Dict]):
@@ -502,17 +482,19 @@ class KnowledgeBase:
             return []
             
         try:
-            # Sanitize query for FTS5 (basic)
-            # FTS5 uses specific syntax, user query might break it. 
-            # We treat the whole query as a phrase or set of tokens.
-            # Simple approach: remove special chars or quote.
-            # safe_query = f'"{query.replace("\"", "")}"' 
-            # actually better to just let sqlite handle simple tokens, or wrap in Double Quotes for phrase
+            # Sanitize query for FTS5 to prevent syntax errors like "fts5: syntax error near '['"
+            # We remove reserved FTS5 operators and treat the query as a set of simple tokens.
+            import re
+            # Replace special characters with spaces
+            safe_query = re.sub(r'[[\]"*:(^)]', ' ', query).strip()
             
+            if not safe_query:
+                return []
+
             cursor = self.fts_conn.cursor()
             # Ranking by BM25 (default in FTS5)
             sql = "SELECT content, source, timestamp, sender, type FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?"
-            cursor.execute(sql, (query, limit))
+            cursor.execute(sql, (safe_query, limit))
             rows = cursor.fetchall()
             
             results = []

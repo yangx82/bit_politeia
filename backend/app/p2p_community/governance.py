@@ -112,11 +112,21 @@ class Election:
         return len(self.votes) / len(effective_voters)
 
     def is_quorum_met(self) -> bool:
-        return self.participation_rate > 0.8
+        from ..services.community_config import community_config
+        quorum_ratio = community_config.rules.get("election", {}).get("quorum_ratio", 0.8)
+        return self.participation_rate >= quorum_ratio
 
     def tally(self) -> Dict[str, Any]:
-        if not self.is_quorum_met():
-            return {"valid": False, "reason": "Quorum not met (<80%)", "winners": []}
+        # Only mark as invalid if the election has ENDED and quorum is not met.
+        # If it's still active, it's always valid to encourage participation.
+        now = datetime.now(timezone.utc)
+        if now > self.end_time and not self.is_quorum_met():
+            return {
+                "valid": False, 
+                "reason": f"Quorum not met (<{int(self.participation_rate*100)}%). Required: 80%.", 
+                "winners": [],
+                "participation_rate": self.participation_rate
+            }
 
         if self.election_type == ElectionType.PROPOSAL_VOTE:
             # Tally for Proposal
@@ -141,7 +151,8 @@ class Election:
                 "passed": passed,
                 "approvals": approvals,
                 "rejections": rejections,
-                "total_votes": total_cast
+                "total_votes": total_cast,
+                "participation_rate": self.participation_rate
             }
 
         elif self.election_type == ElectionType.RESEARCH_EVALUATION:
@@ -190,7 +201,10 @@ class Election:
             "valid": True,
             "winners": winners,
             "counts": counts,
-            "total_votes": self.total_votes
+            "approvals": sum(counts.values()), # Total positive votes for all candidates
+            "rejections": 0,
+            "total_votes": self.total_votes,
+            "participation_rate": self.participation_rate
         }
     
     def to_dict(self) -> dict:
@@ -203,11 +217,13 @@ class Election:
             "end_time": self.end_time if isinstance(self.end_time, str) else self.end_time.isoformat(),
             "candidates": self.candidates,
             "proposal_id": self.proposal_id,
+            "content": self.content if hasattr(self, 'content') and self.content else (f"Selection of core nodes for group {self.group_id}" if self.election_type == ElectionType.CORE_NODE else "Community Vote"),
             "eligible_voters": list(self.eligible_voters),
             "votes": {k: [v.to_dict() for v in val] for k, val in self.votes.items()},
             "status": self.status,
             "target_positions": self.target_positions,
-            "excluded_voters": list(self.excluded_voters)
+            "excluded_voters": list(self.excluded_voters),
+            "participation_rate": self.participation_rate
         }
 
     @classmethod
@@ -232,17 +248,17 @@ class Election:
 
 class GovernanceManager:
     """Manages elections and proposals for a node."""
-    def __init__(self, node_id: str, storage_path: str = "governance_store.json"):
+    def __init__(self, node_id: str, storage_path: str = "backend/data/governance_store.json"):
         self.node_id = node_id
-        self.storage_path = storage_path
+        self.storage_path = Path(storage_path)
         
         # Ensure data directory exists
         path_obj = Path(self.storage_path)
         path_obj.parent.mkdir(parents=True, exist_ok=True)
         
+        self.proposals: Dict[str, Proposal] = {}
         self.active_elections: Dict[str, Election] = {}
         self.finished_elections: Dict[str, Election] = {}
-        self.proposals: Dict[str, Proposal] = {}
         self.load_state()
         
     def save_state(self):
@@ -350,7 +366,26 @@ class GovernanceManager:
         self.save_state()
         return proposal, election
 
+    def finalize_expired_elections(self):
+        """Move elections from active to finished if they have passed their end_time."""
+        now = datetime.now(timezone.utc)
+        expired_ids = [eid for eid, e in self.active_elections.items() if now > e.end_time]
+        
+        if not expired_ids:
+            return
+            
+        for eid in expired_ids:
+            election = self.active_elections.pop(eid)
+            election.status = "finished"
+            self.finished_elections[eid] = election
+            logger.info(f"Governance: Finalized expired election {eid}")
+            
+        self.save_state()
+
     def receive_ballot(self, election_id: str, votes: List[Vote]) -> bool:
+        # First, sync state to ensure we're not voting in something that just expired
+        self.finalize_expired_elections()
+        
         if election_id not in self.active_elections:
             return False
             

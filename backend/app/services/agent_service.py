@@ -1791,6 +1791,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         if not self.governance_manager:
             return []
 
+        # PROACTIVE SYNC: Finalize any elections that just expired
+        self.governance_manager.finalize_expired_elections()
+
         elections = []
         # 1. Active Elections
         for e in self.governance_manager.active_elections.values():

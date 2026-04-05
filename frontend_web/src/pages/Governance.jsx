@@ -69,27 +69,33 @@ const Governance = () => {
         const proposal = proposals.find(p => p.proposal_id === election.proposal_id);
         const tally = election.tally || { approvals: 0, rejections: 0, total_votes: 0, winners: [] };
         
-        // Determine display title and content
-        let title = "Governance Action";
-        let content = "No content provided";
-        let badgeColor = "bg-slate-100 text-slate-600";
-        let typeLabel = election.election_type || "Election";
+        // Match election type (backend uses 'core_node_election' and 'proposal_vote')
+        const rawType = (election.election_type || '').toLowerCase();
+        const isCoreNode = rawType.includes('core_node');
+        const isProposal = rawType.includes('proposal');
 
-        if (election.election_type === 'CORE_NODE') {
+        // Determine display title and content
+        let title = election.content || "Community Governance Action";
+        let badgeColor = "bg-slate-100 text-slate-600";
+        let typeLabel = "Governance";
+
+        if (isCoreNode) {
             title = "Core Node Selection";
-            content = `Selecting new core nodes for the group. Candidates: ${election.candidates?.join(', ') || 'None'}`;
             badgeColor = "bg-purple-100 text-purple-700";
             typeLabel = "Core Node";
-        } else if (proposal) {
-            title = proposal.content;
-            content = proposal.content;
+        } else if (isProposal || proposal) {
+            // Use proposal content if available, then election content, then default
+            title = proposal?.content || election.content || "Governance Proposal Vote";
             badgeColor = "bg-primary/10 text-primary";
-            typeLabel = proposal.scope || "Proposal";
+            typeLabel = proposal?.scope || "Proposal";
         }
 
-        const percentage = tally.total_votes > 0
-            ? Math.round((tally.approvals / tally.total_votes) * 100)
-            : 0;
+        // Fix: Ensure 0 is treated as 0, not falsey
+        const approvals = tally.approvals ?? 0;
+        const total = tally.total_votes ?? 0;
+        const percentage = total > 0 ? Math.round((approvals / total) * 100) : 0;
+            
+        const participation = Math.round((election.participation_rate || tally.participation_rate || 0) * 100);
 
         return (
             <div key={election.election_id} className="bg-surface p-6 rounded-xl border border-slate-200 shadow-sm mb-4">
@@ -100,25 +106,28 @@ const Governance = () => {
                                 {typeLabel}
                             </span>
                             <span className="text-xs text-slate-500">
-                                {new Date(election.start_time).toLocaleString()}
+                                {new Date(election.start_time || election.timestamp).toLocaleString()}
                             </span>
                             <span className={`text-xs ml-auto ${election.status === 'active' ? 'text-green-500' : 'text-slate-400'}`}>
                                 ● {election.status === 'active' ? 'Active' : 'Finished'}
                             </span>
                         </div>
-                        <h3 className="text-lg font-semibold text-primary">{title}</h3>
-                        {election.election_type === 'CORE_NODE' && (
+                        <h3 className="text-lg font-semibold text-primary line-clamp-2" title={title}>{title}</h3>
+                        {isCoreNode && (
                             <div className="mt-2 flex flex-wrap gap-1">
-                                {election.candidates?.map(c => (
-                                    <span key={c} className="text-[10px] bg-slate-50 border border-slate-200 px-1.5 py-0.5 rounded text-slate-500">
-                                        {c.slice(0, 8)}...
-                                    </span>
-                                ))}
+                                {election.candidates?.map(c => {
+                                    const votes = (tally.counts && tally.counts[c]) || 0;
+                                    return (
+                                        <span key={c} className="flex items-center gap-1.5 text-[10px] bg-slate-50 border border-slate-200 px-1.5 py-0.5 rounded text-slate-500">
+                                            {c.slice(0, 8)}: <span className="font-bold text-purple-600">{votes}</span>
+                                        </span>
+                                    );
+                                })}
                             </div>
                         )}
                     </div>
-                    {election.election_type !== 'CORE_NODE' && (
-                        <div className="text-right ml-4">
+                    {!isCoreNode && (
+                        <div className="text-right ml-4 min-w-[60px]">
                             <div className="text-2xl font-bold text-primary">{percentage}%</div>
                             <div className="text-xs text-slate-500">Approval</div>
                         </div>
@@ -127,31 +136,35 @@ const Governance = () => {
 
                 <div className="flex items-center gap-6 border-t border-slate-100 pt-4">
                     <div className="flex-1">
-                        {election.election_type === 'CORE_NODE' ? (
-                             <div className="text-xs text-slate-500 italic">
-                                Participation: {tally.total_votes} votes cast ({Math.round(election.participation_rate * 100 || 0)}% of group)
-                             </div>
-                        ) : (
-                            <>
-                                <div className="flex justify-between text-xs mb-1">
-                                    <span className="text-green-600 font-medium">Yes: {tally.approvals}</span>
-                                    <span className="text-red-500 font-medium">No: {tally.rejections}</span>
-                                </div>
-                                <div className="h-2 bg-slate-100 rounded-full overflow-hidden flex">
-                                    <div style={{ width: `${percentage}%` }} className="bg-green-500 h-full" />
-                                    <div style={{ width: `${100 - percentage}%` }} className="bg-red-400 h-full" />
-                                </div>
-                            </>
-                        )}
+                        <div className="flex justify-between text-xs mb-1">
+                            {isCoreNode ? (
+                                <span className="text-slate-600 font-medium font-mono uppercase tracking-tight">Participation: {participation}%</span>
+                            ) : (
+                                <>
+                                    <span className="text-green-600 font-medium">Yes: {approvals}</span>
+                                    <span className="text-red-500 font-medium">No: {tally.rejections ?? 0}</span>
+                                </>
+                            )}
+                        </div>
+                        <div className="h-2 bg-slate-100 rounded-full overflow-hidden flex">
+                            {isCoreNode ? (
+                                <div style={{ width: `${participation}%` }} className="bg-purple-500 h-full transition-all duration-500" />
+                            ) : (
+                                <>
+                                    <div style={{ width: `${percentage}%` }} className="bg-green-500 h-full transition-all duration-500" />
+                                    <div style={{ width: `${100 - percentage}%` }} className="bg-red-400 h-full transition-all duration-500" />
+                                </>
+                            )}
+                        </div>
                     </div>
 
                     {election.status === 'active' && (
                         <div className="flex gap-2">
-                             {election.election_type === 'CORE_NODE' ? (
+                             {isCoreNode ? (
                                  election.candidates?.map(candidate => (
                                     <button
                                         key={candidate}
-                                        onClick={() => handleVote(election.election_id, true, candidate)}
+                                        onClick={() => handleVote(election.election_id, true, "", candidate)}
                                         className="px-3 py-1.5 bg-purple-50 text-purple-700 rounded-lg hover:bg-purple-100 text-xs font-medium transition-colors"
                                     >
                                         Vote {candidate.slice(0, 4)}
