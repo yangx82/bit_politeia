@@ -237,6 +237,17 @@ class P2PService:
                     asyncio.create_task(self._forward_governance_message(message, "vote"))
             return True
             
+        elif msg_type == MessageType.ELECTION.value:
+            from .agent_service import agent_service
+            if agent_service.governance_manager:
+                agent_service.governance_manager.receive_p2p_event("election", content)
+                
+                # GOSSIP FORWARD: Ensure elections propagate
+                recipient_id = message.get("recipient_id")
+                if recipient_id and recipient_id in self.network_manager.groups:
+                    asyncio.create_task(self._forward_governance_message(message, "election"))
+            return True
+            
         elif msg_type == MessageType.SYNC.value:
             # Handle state synchronization requests
             content = message.get("content", {})
@@ -317,7 +328,13 @@ class P2PService:
         if not self.local_node:
              raise RuntimeError("P2PService not initialized")
              
-        msg_type = MessageType.PROPOSAL if event_type == "proposal" else MessageType.VOTE
+        
+        if event_type == "proposal":
+             msg_type = MessageType.PROPOSAL
+        elif event_type == "election":
+             msg_type = MessageType.ELECTION
+        else:
+             msg_type = MessageType.VOTE
         
         # Create the message
         message = self.message_protocol.create_message(

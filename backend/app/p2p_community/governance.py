@@ -506,6 +506,24 @@ class GovernanceManager:
                 vote = Vote.from_dict(vote_data)
                 return self.receive_ballot(election_id, [vote])
                 
+            elif event_type == "election":
+                election_data = content.get("election")
+                if not election_data:
+                    logger.warning("Governance P2P: Malformed standalone election message.")
+                    return False
+                
+                election_id = election_data.get("election_id")
+                if election_id in self.active_elections:
+                    logger.debug(f"Governance P2P: Election {election_id} already exists locally.")
+                    return True
+                
+                # Ingest Standalone Election
+                election = Election.from_dict(election_data)
+                self.active_elections[election.election_id] = election
+                logger.info(f"Governance P2P: Successfully ingested remote election {election_id}")
+                self.save_state()
+                return True
+                
             return False
         except Exception as e:
             logger.error(f"Governance P2P Error: {e}")

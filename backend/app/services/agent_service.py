@@ -2252,14 +2252,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             await asyncio.wait_for(
                 p2p_service.broadcast_governance_event(
                     group_id,
-                    "election_started",
+                    "election",
                     {"election": election.to_dict()}
                 ),
                 timeout=10.0
             )
-            logger.info(f"Election broadcast successfully for group {group_id}")
-        except asyncio.TimeoutError:
-            logger.warning(f"Election broadcast timeout for group {group_id}")
         except Exception as e:
             logger.error(f"Election broadcast failed for group {group_id}: {e}")
         
