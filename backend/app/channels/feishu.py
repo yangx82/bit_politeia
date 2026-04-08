@@ -313,7 +313,9 @@ class FeishuChannel(BaseChannel):
         file_path = download_dir / f"fs_{message_id}_{file_name}"
         
         with open(file_path, "wb") as f:
-            f.write(response.file)
+            # response.file may be a BytesIO object; get its bytes content
+            file_data = response.file.getvalue() if hasattr(response.file, 'getvalue') else response.file
+            f.write(file_data)
             
         return str(file_path.absolute())
 

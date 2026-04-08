@@ -228,13 +228,28 @@ class Election:
 
     @classmethod
     def from_dict(cls, data: dict):
+        # Helper function to ensure timezone-aware datetime
+        def parse_datetime(dt_value):
+            if isinstance(dt_value, str):
+                parsed = datetime.fromisoformat(dt_value)
+                # If timezone-naive, assume UTC
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed
+            elif isinstance(dt_value, datetime):
+                # If timezone-naive, assume UTC
+                if dt_value.tzinfo is None:
+                    return dt_value.replace(tzinfo=timezone.utc)
+                return dt_value
+            return dt_value
+        
         e = cls(
             election_id=data["election_id"],
             group_id=data["group_id"],
             election_type=ElectionType(data["election_type"]),
             initiator_id=data["initiator_id"],
-            start_time=datetime.fromisoformat(data["start_time"]) if isinstance(data["start_time"], str) else data["start_time"],
-            end_time=datetime.fromisoformat(data["end_time"]) if isinstance(data["end_time"], str) else data["end_time"],
+            start_time=parse_datetime(data["start_time"]),
+            end_time=parse_datetime(data["end_time"]),
             candidates=data.get("candidates", []),
             proposal_id=data.get("proposal_id"),
             eligible_voters=set(data.get("eligible_voters", [])),
