@@ -41,6 +41,7 @@ from .knowledge_base import knowledge_base
 
 from .consolidation import ConsolidationService
 from .task_manager import TaskManager, TaskStatus
+from .session_service import session_manager
 
 class AgentService:
     def __init__(self):
@@ -128,6 +129,8 @@ class AgentService:
                 self.scheduler.add_job("app.services.agent_service:check_unhandled_messages_proxy", 'interval', minutes=5, id="unhandled_msg_watchdog", replace_existing=True)
                 # Gossip State Sync: Periodic state synchronization for eventual consistency
                 self.scheduler.add_job("app.services.agent_service:gossip_state_sync_proxy", 'interval', minutes=3, id="gossip_state_sync_job", replace_existing=True)
+                # P2P Throttle Flush: Send buffered messages after cooldown
+                self.scheduler.add_job("app.services.agent_service:flush_throttled_messages_proxy", 'interval', minutes=1, id="p2p_throttle_flush_job", replace_existing=True)
                 # Self-Healing: only register supervisor job if env var is set
                 if os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes"):
                     self.scheduler.add_job("app.services.agent_service:code_supervisor_proxy", 'interval', seconds=10, id="code_supervisor_job", replace_existing=True)
@@ -201,6 +204,53 @@ class AgentService:
                 )
             except Exception as e:
                 logger.error(f"Failed to retry message {msg.id}: {e}")
+
+    async def _flush_throttled_messages(self):
+        """Scans sessions for pending messages that are past their 5-minute cooldown."""
+        logger.info("Scanning for throttled P2P messages to flush...")
+        
+        # 1. Iterate through in-memory sessions
+        sessions_to_check = list(session_manager.sessions.values())
+        
+        # 2. Optionally scan disk if memory is empty (expensive, but thorough)
+        # For now, we rely on core active sessions in memory
+        
+        now = datetime.now(timezone.utc)
+        cooldown_seconds = 300
+        
+        flushed_count = 0
+        for session in sessions_to_check:
+            pending_reply = session.metadata.get("pending_reply")
+            if not pending_reply:
+                continue
+                
+            last_reply_iso = session.metadata.get("last_p2p_reply_at")
+            if not last_reply_iso:
+                # Shouldn't happen if pending_reply is set, but safety first
+                continue
+                
+            try:
+                last_reply_at = datetime.fromisoformat(last_reply_iso)
+                if last_reply_at.tzinfo is None:
+                    last_reply_at = last_reply_at.replace(tzinfo=timezone.utc)
+                
+                elapsed = (now - last_reply_at).total_seconds()
+                if elapsed >= cooldown_seconds:
+                    logger.info(f"Flushing throttled message for session {session.entity_id} (Cooldown expired: {int(elapsed)}s)")
+                    
+                    # Call send_p2p_message with bypass_throttle=True
+                    # This will also clear the metadata and update the last_reply_at
+                    await self.send_p2p_message(
+                        recipient_id=session.entity_id,
+                        content=pending_reply,
+                        bypass_throttle=True
+                    )
+                    flushed_count += 1
+            except Exception as e:
+                logger.error(f"Error flushing session {session.entity_id}: {e}")
+                
+        if flushed_count > 0:
+            logger.info(f"Successfully flushed {flushed_count} toggled P2P messages.")
 
     # ... remaining of file ...
 
@@ -1890,12 +1940,18 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             logger.error(f"Error processing incoming direct HTTP P2P message: {e}")
             return {"status": "error", "message": str(e)}
 
-    async def send_p2p_message(self, recipient_id: str, content: Any, is_retry: bool = False, original_msg_id: str = None, **kwargs) -> dict:
+    async def send_p2p_message(self, recipient_id: str, content: Any, is_retry: bool = False, original_msg_id: str = None, bypass_throttle: bool = False, **kwargs) -> dict:
         """
         Send a P2P message to a specific peer.
         This method handles both WebRTC data channel (fast) and HTTP/Relay (reliable) paths.
         """
         print(f"\n[DEBUG] send_p2p_message called for {recipient_id}, content: {str(content)[:50]}...", flush=True)
+        
+        # Initialize throttle state variables to avoid UnboundLocalError in return/log paths
+        elapsed = 0
+        cooldown_seconds = 300
+        is_in_cooldown = False
+
         if not p2p_service._initialized:
              logger.error(f"P2P Message attempt failed: P2PService NOT INITIALIZED (target={recipient_id})")
              return {"success": False, "error": "P2P not initialized"}
@@ -1960,6 +2016,51 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         msg_timestamp = datetime.now(timezone.utc)
         
         if not is_retry:
+            # 2.5 P2P Rate Limiting (Throttling) for non-resident sessions
+            if not bypass_throttle and recipient_id != "resident":
+                session = session_manager.get_session(recipient_id, "p2p")
+                
+                last_reply_iso = session.metadata.get("last_p2p_reply_at")
+                # cooldown_seconds is initialized at top
+                
+                if last_reply_iso:
+                    try:
+                        last_reply_at = datetime.fromisoformat(last_reply_iso)
+                        if last_reply_at.tzinfo is None:
+                            last_reply_at = last_reply_at.replace(tzinfo=timezone.utc)
+                        
+                        elapsed = (datetime.now(timezone.utc) - last_reply_at).total_seconds()
+                        if elapsed < cooldown_seconds:
+                            is_in_cooldown = True
+                    except Exception as te:
+                        logger.error(f"Error parsing last_p2p_reply_at: {te}")
+                        
+                if is_in_cooldown:
+                    # Buffer the message instead of sending
+                    session.metadata["pending_reply"] = text_to_check
+                    session.metadata["pending_reply_at"] = datetime.now(timezone.utc).isoformat()
+                    session_manager.save_session(session)
+                    
+                    logger.info(f"P2P Throttled: Message to {recipient_id} buffered (Cooldown active: {int(elapsed)}s < {cooldown_seconds}s)")
+                    
+                    # Inform Gateway that it's buffered
+                    await self.message_bus.publish_outbound(OutboundMessage(
+                        channel="gateway",
+                        session_id=self._normalize_session_id(recipient_id),
+                        content=f"**[P2P 5min 冷却期限制]**: 回覆已暫存，將在冷卻結束後自動發送（或在下次喚醒時更新）。",
+                        type="thought"
+                    ))
+                    
+                    return {"success": True, "status": "buffered", "cooldown_remaining": int(cooldown_seconds - (elapsed if 'elapsed' in locals() else 0))}
+                
+            # If we reach here, we are sending (either not throttled or bypass=True)
+            # Reset metadata for non-resident sessions
+            if recipient_id != "resident":
+                session = session_manager.get_session(recipient_id, "p2p")
+                session.metadata["last_p2p_reply_at"] = datetime.now(timezone.utc).isoformat()
+                session.metadata["pending_reply"] = None
+                session_manager.save_session(session)
+
             self.processed_message_ids.add(msg_id) # Track our own messages to avoid loopback
             msg_obj = Message(
                 id=msg_id,
@@ -2931,6 +3032,11 @@ async def gossip_state_sync_proxy():
     """Proxy for agent_service.gossip_state_sync"""
     if agent_service:
         await agent_service.gossip_state_sync()
+
+async def flush_throttled_messages_proxy():
+    """Proxy for agent_service._flush_throttled_messages"""
+    if agent_service:
+        await agent_service._flush_throttled_messages()
 
 async def code_supervisor_proxy():
     """Integrated code supervisor: polls pending.json and processes code updates."""

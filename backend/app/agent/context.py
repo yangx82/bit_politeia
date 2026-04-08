@@ -124,7 +124,8 @@ Reference these rules for all governance decisions, election proposals, and grou
         host_info: str = None,
         session_id: str = None,
         chat_name: str = None,
-        governance_context: str = None
+        governance_context: str = None,
+        pending_reply: str = None
     ) -> List[BaseMessage]:
         """
         Build the complete message list for an LLM call.
@@ -162,6 +163,9 @@ Reference these rules for all governance decisions, election proposals, and grou
             
         if governance_context:
             messages.append(SystemMessage(content=f"LIVE GOVERNANCE STATE (Active Elections/Proposals):\n{governance_context}"))
+            
+        if pending_reply:
+            messages.append(SystemMessage(content=f"# [PENDING REPLY INHIBITION]\nYou generated a reply within the last 5 minutes that has NOT been sent yet due to network rate-limiting policy:\n\n\"{pending_reply}\"\n\nYou are now being prompted by a NEW message. You can choose to update your pending reply (overwriting it) or ignore it. If you use 'send_p2p_message' again, the NEW content will be buffered and sent once the 5-minute cooldown expires."))
 
         # 2. History (Existing conversation)
         # Assuming history is already a list of LangChain BaseMessage objects 

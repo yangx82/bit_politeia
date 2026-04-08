@@ -160,7 +160,8 @@ class SenseStage(PipelineStage):
             host_info=agent._get_host_info(),
             session_id=session_id,
             chat_name=chat_name,
-            governance_context=gov_summary
+            governance_context=gov_summary,
+            pending_reply=context.session.metadata.get("pending_reply")
         )
 
 class PlanStage(PipelineStage):
