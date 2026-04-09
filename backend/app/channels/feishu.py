@@ -100,12 +100,14 @@ class FeishuChannel(BaseChannel):
             .log_level(lark.LogLevel.INFO) \
             .build()
         
-        # Create event handler (only register message receive, ignore other events)
+        # Create event handler (register message receive and message read events)
         event_handler = lark.EventDispatcherHandler.builder(
             self.config.encrypt_key or "",
             self.config.verification_token or "",
         ).register_p2_im_message_receive_v1(
             self._on_message_sync
+        ).register_im_message_read_v1(
+            self._on_message_read_sync
         ).build()
         
         # Create WebSocket client for long connection
@@ -291,7 +293,17 @@ class FeishuChannel(BaseChannel):
             asyncio.run_coroutine_threadsafe(self._on_message(data), self._loop)
         else:
             logger.warning("Main event loop not running, cannot handle Feishu message")
-    
+
+    def _on_message_read_sync(self, data: Any) -> None:
+        """
+        Sync handler for message read events (called from WebSocket thread).
+        This is a no-op handler to prevent "processor not found" errors.
+        Message read receipts indicate when someone has read our messages.
+        """
+        # We don't need to do anything with read receipts currently,
+        # but we must register this handler to avoid the "processor not found" error.
+        logger.debug(f"Message read event received: {data}")
+
     def _download_feishu_file(self, message_id: str, file_key: str, file_type: str, file_name: str) -> str:
         """Download a file from Feishu and return local path. Runs synchronously."""
         import os

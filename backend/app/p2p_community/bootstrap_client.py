@@ -210,7 +210,7 @@ class BootstrapClient:
                 return resp.json()
             return {}
         except Exception as e:
-            logger.error(f"Bootstrap topology fetch error: {e}")
+            logger.error(f"Bootstrap topology fetch error: {type(e).__name__}: {e}")
             return {}
 
     async def get_node_public_key(self, node_id: str) -> Optional[str]:
