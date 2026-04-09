@@ -424,7 +424,7 @@ class AgentService:
         
         # Initialize Ledger Balance (Mocking initial funding)
         if self.ledger.get_balance(real_node_id) == 0:
-            self.ledger.credit(real_node_id, 1000.0)
+            self.ledger.credit(real_node_id, 0.0)
         
         # Initialize LLM with Tools
         try:

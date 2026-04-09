@@ -21,7 +21,7 @@ export const Store = {
         field: localStorage.getItem('bp_field'),
         apiKey: localStorage.getItem('bp_api_key'),
         model: localStorage.getItem('bp_model') || 'gpt-4o',
-        apiUrl: localStorage.getItem('bp_api_url') || 'http://localhost:8001',
+        apiUrl: localStorage.getItem('bp_api_url') || 'http://localhost:8100',
         llmBaseUrl: localStorage.getItem('bp_llm_base_url') || '',
         bootstrapUrl: localStorage.getItem('bp_bootstrap_url') || 'http://localhost:8000',
         verboseLlm: localStorage.getItem('bp_verbose_llm') === 'true',
