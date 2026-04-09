@@ -27,6 +27,7 @@ try:
         GetMessageResourceRequest,
         Emoji,
         P2ImMessageReceiveV1,
+        P2ImMessageReadV1,
     )
     FEISHU_AVAILABLE = True
 except ImportError:
