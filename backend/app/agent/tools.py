@@ -241,6 +241,29 @@ async def propose_election(group_id: str, candidate_ids: str) -> str:
         return f"Failed to start election: {str(e)}"
 
 @tool
+async def update_group_core_nodes(group_id: str, node_ids: str) -> str:
+    """
+    Update the core nodes (leadership list) for a group.
+    This tool synchronizes the change with the bootstrap server AND the P2P network.
+    
+    Args:
+        group_id: The UUID of the group.
+        node_ids: Comma-separated list of Node IDs (UUID/Hex) that should be the NEW core nodes.
+    """
+    try:
+        from ..services.group_service import group_service
+        id_list = [i.strip() for i in node_ids.split(',')]
+        
+        success = await group_service.update_core_nodes(group_id, id_list)
+        if success:
+            return f"Successfully updated core nodes for group {group_id}. Propagation initiated."
+        else:
+            return f"Failed to update core nodes. Check permissions or network connection to bootstrap server."
+    except Exception as e:
+        logger.error(f"Tool Error updating core nodes: {e}")
+        return f"Error: {str(e)}"
+
+@tool
 async def search_chat_history(peer_name_or_id: str, limit: int = 10) -> str:
     """
     Search and retrieve persistent chat history with a specific peer.
@@ -585,7 +608,7 @@ async def append_daily_note(content: str) -> str:
 AGENT_TOOLS = [
     send_p2p_message, send_file, ask_resident, send_file_to_resident, get_my_status, read_community_rules, update_system_parameter, 
     search_chat_history, update_core_memory, append_daily_note,
-    propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, 
+    propose_election, submit_proposal, publish_research, update_group_core_nodes, cast_ballot, get_election_status, 
     pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, 
     read_skill_guide, execute_shell_command,
     list_dir, read_file, write_file, edit_file, copy_files, move_files,

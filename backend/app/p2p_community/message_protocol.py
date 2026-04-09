@@ -27,6 +27,7 @@ class MessageType(Enum):
     HEARTBEAT = "heartbeat"     # 心跳/存活检测
     FILE = "file"               # 文件传输
     ELECTION = "election"       # 选举交互
+    GROUP_CONFIG = "group_config" # 小组配置更新
     
     # WebRTC Signaling
     SDP_OFFER = "sdp_offer"

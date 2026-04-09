@@ -19,6 +19,11 @@ class Group:
     def add_member(self, node_id: str):
         self.members.add(node_id)
 
+    def update_core_nodes(self, node_ids: List[str]):
+        """Update the list of core nodes (leaders) for this group."""
+        self.core_node_ids = list(dict.fromkeys(node_ids)) # Ensure uniqueness while preserving order
+        logger.info(f"Group {self.group_id}: Core nodes updated to {len(self.core_node_ids)} nodes.")
+
     def remove_member(self, node_id: str):
         if node_id in self.members:
             self.members.remove(node_id)

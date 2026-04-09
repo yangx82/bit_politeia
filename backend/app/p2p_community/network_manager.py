@@ -258,11 +258,17 @@ class NetworkManager:
             # Check for system messages first
             msg_type = message_data.get("type", message_data.get("message_type"))
             if msg_type == "SYSTEM_ERROR":
-                self._log_throttled("warning", f"[Network] Relay System Error: {message_data.get('content')} (Target: {message_data.get('recipient_id')}, Message: {message_data.get('message_id')})")
+                self._log_throttled("warning", f"[Network] Relay System Error: {message_data.get('content')} (Target: {message_data.get('recipient_id')}, Message: {message_id})")
                 # Propagate to local node for handling (async status update)
                 if self.local_node_id in self.nodes:
                      await self.nodes[self.local_node_id].receive_message(message_data)
                 return
+
+            if msg_type == "GROUP_CONFIG":
+                 # Governance-level event ingestion
+                 from ..services.agent_service import agent_service
+                 if agent_service and agent_service.governance_manager:
+                      agent_service.governance_manager.receive_p2p_event("group_config", message_data.get("content", {}))
 
             # Basic Validation before parsing
             if "timestamp" not in message_data:
@@ -318,6 +324,27 @@ class NetworkManager:
         group.add_member(node_id)
         logger.info(f"Node {node_id} joined group {group_id}")
         return True
+
+    async def broadcast_group_config(self, group_id: str, core_node_ids: List[str]):
+        """Broadcast a group configuration update (e.g. core nodes) to all members."""
+        logger.info(f"[Network] Broadcasting Group Config Update for {group_id} (Core Nodes: {len(core_node_ids)})")
+        
+        content = {
+            "group_id": group_id,
+            "core_node_ids": core_node_ids,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Create and Route
+        msg = self.message_protocol.create_message(
+            sender_id=self.local_node_id,
+            recipient_id=group_id,
+            message_type=MessageType.GROUP_CONFIG,
+            content=content
+        )
+        
+        # Initiate parallel delivery (HTTP + Gossip)
+        return await self.route_message(msg, gossip_forward=True)
 
 
     async def send_signed_message(
@@ -418,9 +445,9 @@ class NetworkManager:
         # Handle routing: Detect if recipient is a group to trigger broadcast logic
         is_group_id = message.recipient_id in self.groups
         
-        # FIX: Also broadcast PROPOSAL and VOTE messages to group members
+        # FIX: Also broadcast PROPOSAL, VOTE, and GROUP_CONFIG messages to group members
         is_group_broadcast_type = message.message_type in (
-            MessageType.GROUP, MessageType.PROPOSAL, MessageType.VOTE
+            MessageType.GROUP, MessageType.PROPOSAL, MessageType.VOTE, MessageType.GROUP_CONFIG
         )
         
         if is_group_broadcast_type or is_group_id:
@@ -431,6 +458,12 @@ class NetworkManager:
             if self.local_node_id in self.nodes:
                 if group_id in self.nodes[self.local_node_id].group_ids:
                     if message.sender_id != self.local_node_id:
+                        # Before adding to inbox, check if it's a config update that impacts local view
+                        if message.message_type == MessageType.GROUP_CONFIG:
+                             from ..services.agent_service import agent_service
+                             if agent_service and agent_service.governance_manager:
+                                  agent_service.governance_manager.receive_p2p_event("group_config", message.content)
+                        
                         await self.nodes[self.local_node_id].receive_message(message)
                         local_delivered = True
             

@@ -539,6 +539,26 @@ class GovernanceManager:
                 self.save_state()
                 return True
                 
+            elif event_type == "group_config":
+                group_id = content.get("group_id")
+                core_node_ids = content.get("core_node_ids")
+                
+                if not group_id or core_node_ids is None:
+                    logger.warning("Governance P2P: Malformed group_config message.")
+                    return False
+                
+                # Update local group policy
+                group = None
+                from ..services.agent_service import agent_service
+                if agent_service and agent_service.p2p_service and agent_service.p2p_service.network_manager:
+                     group = agent_service.p2p_service.network_manager.get_group(group_id)
+                
+                if group:
+                    group.update_core_nodes(core_node_ids)
+                    logger.info(f"Governance P2P: Applied group configuration update for {group_id}")
+                    return True
+                return False
+                
             return False
         except Exception as e:
             logger.error(f"Governance P2P Error: {e}")

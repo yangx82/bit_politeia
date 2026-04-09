@@ -75,4 +75,37 @@ class GroupService:
             return True
         return False
 
+    async def update_core_nodes(self, group_id: str, node_ids: List[str]) -> bool:
+        """
+        Update group core nodes (leadership).
+        1. Sync with Bootstrap Server
+        2. Broadcast to P2P network
+        """
+        from .p2p_service import p2p_service
+        from ..p2p_community.bootstrap_client import bootstrap_client
+        
+        local_node = p2p_service.local_node
+        if not local_node:
+            return False
+            
+        logger.info(f"Initiating core node update for group {group_id} to {len(node_ids)} nodes.")
+        
+        # 1. Sync with Bootstrap (Source of Truth)
+        
+        success = await bootstrap_client.set_core_nodes(group_id, node_ids, local_node.node_id)
+        if not success:
+            logger.error("Failed to update core nodes on bootstrap server (Authorization or Network issue).")
+            # We skip broadcasting if bootstrap fails to prevent local/cloud divergence
+            return False
+            
+        # 2. Local Update
+        group = p2p_service.network_manager.get_group(group_id)
+        if group:
+            group.update_core_nodes(node_ids)
+            
+        # 3. P2P Broadcast
+        await p2p_service.network_manager.broadcast_group_config(group_id, node_ids)
+        
+        return True
+
 group_service = GroupService()
