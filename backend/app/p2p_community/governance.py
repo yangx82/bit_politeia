@@ -384,7 +384,14 @@ class GovernanceManager:
     def finalize_expired_elections(self):
         """Move elections from active to finished if they have passed their end_time."""
         now = datetime.now(timezone.utc)
-        expired_ids = [eid for eid, e in self.active_elections.items() if now > e.end_time]
+        expired_ids = []
+        for eid, e in self.active_elections.items():
+            end_time = e.end_time
+            # Ensure timezone-aware comparison
+            if end_time.tzinfo is None:
+                end_time = end_time.replace(tzinfo=timezone.utc)
+            if now > end_time:
+                expired_ids.append(eid)
         
         if not expired_ids:
             return
