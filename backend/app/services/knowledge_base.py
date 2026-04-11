@@ -225,6 +225,27 @@ class KnowledgeBase:
             except Exception as e:
                 logger.error(f"Failed to initialize SQLite FTS5: {e}")
                 self.fts_conn = None
+        
+        # Incremental Sync State
+        self.sync_state_path = "backend/data/knowledge_sync.json"
+        self.topic_sync_state = {}
+        self._load_sync_state()
+
+    def _load_sync_state(self):
+        if os.path.exists(self.sync_state_path):
+            try:
+                with open(self.sync_state_path, "r") as f:
+                    self.topic_sync_state = json.load(f)
+            except Exception:
+                self.topic_sync_state = {}
+
+    def _save_sync_state(self):
+        try:
+            with open(self.sync_state_path, "w") as f:
+                json.dump(self.topic_sync_state, f)
+        except Exception as e:
+            logger.error(f"Failed to save sync state: {e}")
+
 
     def _load_embedding_model(self, model_name: str):
         """
@@ -354,10 +375,54 @@ class KnowledgeBase:
         else:
             logger.info("No items to ingest.")
 
-
         # update FTS index (persistent)
         if self.fts_conn:
             self._update_fts_index(history)
+
+    def sync_all_topics(self):
+        """Scan data directory and index all .jsonl files incrementally."""
+        data_dir = "backend/data"
+        if not os.path.exists(data_dir):
+            return
+            
+        sync_count = 0
+        for filename in os.listdir(data_dir):
+            if filename.endswith(".jsonl"):
+                topic = filename.replace(".jsonl", "")
+                file_path = os.path.join(data_dir, filename)
+                
+                # Get last synced timestamp for this topic
+                last_sync = self.topic_sync_state.get(topic, "1970-01-01T00:00:00")
+                
+                new_messages = []
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if not line.strip(): continue
+                            msg = json.loads(line)
+                            ts = msg.get("timestamp", "")
+                            if ts > last_sync:
+                                # Ensure minimal fields for KnowledgeBase
+                                msg["topic"] = topic 
+                                if "sender" not in msg: msg["sender"] = "unknown"
+                                if "type" not in msg: msg["type"] = "entry"
+                                new_messages.append(msg)
+                                if ts > last_sync:
+                                    last_sync = ts
+                    
+                    if new_messages:
+                        logger.info(f"Syncing {len(new_messages)} new messages from topic: {topic}")
+                        self.ingest_history(new_messages)
+                        self.topic_sync_state[topic] = last_sync
+                        sync_count += len(new_messages)
+                        
+                except Exception as e:
+                    logger.error(f"Failed to sync topic {topic}: {e}")
+        
+        if sync_count > 0:
+            self._save_sync_state()
+            logger.info(f"Incremental sync complete. Total new items: {sync_count}")
+
 
     def ingest_insights(self, insights: List[str]):
         """Ingest consolidated insights into Vector Store."""

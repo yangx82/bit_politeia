@@ -1,8 +1,10 @@
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 import uuid
 import logging
+import json
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -13,13 +15,31 @@ class Transaction:
     payee_id: str
     amount: float
     details: str
+    category: str = "TRANSFER"  # e.g., TRANSFER, REWARD, PENALTY, GOVERNANCE
+    context_id: Optional[str] = None # e.g., proposal_id, election_id, or message_id
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     signature: str = "" # To be implemented
 
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        if isinstance(d["timestamp"], datetime):
+            d["timestamp"] = d["timestamp"].isoformat()
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Transaction':
+        if "timestamp" in data and isinstance(data["timestamp"], str):
+            data["timestamp"] = datetime.fromisoformat(data["timestamp"])
+        return cls(**data)
+
 class Ledger:
-    def __init__(self):
+    def __init__(self, storage_path: Optional[str] = None):
         self.balances: Dict[str, float] = {}
         self.transactions: List[Transaction] = []
+        self.storage_path = storage_path
+        
+        if self.storage_path:
+            self.load_state()
 
     def get_balance(self, node_id: str) -> float:
         return self.balances.get(node_id, 0.0)
@@ -28,6 +48,7 @@ class Ledger:
         if amount < 0:
             raise ValueError("Cannot credit negative amount")
         self.balances[node_id] = self.balances.get(node_id, 0.0) + amount
+        self.save_state()
 
     def verify_transaction(self, tx: Transaction) -> bool:
         if tx.amount <= 0:
@@ -50,17 +71,56 @@ class Ledger:
         self.balances[tx.payee_id] = self.balances.get(tx.payee_id, 0.0) + tx.amount
         
         self.transactions.append(tx)
-        logger.info(f"Transaction recorded: {tx.transaction_id} from {tx.payer_id} to {tx.payee_id} amount {tx.amount}")
+        logger.info(f"Transaction recorded: {tx.transaction_id} [{tx.category}] from {tx.payer_id[:8]} to {tx.payee_id[:8]} amount {tx.amount}")
+        
+        self.save_state()
         return True
     
-    def create_transaction(self, payer_id: str, payee_id: str, amount: float, details: str) -> Optional[Transaction]:
+    def create_transaction(self, 
+                           payer_id: str, 
+                           payee_id: str, 
+                           amount: float, 
+                           details: str, 
+                           category: str = "TRANSFER",
+                           context_id: Optional[str] = None) -> Optional[Transaction]:
         tx = Transaction(
             transaction_id=str(uuid.uuid4()),
             payer_id=payer_id,
             payee_id=payee_id,
             amount=amount,
-            details=details
+            details=details,
+            category=category,
+            context_id=context_id
         )
         if self.record_transaction(tx):
             return tx
         return None
+
+    def save_state(self):
+        if not self.storage_path:
+            return
+            
+        try:
+            os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
+            data = {
+                "balances": self.balances,
+                "transactions": [tx.to_dict() for tx in self.transactions]
+            }
+            with open(self.storage_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            # logger.debug(f"Ledger saved to {self.storage_path}")
+        except Exception as e:
+            logger.error(f"Failed to save ledger: {e}")
+
+    def load_state(self):
+        if not self.storage_path or not os.path.exists(self.storage_path):
+            return
+            
+        try:
+            with open(self.storage_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                self.balances = data.get("balances", {})
+                self.transactions = [Transaction.from_dict(tx) for tx in data.get("transactions", [])]
+                logger.info(f"Ledger loaded: {len(self.balances)} balances, {len(self.transactions)} transactions.")
+        except Exception as e:
+            logger.error(f"Failed to load ledger: {e}")

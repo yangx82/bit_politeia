@@ -149,6 +149,16 @@ class BootstrapClient:
             logger.error(f"Bootstrap registration error: {e}")
             return False
 
+    async def request_join(self, group_id: str, node_id: str, reason: str = "") -> bool:
+        """Submit a request to join a group."""
+        try:
+            payload = {"node_id": node_id, "reason": reason}
+            resp = await self.client.post(f"{self.server_url}/groups/{group_id}/request", json=payload)
+            return resp.status_code == 200 and resp.json().get("success", False)
+        except Exception as e:
+            logger.error(f"Error requesting join: {e}")
+            return False
+
     async def get_pending_joins(self, group_id: str) -> List[dict]:
         """Fetch pending join requests for a group."""
         try:

@@ -27,6 +27,8 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AI
 from ..agent.prompts import AGENT_SYSTEM_PROMPT, SELF_HEALING_SUBAGENT_PROMPT
 from ..agent.tools import AGENT_TOOLS, REPAIR_TOOLS
 from ..agent.tools_meta import create_tool_tool
+from ..agent.tools_task_ext import set_current_task_tool
+from ..agent.tools_search_ext import create_search_tools
 from .skill_manager import skill_manager
 from ..agent.context import ContextBuilder
 from ..p2p_community.governance import GovernanceManager, Vote, ElectionType
@@ -42,6 +44,7 @@ from .knowledge_base import knowledge_base
 from .consolidation import ConsolidationService
 from .task_manager import TaskManager, TaskStatus
 from .session_service import session_manager
+from .context_manager import BitPoliteiaContextManager
 
 class AgentService:
     def __init__(self):
@@ -94,7 +97,8 @@ class AgentService:
         self.governance_manager = None 
         self.reputation_manager = None
         self.archive_manager = None
-        self.ledger = Ledger() 
+        ledger_path = str(self.data_dir / "ledger.json")
+        self.ledger = Ledger(storage_path=ledger_path) 
         self.resident_memory = ResidentMemory() 
         self.reporter = None 
         self.research_field = "AI Governance"
@@ -107,6 +111,7 @@ class AgentService:
         self.name = "Anonym"
         self.personality = "Professional and helpful"
         self.agent_language = "中文"
+        self.context_manager = None
 
         # Hydrate History and System State from Disk
         self._hydrate_history()
@@ -122,6 +127,7 @@ class AgentService:
                 self.scheduler.add_job("app.services.agent_service:process_network_inbox_proxy", 'interval', seconds=30, misfire_grace_time=15, id="network_inbox_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:sync_network_proxy", 'interval', minutes=2, id="sync_network_job", replace_existing=True) 
                 self.scheduler.add_job("app.services.agent_service:run_consolidation_proxy", 'cron', hour=2, minute=0, id="nightly_consolidation_job", replace_existing=True)
+                self.scheduler.add_job("app.services.agent_service:run_archiving_proxy", 'cron', hour=2, minute=10, id="nightly_archiving_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:check_tasks_monitor_proxy", 'interval', minutes=5, next_run_time=datetime.now(timezone.utc), id="task_monitor_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:check_governance_proposals_proxy", 'interval', minutes=10, next_run_time=datetime.now(timezone.utc), id="governance_monitor_job", replace_existing=True)
                 self.scheduler.add_job("app.services.agent_service:retry_failed_messages_proxy", 'interval', minutes=10, next_run_time=datetime.now(timezone.utc), id="retry_messages_job", replace_existing=True)
@@ -136,6 +142,28 @@ class AgentService:
                     self.scheduler.add_job("app.services.agent_service:code_supervisor_proxy", 'interval', seconds=10, id="code_supervisor_job", replace_existing=True)
                     logger.info("Self-Healing: Code supervisor job registered (ENABLE_SELF_HEALING=true).")
                 self._jobs_added = True
+                
+                # --- STARTUP BACKFILL CHECK ---
+                if self.archive_manager:
+                    try:
+                        last_block = self.archive_manager.chain.latest_block
+                        last_ts = datetime.fromtimestamp(last_block.timestamp, tz=timezone.utc)
+                        now = datetime.now(timezone.utc)
+                        
+                        # We should have a block for each day 2:10 AM.
+                        # Calculate the most recent scheduled archiving time (2:10 AM)
+                        scheduled_time = now.replace(hour=2, minute=10, second=0, microsecond=0)
+                        if now < scheduled_time:
+                            # If it's earlier than 2:10 AM today, the target is yesterday's 2:10 AM
+                            scheduled_time -= timedelta(days=1)
+                        
+                        if last_ts < scheduled_time:
+                            logger.info(f"Startup: Missed archive detected (Last: {last_ts.isoformat()}, Target: {scheduled_time.isoformat()}). Backfilling...")
+                            # Trigger immediate archiving in background
+                            asyncio.create_task(self.run_archiving())
+                    except Exception as be:
+                        logger.error(f"Startup backfill check failed: {be}")
+
                 logger.info("Scheduler background jobs registered successfully.")
 
             if not self.scheduler.running:
@@ -408,8 +436,9 @@ class AgentService:
         asyncio.create_task(self.listen_to_bus())
         
         gov_path = str(self.data_dir / "governance_store.json")
+        reputation_path = str(self.data_dir / "reputation.json")
         self.governance_manager = GovernanceManager(node_id, storage_path=gov_path)
-        self.reputation_manager = ReputationManager(node_id)
+        self.reputation_manager = ReputationManager(node_id, storage_path=reputation_path)
         self.archive_manager = ArchiveManager(node_id)
         self.reporter = ResidentReporter(self)
         
@@ -459,8 +488,11 @@ class AgentService:
             
             skill_tools = skill_manager.get_active_tools()
             
-            # Combine standard tools with skill tools
-            all_tools = AGENT_TOOLS + skill_tools + [create_tool_tool]
+            # 3. Load Universal Search Tools (Hybrid)
+            search_tools = create_search_tools(self)
+            
+            # Combine standard tools with skill tools and search tools
+            all_tools = AGENT_TOOLS + skill_tools + search_tools + [create_tool_tool, set_current_task_tool]
             
             # Update system prompt with skill index (Progressive Disclosure) AND IDENTITY
             skill_index_prompt = skill_manager.get_skill_index()
@@ -479,6 +511,9 @@ class AgentService:
             self.tools_map = {t.name: t for t in all_tools}
             
             logger.info(f"Agent LLM Initialized. Active Tools: {list(self.tools_map.keys())}")
+            
+            # Initialize Context Manager after LLM is ready
+            self.context_manager = BitPoliteiaContextManager(self)
             
             # Hydrate system state (inbox, de-dup IDs) after potential initialization
             self._hydrate_system_state()
@@ -598,12 +633,12 @@ class AgentService:
         return None
 
     # Financial Methods
-    async def transfer_funds(self, payee_id: str, amount: float, details: str) -> str:
+    async def transfer_funds(self, payee_id: str, amount: float, details: str, category: str = "TRANSFER", context_id: str = None) -> str:
         if not self.ledger:
             return "Ledger not initialized"
             
         payer_id = self.governance_manager.node_id if self.governance_manager else "unknown"
-        tx = self.ledger.create_transaction(payer_id, payee_id, amount, details)
+        tx = self.ledger.create_transaction(payer_id, payee_id, amount, details, category=category, context_id=context_id)
         
         if tx:
             return f"Transfer successful. TX ID: {tx.transaction_id}"
@@ -2450,12 +2485,73 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         else:
              return "Ballot rejected (invalid, closed, or validation failed)"
 
-    async def get_election_info(self, election_id: str) -> dict:
-        if not self.governance_manager or election_id not in self.governance_manager.active_elections:
-             return {"error": "Election not found"}
+    async def get_election_info(self, election_id: str, include_content: bool = False) -> dict:
+        if not self.governance_manager:
+            return {"error": "Governance Manager not initialized"}
+            
+        # 1. Search Active Elections
+        election = self.governance_manager.active_elections.get(election_id)
         
-        election = self.governance_manager.active_elections[election_id]
-        return election.tally()
+        # 2. Search Finished Elections if not found in Active
+        if not election:
+            election = self.governance_manager.finished_elections.get(election_id)
+            
+        if not election:
+            return {"error": f"Election {election_id} not found in active or finished records."}
+        
+        result = election.tally()
+        
+        # 3. Optionally include full proposal content
+        if include_content and election.proposal_id:
+            proposal = self.governance_manager.proposals.get(election.proposal_id)
+            if proposal:
+                result["proposal_content"] = proposal.content
+                result["initiator_id"] = proposal.initiator_id
+                result["timestamp"] = proposal.timestamp.isoformat() if hasattr(proposal.timestamp, "isoformat") else proposal.timestamp
+                
+        return result
+        
+    async def get_governance_list(self, limit: int = 20, status: str = "all") -> str:
+        if not self.governance_manager:
+            return "Governance Manager not initialized"
+            
+        report = "--- Governance Transactions ---\n"
+        
+        # 1. Gather Items
+        items = []
+        if status.lower() in ["active", "all"]:
+            for eid, e in self.governance_manager.active_elections.items():
+                snippet = ""
+                if e.proposal_id:
+                    prop = self.governance_manager.proposals.get(e.proposal_id)
+                    if prop:
+                        snippet = f" | 内容: {prop.content[:40]}..."
+                items.append({"id": eid, "type": e.election_type.value, "status": "ACTIVE", "group": e.group_id, "snippet": snippet})
+        
+        if status.lower() in ["finished", "all"]:
+            for eid, e in self.governance_manager.finished_elections.items():
+                snippet = ""
+                if e.proposal_id:
+                    prop = self.governance_manager.proposals.get(e.proposal_id)
+                    if prop:
+                        snippet = f" | 内容: {prop.content[:40]}..."
+                items.append({"id": eid, "type": e.election_type.value, "status": "FINISHED", "group": e.group_id, "snippet": snippet})
+        
+        # Sort: ACTIVE first, then alphabetical ID
+        items.sort(key=lambda x: (0 if x["status"] == "ACTIVE" else 1, x["id"]))
+        
+        # 2. Format output
+        display_items = items[:limit]
+        if not display_items:
+            return "No governance transactions found."
+            
+        for item in display_items:
+            report += f"ID: {item['id']} | Type: {item['type']} | Status: {item['status']} | Group: {item['group'][:8]}...{item['snippet']}\n"
+            
+        if len(items) > limit:
+            report += f"\n... and {len(items) - limit} more legacy items."
+            
+        return report
 
     # Reputation Methods
     async def evaluate_peer(self, target_id: str, scores: dict) -> str:
@@ -2478,45 +2574,80 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
     # Archive Methods
     async def run_archiving(self) -> str:
         """
-        Trigger manual archiving of current state.
-        In a real system, this would clear pending buffers.
+        Trigger archiving of current state since the last block.
+        Only generates a block if there are new transactions, votes, or messages.
         """
         if not self.archive_manager:
             return "Archive Manager not initialized"
 
-        # Gather data (Mocking getting ALL history for now, normally just pending)
-        # Getting all votes from all elections
-        all_votes = []
-        if self.governance_manager:
-            for election in self.governance_manager.active_elections.values():
-                for vote in election.votes.values():
-                    # Handle both list of votes and single vote based on ballot structure
-                    # election.votes is a Dict[str, List[Vote]]
-                    for v in vote:
-                        if v.voter_id == self.governance_manager.node_id:
-                            all_votes.append(v)
+        # 1. Determine time window
+        last_block = self.archive_manager.chain.latest_block
+        last_ts = datetime.fromtimestamp(last_block.timestamp, tz=timezone.utc)
+        now = datetime.now(timezone.utc)
         
-        # Getting transactions (Ledger doesn't expose per-node tx list easily in this mock, using empty for now or implementing)
-        # Assuming Ledger has get_transactions_for_node
-        my_txs = []
-        # if self.ledger... 
-        
-        # Gathering P2P messages exclusively
-        p2p_messages = []
-        for msg in self.history:
-            # ONLY log messages that are part of an actual conversation (ignore system pings)
-            if msg.session_id != "resident" and msg.sender != "system":
-                p2p_messages.append(msg.dict())
+        logger.info(f"Archiving cycle: Checking for new activity since {last_ts.isoformat()}...")
 
-        # Create Block
+        # 2. Gather data since last_ts
+        
+        # 2.1 Gather Votes
+        new_votes = []
+        if self.governance_manager:
+            # Check both active and finished elections
+            all_election_sets = [
+                self.governance_manager.active_elections.values(),
+                self.governance_manager.finished_elections.values()
+            ]
+            for elections in all_election_sets:
+                for election in elections:
+                    for vote_list in election.votes.values():
+                        for v in vote_list:
+                            v_ts = v.timestamp
+                            if v_ts.tzinfo is None:
+                                v_ts = v_ts.replace(tzinfo=timezone.utc)
+                            
+                            if v_ts > last_ts:
+                                new_votes.append(v)
+        
+        # 2.2 Gather P2P Messages (Excluding resident and system)
+        new_messages = []
+        for msg in self.history:
+            msg_ts = msg.timestamp
+            if msg_ts.tzinfo is None:
+                msg_ts = msg_ts.replace(tzinfo=timezone.utc)
+                
+            if msg_ts > last_ts:
+                if msg.session_id != "resident" and msg.sender != "system":
+                    new_messages.append(msg.dict())
+
+        # 2.3 Gather Transactions since last block
+        new_txs = []
+        if self.ledger:
+            for tx in self.ledger.transactions:
+                tx_ts = tx.timestamp
+                if tx_ts.tzinfo is None:
+                    tx_ts = tx_ts.replace(tzinfo=timezone.utc)
+                if tx_ts > last_ts:
+                    new_txs.append(tx.to_dict())
+        
+        new_research = []
+        
+        # 3. Decision: Should we generate a block?
+        has_activity = len(new_votes) > 0 or len(new_messages) > 0 or len(new_txs) > 0 or len(new_research) > 0
+        
+        if not has_activity:
+            logger.info("No new activity detected since last block. Skipping archive generation.")
+            return "No activity to archive."
+
+        # 4. Create Block
+        logger.info(f"Generating archive block with {len(new_votes)} votes, {len(new_messages)} messages and {len(new_txs)} transactions...")
         block = self.archive_manager.create_daily_archive(
-            votes=[str(v) for v in all_votes],  # Serialize
-            txs=[str(t) for t in my_txs],
-            research=[],
-            messages=p2p_messages
+            votes=[str(v) for v in new_votes],
+            txs=[str(t) for t in new_txs],
+            research=[str(r) for r in new_research],
+            messages=new_messages
         )
         
-        return f"Archived Block #{block.index} Hash: {block.hash}"
+        return f"SUCCESS: Archived Block #{block.index} Hash: {block.hash[:16]}..."
 
     async def check_tasks_monitor(self):
         """Background job to check status of long-term tasks."""
@@ -3002,6 +3133,11 @@ async def run_consolidation_proxy():
     """Proxy for agent_service.consolidation_service.run_daily_consolidation"""
     if agent_service and agent_service.consolidation_service:
         await agent_service.consolidation_service.run_daily_consolidation()
+
+async def run_archiving_proxy():
+    """Proxy for agent_service.run_archiving"""
+    if agent_service:
+        await agent_service.run_archiving()
 
 async def check_tasks_monitor_proxy():
     """Proxy for agent_service.check_tasks_monitor"""

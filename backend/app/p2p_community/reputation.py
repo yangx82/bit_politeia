@@ -1,8 +1,10 @@
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 import uuid
 import logging
+import json
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -15,11 +17,26 @@ class Evaluation:
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     signature: str = "" # To be implemented
 
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        if isinstance(d["timestamp"], datetime):
+            d["timestamp"] = d["timestamp"].isoformat()
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Evaluation':
+        if "timestamp" in data and isinstance(data["timestamp"], str):
+            data["timestamp"] = datetime.fromisoformat(data["timestamp"])
+        return cls(**data)
+
 class ReputationManager:
-    def __init__(self, node_id: str):
+    def __init__(self, node_id: str, storage_path: Optional[str] = None):
         self.node_id = node_id
         self.evaluations: List[Evaluation] = [] # Local storage of evaluations received or made
-        # In a real P2P system, this would be a distributed store or DHT lookup
+        self.storage_path = storage_path
+        
+        if self.storage_path:
+            self.load_state()
 
     def submit_evaluation(self, rater_id: str, target_id: str, scores: Dict[str, int]) -> Optional[Evaluation]:
         # Validate scores (0-100)
@@ -36,6 +53,8 @@ class ReputationManager:
         )
         self.evaluations.append(eval_obj)
         logger.info(f"Evaluation submitted: {rater_id} -> {target_id}: {scores}")
+        
+        self.save_state()
         return eval_obj
 
     def get_reputation(self, target_id: str) -> Dict[str, float]:
@@ -78,3 +97,28 @@ class ReputationManager:
             scores.append((nid, self.get_overall_score(nid)))
         
         return sorted(scores, key=lambda x: x[1], reverse=True)
+
+    def save_state(self):
+        if not self.storage_path:
+            return
+            
+        try:
+            os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
+            data = [e.to_dict() for e in self.evaluations]
+            with open(self.storage_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            # logger.debug(f"Reputation saved to {self.storage_path}")
+        except Exception as e:
+            logger.error(f"Failed to save reputation: {e}")
+
+    def load_state(self):
+        if not self.storage_path or not os.path.exists(self.storage_path):
+            return
+            
+        try:
+            with open(self.storage_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                self.evaluations = [Evaluation.from_dict(e) for e in data]
+                logger.info(f"Reputation loaded: {len(self.evaluations)} evaluations.")
+        except Exception as e:
+            logger.error(f"Failed to load reputation: {e}")

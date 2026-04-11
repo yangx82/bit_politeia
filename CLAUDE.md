@@ -15,3 +15,7 @@ We use **Conventional Commits** for all changes.
 ### Summary of Change
 Provide a brief summary of WHAT was changed and WHY (if not obvious).
 Reference any relevant Task IDs or Requirements.
+ 
++## Environment and Tooling
++- **File Searching**: DO NOT use `grep` or `ripgrep`. Use PowerShell's `Select-String` exclusively for searching text within files on Windows.
++- **OS Portability**: For core logic (like the Universal Search tool), use Python-native libraries (sqlite3/chromadb) to ensure cross-platform compatibility without shell-specific dependencies.

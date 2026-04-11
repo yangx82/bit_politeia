@@ -264,6 +264,66 @@ async def update_group_core_nodes(group_id: str, node_ids: str) -> str:
         return f"Error: {str(e)}"
 
 @tool
+async def apply_to_join_group(group_id: str, reason: str = "") -> str:
+    """
+    Apply to join a specific group.
+    
+    Args:
+        group_id: The UUID of the group you wish to join.
+        reason: Optional reason or introduction for your application.
+    """
+    try:
+        from ..services.group_service import group_service
+        success = await group_service.apply_to_join(group_id, reason)
+        if success:
+            return f"Successfully submitted application to join group {group_id}. Waiting for approval from core nodes."
+        else:
+            return f"Failed to submit application. Group might be full or bootstrap server is unreachable."
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@tool
+async def list_pending_join_requests(group_id: str) -> str:
+    """
+    List nodes waiting to join the group. (Only works if you are a CORE NODE).
+    
+    Args:
+        group_id: The UUID of the group to check.
+    """
+    try:
+        from ..services.group_service import group_service
+        pending = await group_service.get_pending_requests(group_id)
+        if not pending:
+            return "No pending join requests for this group."
+            
+        output = f"Pending join requests for group {group_id}:\n"
+        for req in pending:
+            output += f"- Node: {req.get('node_id')} (Name: {req.get('name', 'N/A')})\n"
+            output += f"  Reason: {req.get('reason', 'None provided')}\n"
+        return output
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@tool
+async def approve_join_request(group_id: str, node_id: str) -> str:
+    """
+    Approve a pending join request. (Only works if you are a CORE NODE).
+    
+    Args:
+        group_id: The UUID of the group.
+        node_id: The Node ID (UUID) of the applicant to approve.
+    """
+    try:
+        from ..services.group_service import group_service
+        success = await group_service.approve_member(group_id, node_id)
+        if success:
+            return f"Successfully approved node {node_id} to join group {group_id}. Network propagation initiated."
+        else:
+            return f"Failed to approve member. Check if you are a core node and if the bootstrap server is online."
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@tool
 async def search_chat_history(peer_name_or_id: str, limit: int = 10) -> str:
     """
     Search and retrieve persistent chat history with a specific peer.
@@ -330,17 +390,19 @@ async def publish_research(group_id: str, content: str, pdf_hash: str) -> str:
         return f"Failed to publish research: {str(e)}"
 
 @tool
-async def pay_resident(payee_id: str, amount: float, details: str = "Payment") -> str:
+async def pay_resident(payee_id: str, amount: float, details: str = "Payment", category: str = "TRANSFER", context_id: str = None) -> str:
     """
     Transfer funds to another resident (node).
     Args:
         payee_id: The public key/Node ID of the recipient.
         amount: Amount to transfer (must be positive).
         details: Reason or description for the payment.
+        category: Optional category (e.g., TRANSFER, REWARD, GOVERNANCE).
+        context_id: Optional related ID (e.g., Proposal ID).
     """
     import app.services.agent_service 
     try:
-        result = await app.services.agent_service.agent_service.transfer_funds(payee_id, amount, details)
+        result = await app.services.agent_service.agent_service.transfer_funds(payee_id, amount, details, category=category, context_id=context_id)
         return result
     except Exception as e:
         return f"Payment failed: {str(e)}"
@@ -358,6 +420,41 @@ async def check_my_balance() -> str:
         return f"Current Balance: {balance}"
     except Exception as e:
         return f"Failed to check balance: {str(e)}"
+
+@tool
+async def list_transactions(limit: int = 20) -> str:
+    """
+    List recent ledger transactions (income/expense).
+    Args:
+        limit: Max number of recent transactions to return.
+    """
+    try:
+        import app.services.agent_service
+        ledger = app.services.agent_service.agent_service.ledger
+        if not ledger:
+            return "Ledger not available."
+            
+        recent = ledger.transactions[-limit:] if ledger.transactions else []
+        if not recent:
+            return "No transactions found in history."
+            
+        lines = ["--- 近期賬本交易紀錄 ---"]
+        for tx in reversed(recent):
+            symbol = "➕" if tx.amount > 0 else "➖" # Fixed logic needed if we want to show relative to self, but for now we show raw
+            # Actually since this is the local ledger, we show payer vs payee
+            me = app.services.agent_service.agent_service.governance_manager.node_id if app.services.agent_service.agent_service.governance_manager else "self"
+            
+            direction = "📤 支出" if tx.payer_id == me else "📥 收入"
+            target = tx.payee_id[:8] if tx.payer_id == me else tx.payer_id[:8]
+            
+            line = f"{tx.timestamp.strftime('%Y-%m-%d %H:%M:%S')} | {direction} | 金額: {tx.amount:.2f} | 對象: {target} | 類型: {tx.category} | 描述: {tx.details}"
+            if tx.context_id:
+                line += f" | 關聯: {tx.context_id[:8]}"
+            lines.append(line)
+            
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to list transactions: {str(e)}"
 
 @tool
 async def cast_ballot(election_id: str, ballot_json: str) -> str:
@@ -383,16 +480,31 @@ async def cast_ballot(election_id: str, ballot_json: str) -> str:
         return f"Failed to vote: {str(e)}"
 
 @tool
-async def get_election_status(election_id: str) -> str:
+async def get_election_status(election_id: str, include_content: bool = True) -> str:
     """
     Get the status and current tally of an election.
+    If include_content is True, it will also return the full text of the proposal.
     """
     try:
         import app.services.agent_service
-        status = await app.services.agent_service.agent_service.get_election_info(election_id)
+        status = await app.services.agent_service.agent_service.get_election_info(election_id, include_content=include_content)
         return str(status)
     except Exception as e:
         return f"Error getting status: {str(e)}"
+
+@tool
+async def list_elections(status: str = "all", limit: int = 20) -> str:
+    """
+    List all governance elections and proposal votes.
+    Status can be 'active', 'finished', or 'all'.
+    Returns a list of IDs and summaries.
+    """
+    try:
+        from app.services.agent_service import agent_service
+        result = await agent_service.get_governance_list(limit=limit, status=status)
+        return result
+    except Exception as e:
+        return f"Error listing elections: {str(e)}"
         
 @tool
 async def generate_archive() -> str:
@@ -608,8 +720,9 @@ async def append_daily_note(content: str) -> str:
 AGENT_TOOLS = [
     send_p2p_message, send_file, ask_resident, send_file_to_resident, get_my_status, read_community_rules, update_system_parameter, 
     search_chat_history, update_core_memory, append_daily_note,
-    propose_election, submit_proposal, publish_research, update_group_core_nodes, cast_ballot, get_election_status, 
-    pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, 
+    propose_election, submit_proposal, publish_research, update_group_core_nodes, cast_ballot, get_election_status, list_elections, 
+    apply_to_join_group, list_pending_join_requests, approve_join_request,
+    pay_resident, check_my_balance, list_transactions, generate_archive, get_latest_block, search_web, 
     read_skill_guide, execute_shell_command,
     list_dir, read_file, write_file, edit_file, copy_files, move_files,
     fetch_web_page, academic_research,

@@ -98,46 +98,65 @@ class SenseStage(PipelineStage):
             
         context.metadata["governance_context"] = gov_summary
 
-        # 3. Build Hybrid History Splice (Session Core + Global Periphery)
+        # 3. Build Optimized History & Mission Focus (ContextManager)
         effective_history = agent.history[:]
         while effective_history and effective_history[-1].content == agent_query:
             effective_history.pop()
             
-        # a) Extract Session-Specific History (The Core Dialogue)
+        # a) Prepare raw session history for the ContextManager
         session_history = [msg for msg in effective_history if msg.session_id == context.input_message.session_id]
-        recent_session_history = session_history[-8:] if session_history else []
         
-        lc_history = []
-        for msg in recent_session_history:
+        raw_lc_history = []
+        for msg in session_history:
             if msg.sender == "agent":
-                lc_history.append(AIMessage(content=msg.content))
+                raw_lc_history.append(AIMessage(content=msg.content))
             else:
-                lc_history.append(HumanMessage(content=f"[{msg.sender}] {msg.content}"))
+                raw_lc_history.append(HumanMessage(content=f"[{msg.sender}] {msg.content}"))
                 
-        context.session.history_slice = lc_history
+        # b) Call the Universal ContextManager
+        optimized_history, task_id, lineage_msg = await agent.context_manager.get_optimized_messages(
+            session_id=context.input_message.session_id,
+            query=agent_query,
+            lc_history=raw_lc_history
+        )
         
-        # b) Extract Global Recent Events (The Periphery / Awareness)
-        # Get the most recent events that DO NOT belong to this session
-        global_events_raw = [msg for msg in effective_history if msg.session_id != context.input_message.session_id][-5:]
+        # Store detected/explicit focus for other stages
+        context.metadata["active_task_id"] = task_id
+        context.session.history_slice = optimized_history
+        
+        # 4. Extract Global Peripheral Awareness (The environment)
+        # If focusing on a task, ignore raw chat noise from other sessions to save tokens.
+        # Otherwise, keep a small window of recent activity for situational awareness.
+        if task_id:
+            # FOCUS MODE: Filter for high-priority/system events only
+            interesting_types = ["system", "checkpoint", "transaction", "governance", "reputation", "event"]
+            global_events_raw = [
+                msg for msg in effective_history 
+                if msg.session_id != context.input_message.session_id 
+                and (msg.msg_type in interesting_types or msg.sender == "system")
+            ][-3:] # Only take 3 high-priority updates
+        else:
+            # GENERAL MODE: Keep recent activity slice
+            global_events_raw = [msg for msg in effective_history if msg.session_id != context.input_message.session_id][-5:]
+            
         recent_global_events = ""
         if global_events_raw:
             events_formatted = []
             for msg in global_events_raw:
                 sender_label = "Me" if msg.sender == "agent" else msg.sender
-                timestamp_str = msg.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-                # Format: [2024-xx-xx] Me in chat_xyz: Hello
-                events_formatted.append(f"[{timestamp_str}] {sender_label} in {msg.session_id}: {msg.content}")
+                timestamp_str = msg.timestamp.strftime("%H:%M") # Shorter timestamp
+                events_formatted.append(f"[{timestamp_str}] {sender_label} ({msg.msg_type}): {msg.content}")
             recent_global_events = "\n".join(events_formatted)
 
-        # Build initial messages for Plan stage
+        # 5. Build Final Prompt
         source_label = f"P2P Peer (Node ID: {context.input_message.sender_id})" if context.input_message.channel == "p2p" else "Resident (Human User)"
-        
-        # LAYERED & HIERARCHICAL MEMORY INJECTION: Get Semantic + Social + Working context
-        # sender_id is the peer we are talking to
         peer_id = context.input_message.sender_id
-        memory_context = agent.resident_memory.get_full_context_text(peer_id=peer_id)
+        
+        # Combine base memory with mission-specific lineage
+        base_memory = agent.resident_memory.get_full_context_text(peer_id=peer_id)
+        full_memory_context = f"{lineage_msg}\n{base_memory}" if lineage_msg else base_memory
 
-        # Resolve Chat Name if it's a group
+        # Resolve Chat Name
         session_id = context.input_message.session_id
         chat_name = "Unknown"
         network_status = p2p_service.get_network_status()
@@ -146,12 +165,12 @@ class SenseStage(PipelineStage):
                 chat_name = network_status["groups"][session_id].get("name", "Unknown Group")
 
         context.metadata["messages"] = agent.context_builder.build_messages(
-            history=lc_history, 
+            history=optimized_history, 
             current_message=agent_query,
             rag_context=rag_context,
             network_identity=network_identity,
             recent_global_events=recent_global_events,
-            resident_memory_context=memory_context,
+            resident_memory_context=full_memory_context,
             source=source_label,
             name=agent.name,
             personality=agent.personality,
