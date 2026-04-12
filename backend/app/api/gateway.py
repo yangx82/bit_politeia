@@ -1,59 +1,56 @@
-
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, status
-from typing import Dict, Any
-import logging
 import asyncio
 import json
+import logging
 import os
 
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
+
+from ..bus.events import InboundMessage
 from ..bus.queue import message_bus
-from ..bus.events import InboundMessage, OutboundMessage
+from ..schemas.node_protocol import GatewayEvent, MessageType
 from ..services.agent_service import agent_service
-from ..schemas.node_protocol import (
-    BaseNodeMessage, MessageType, Handshake, GatewayEvent
-)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
 @router.websocket("/ws/gateway")
-async def websocket_gateway(
-    websocket: WebSocket,
-    token: str = Query(None)
-):
+async def websocket_gateway(websocket: WebSocket, token: str = Query(None)):
     """
     Neural Gateway WebSocket Endpoint.
     Connects external nodes/interfaces to the Agent's MessageBus.
     """
     try:
         logger.info(f"Gateway: Connection attempt from {websocket.client}")
-        
+
         # 1. Authentication Logic
         # Priority:
         # a) If GATEWAY_TOKEN is set in env, enforce it.
         # b) Otherwise, allow if client is '127.0.0.1' or 'localhost'.
         # c) Otherwise, check against agent_service.api_key (backward compatibility/fallback).
-        
+
         gateway_token = os.getenv("GATEWAY_TOKEN")
         client_host = websocket.client.host if websocket.client else None
-        
+
         is_local = client_host in ["127.0.0.1", "localhost", "::1"]
-        
+
         authenticated = False
-        
+
         if gateway_token:
             if token == gateway_token:
                 authenticated = True
             elif is_local:
                 # If local but wrong token provided? In dev we usually allow it if it's localhost
                 # but if a token is STRICTLY set, we should probably favor security.
-                # However, many local tools don't pass the token. 
+                # However, many local tools don't pass the token.
                 # Let's allow local if it's localhost even if token is wrong, but log it.
-                logger.info(f"Gateway: Local connection from {client_host} allowed with MISMATCHED token because it is local.")
+                logger.info(
+                    f"Gateway: Local connection from {client_host} allowed with MISMATCHED token because it is local."
+                )
                 authenticated = True
             else:
-                logger.warning(f"Gateway: Unauthorized attempt with invalid token.")
+                logger.warning("Gateway: Unauthorized attempt with invalid token.")
         elif is_local:
             # Allow local connections without token if no gateway token is strictly set
             authenticated = True
@@ -62,15 +59,17 @@ async def websocket_gateway(
             # Fallback check against API Key (legacy or specific setup)
             current_key = None
             try:
-                if hasattr(agent_service, 'api_key'):
+                if hasattr(agent_service, "api_key"):
                     current_key = agent_service.api_key
             except Exception as e:
                 logger.warning(f"Gateway: Failed to access agent config: {e}")
-            
+
             if current_key and token == current_key:
                 authenticated = True
             else:
-                logger.warning(f"Gateway: Access denied for {client_host}. Invalid or missing token.")
+                logger.warning(
+                    f"Gateway: Access denied for {client_host}. Invalid or missing token."
+                )
 
         if not authenticated:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
@@ -87,7 +86,7 @@ async def websocket_gateway(
     # 3. Bi-directional Loops
     # Task A: Forward OutboundBus -> WebSocket
     sender_task = asyncio.create_task(stream_outbound_to_socket(websocket))
-    
+
     try:
         # Task B: Forward WebSocket -> InboundBus
         while True:
@@ -95,19 +94,19 @@ async def websocket_gateway(
             try:
                 # Parse as generic JSON first
                 payload = json.loads(data)
-                
+
                 # Basic validation
                 if "type" not in payload:
                     logger.warning("Gateway: Received message without type")
                     continue
-                    
+
                 msg_type = payload["type"]
-                
+
                 # Route based on type
                 if msg_type == MessageType.HANDSHAKE:
                     logger.info(f"Gateway: handshake from {payload.get('node_id')}")
                     # TODO: Register node capabilities
-                    
+
                 elif msg_type == MessageType.EVENT:
                     # Convert to InboundMessage for the Agent
                     # We assume the external node acts as a "channel"
@@ -116,19 +115,19 @@ async def websocket_gateway(
                         sender_id=payload.get("id", "anonymous_node"),
                         session_id="global",  # Simplified for now
                         content=str(payload.get("payload", "")),
-                        metadata=payload
+                        metadata=payload,
                     )
                     await message_bus.publish_inbound(inbound)
-                    
+
                 elif msg_type == MessageType.PING:
                     await websocket.send_json({"type": MessageType.PONG, "timestamp": 0})
-                    
+
                 else:
                     logger.debug(f"Gateway: Received unhandled message type {msg_type}")
 
             except json.JSONDecodeError:
                 logger.warning("Gateway: Received invalid JSON")
-                
+
     except WebSocketDisconnect:
         logger.info("Gateway: WebSocket disconnected")
     except Exception as e:
@@ -148,37 +147,33 @@ async def stream_outbound_to_socket(websocket: WebSocket):
     # So we subscribe to specific channels or a wildcard.
     # For now, let's stream all messages intended for 'gateway' channel OR debug events.
     # OR, we might want to stream *everything* if this is a "Control Plane".
-    
+
     # Since existing queue implementation is channel-based:
     # We will subscribe this specific socket to a 'gateway' channel.
     # If the Agent wants to speak to the UI/Node, it sends to 'gateway'.
-    
+
     # Limitation: This doesn't tap into 'telegram' messages unless we change the Bus to fan-out all messages.
     # For now, we only stream messages explicitly sent to 'gateway' or 'debug'.
-    
+
     # Using the new Async Generator!
     channel_name = "gateway"
-    
+
     async for msg in message_bus.subscribe_async_generator(channel_name):
         try:
-                # Convert OutboundMessage to NodeProtocol Event
-                # Map internal msg.type directly to event_type
-                # msg.type defaults to 'message', but can be 'thought', 'tool_call', etc.
-                
-                event = GatewayEvent(
-                    id="srv_" + str(msg.session_id), # Ensure string
-                    timestamp=0, # TODO: use msg timestamp if available
-                    event_type=f"agent_{msg.type}", # e.g. agent_message, agent_thought
-                    payload={
-                        "content": msg.content,
-                        "media": msg.media,
-                        "metadata": msg.metadata
-                    }
-                )
-                # Send as JSON
-                logger.info(f"Gateway: Sending event {event.event_type} to client")
-                await websocket.send_text(event.model_dump_json())
-            
+            # Convert OutboundMessage to NodeProtocol Event
+            # Map internal msg.type directly to event_type
+            # msg.type defaults to 'message', but can be 'thought', 'tool_call', etc.
+
+            event = GatewayEvent(
+                id="srv_" + str(msg.session_id),  # Ensure string
+                timestamp=0,  # TODO: use msg timestamp if available
+                event_type=f"agent_{msg.type}",  # e.g. agent_message, agent_thought
+                payload={"content": msg.content, "media": msg.media, "metadata": msg.metadata},
+            )
+            # Send as JSON
+            logger.info(f"Gateway: Sending event {event.event_type} to client")
+            await websocket.send_text(event.model_dump_json())
+
         except Exception as e:
             logger.error(f"Gateway Sender Error: {e}")
             break

@@ -1,26 +1,26 @@
 import asyncio
-from fastapi import FastAPI
-import uvicorn
-import threading
-import httpx
 import os
+import threading
+
+import httpx
+import uvicorn
+from fastapi import FastAPI
 
 app = FastAPI()
+
 
 @app.on_event("startup")
 async def startup_event():
     print("Test App Startup complete.")
 
+
 @app.get("/")
 def read_root():
     return {"status": "ok"}
 
+
 def run_server(port, ssl=False):
-    kwargs = {
-        "host": "0.0.0.0",
-        "port": port,
-        "log_level": "info"
-    }
+    kwargs = {"host": "0.0.0.0", "port": port, "log_level": "info"}
     if ssl:
         backend_dir = os.path.dirname(os.path.abspath(__file__))
         backend_dir = os.path.dirname(backend_dir)
@@ -33,11 +33,12 @@ def run_server(port, ssl=False):
         else:
             print("SSL keys not found, falling back to HTTP...")
             ssl = False
-    
+
     if not ssl:
         print(f"Starting HTTP server on port {port}...")
-        
+
     uvicorn.run(app, **kwargs)
+
 
 async def test_connection(port, ssl=False):
     print(f"Waiting 3 seconds for server on port {port} to start...")
@@ -53,12 +54,13 @@ async def test_connection(port, ssl=False):
     except Exception as e:
         print(f"FAILED: Connection to port {port} failed: {e}")
 
+
 if __name__ == "__main__":
     print("--- Test 1: HTTP Traffic ---")
     t1 = threading.Thread(target=run_server, args=(8090, False), daemon=True)
     t1.start()
     asyncio.run(test_connection(8090, False))
-    
+
     print("\n--- Test 2: HTTPS Traffic ---")
     t2 = threading.Thread(target=run_server, args=(8091, True), daemon=True)
     t2.start()

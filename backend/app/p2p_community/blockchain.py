@@ -1,44 +1,48 @@
 import hashlib
 import json
 import logging
-import os
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-from datetime import datetime, timezone
-from dataclasses import dataclass, field, asdict
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class Block:
     index: int
     prev_hash: str
     timestamp: float
-    data: Dict[str, Any] # Contains summary, hashes of activities
+    data: dict[str, Any]  # Contains summary, hashes of activities
     signature: str = ""
     hash: str = ""
 
     def calculate_hash(self) -> str:
-        block_string = json.dumps({
-            "index": self.index,
-            "prev_hash": self.prev_hash,
-            "timestamp": self.timestamp,
-            "data": self.data
-        }, sort_keys=True)
+        block_string = json.dumps(
+            {
+                "index": self.index,
+                "prev_hash": self.prev_hash,
+                "timestamp": self.timestamp,
+                "data": self.data,
+            },
+            sort_keys=True,
+        )
         return hashlib.sha256(block_string.encode()).hexdigest()
+
 
 class ArchiveChain:
     def __init__(self, owner_id: str):
         self.owner_id = owner_id
-        self.chain: List[Block] = []
-        
+        self.chain: list[Block] = []
+
         # Paths
         base_dir = Path(__file__).parent.parent.parent
         self.data_dir = base_dir / "data"
         self.db_path = self.data_dir / "blockchain.json"
-        
+
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Load or create Genesis
         if not self._load_from_disk():
             self._create_genesis_block()
@@ -47,8 +51,8 @@ class ArchiveChain:
         genesis = Block(
             index=0,
             prev_hash="0",
-            timestamp=datetime.now(timezone.utc).timestamp(),
-            data={"note": "Genesis Block"}
+            timestamp=datetime.now(UTC).timestamp(),
+            data={"note": "Genesis Block"},
         )
         genesis.hash = genesis.calculate_hash()
         self.chain.append(genesis)
@@ -59,9 +63,9 @@ class ArchiveChain:
         if not self.db_path.exists():
             return False
         try:
-            with open(self.db_path, "r", encoding="utf-8") as f:
+            with open(self.db_path, encoding="utf-8") as f:
                 data = json.load(f)
-                
+
             self.chain = []
             for item in data.get("chain", []):
                 block = Block(
@@ -70,10 +74,10 @@ class ArchiveChain:
                     timestamp=item["timestamp"],
                     data=item["data"],
                     signature=item.get("signature", ""),
-                    hash=item["hash"]
+                    hash=item["hash"],
                 )
                 self.chain.append(block)
-                
+
             if len(self.chain) > 0:
                 logger.info(f"ArchiveChain loaded from disk. {len(self.chain)} blocks.")
                 return True
@@ -84,12 +88,9 @@ class ArchiveChain:
 
     def _save_to_disk(self):
         try:
-            temp_path = self.db_path.with_suffix('.tmp')
+            temp_path = self.db_path.with_suffix(".tmp")
             with open(temp_path, "w", encoding="utf-8") as f:
-                payload = {
-                    "owner_id": self.owner_id,
-                    "chain": self.get_chain_dict()
-                }
+                payload = {"owner_id": self.owner_id, "chain": self.get_chain_dict()}
                 json.dump(payload, f, indent=2)
             temp_path.replace(self.db_path)
         except Exception as e:
@@ -99,14 +100,14 @@ class ArchiveChain:
     def latest_block(self) -> Block:
         return self.chain[-1]
 
-    def add_block(self, data: Dict[str, Any], signature: str = "") -> Block:
+    def add_block(self, data: dict[str, Any], signature: str = "") -> Block:
         prev_block = self.latest_block
         new_block = Block(
             index=prev_block.index + 1,
             prev_hash=prev_block.hash,
-            timestamp=datetime.now(timezone.utc).timestamp(),
+            timestamp=datetime.now(UTC).timestamp(),
             data=data,
-            signature=signature
+            signature=signature,
         )
         new_block.hash = new_block.calculate_hash()
         self.chain.append(new_block)
@@ -114,29 +115,32 @@ class ArchiveChain:
         self._save_to_disk()
         return new_block
 
-    def get_chain_dict(self) -> List[Dict]:
+    def get_chain_dict(self) -> list[dict]:
         return [asdict(b) for b in self.chain]
 
     def validate_chain(self) -> bool:
         for i in range(1, len(self.chain)):
             current = self.chain[i]
-            prev = self.chain[i-1]
+            prev = self.chain[i - 1]
             if current.hash != current.calculate_hash():
                 return False
             if current.prev_hash != prev.hash:
                 return False
         return True
 
+
 class ArchiveManager:
     def __init__(self, node_id: str):
         self.node_id = node_id
         self.chain = ArchiveChain(node_id)
-        
-    def snapshot_local_state(self, 
-                             votes: List[Dict], 
-                             transactions: List[Dict], 
-                             research: List[Dict],
-                             messages: List[Dict]) -> Dict[str, Any]:
+
+    def snapshot_local_state(
+        self,
+        votes: list[dict],
+        transactions: list[dict],
+        research: list[dict],
+        messages: list[dict],
+    ) -> dict[str, Any]:
         """
         Snapshot local state for archiving.
         Generates hashes of activity lists rather than storing full raw data in block (for efficiency).
@@ -146,7 +150,7 @@ class ArchiveManager:
         tx_hash = self._hash_list(transactions)
         research_hash = self._hash_list(research)
         messages_hash = self._hash_list(messages)
-        
+
         # Summary report
         summary = {
             "node_id": self.node_id,
@@ -158,23 +162,25 @@ class ArchiveManager:
             "tx_hash": tx_hash,
             "research_hash": research_hash,
             "messages_hash": messages_hash,
-            "period_end": datetime.now(timezone.utc).isoformat()
+            "period_end": datetime.now(UTC).isoformat(),
         }
         return summary
 
-    def _hash_list(self, items: List[Any]) -> str:
+    def _hash_list(self, items: list[Any]) -> str:
         if not items:
             return ""
         s = json.dumps(items, sort_keys=True, default=str)
         return hashlib.sha256(s.encode()).hexdigest()
 
-    def create_daily_archive(self, votes: List, txs: List, research: List, messages: List = None, signature: str = "") -> Block:
+    def create_daily_archive(
+        self, votes: list, txs: list, research: list, messages: list = None, signature: str = ""
+    ) -> Block:
         if messages is None:
             messages = []
         data = self.snapshot_local_state(votes, txs, research, messages)
         return self.chain.add_block(data, signature)
 
-    def generate_report(self) -> Dict[str, Any]:
+    def generate_report(self) -> dict[str, Any]:
         """
         Generate a report for upstream reporting.
         Includes latest block hash and summary.
@@ -185,5 +191,5 @@ class ArchiveManager:
             "block_index": latest.index,
             "block_hash": latest.hash,
             "summary": latest.data,
-            "timestamp": latest.timestamp
+            "timestamp": latest.timestamp,
         }

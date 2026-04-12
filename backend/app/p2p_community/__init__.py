@@ -1,2 +1,2 @@
-from .models import Node, Group
+from .models import Group, Node
 from .network_manager import NetworkManager

@@ -1,10 +1,11 @@
-import os
-from fastapi import FastAPI
-import uvicorn
 import sqlite3
 import threading
 
+import uvicorn
+from fastapi import FastAPI
+
 app = FastAPI()
+
 
 @app.on_event("startup")
 def startup_event():
@@ -19,9 +20,11 @@ def startup_event():
     except Exception as e:
         print(f"SQLite Connection Failed: {e}")
 
+
 @app.get("/")
 def read_root():
     return {"Hello": "World"}
+
 
 if __name__ == "__main__":
     print(f"Starting minimal Uvicorn server on thread {threading.get_ident()}...")

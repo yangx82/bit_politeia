@@ -1,17 +1,18 @@
-
-import os
 import ast
-import logging
 import importlib
 import importlib.util
-import sys
+import logging
+import os
 import subprocess
-from typing import List, Dict, Callable, Any, Optional
+import sys
+from typing import Any
+
 from langchain_core.tools import Tool
 
 logger = logging.getLogger(__name__)
 
 CUSTOM_TOOLS_DIR = "backend/app/agent/custom_tools"
+
 
 class SkillManager:
     """
@@ -25,10 +26,10 @@ class SkillManager:
         self.tools_dir = tools_dir
         if not os.path.exists(self.tools_dir):
             os.makedirs(self.tools_dir)
-        
+
         # In-memory cache of loaded tools
         # Map: tool_name -> Tool object
-        self.loaded_tools: Dict[str, Tool] = {}
+        self.loaded_tools: dict[str, Tool] = {}
 
     def validate_code(self, code: str) -> bool:
         """
@@ -49,10 +50,11 @@ class SkillManager:
                     names = [n.name for n in node.names]
                 else:
                     names = [node.module] if node.module else []
-                
+
                 for name in names:
-                    if not name: continue
-                    root_pkg = name.split('.')[0]
+                    if not name:
+                        continue
+                    root_pkg = name.split(".")[0]
                     if root_pkg in ["os", "subprocess", "sys", "shutil", "builtins"]:
                         logger.warning(f"Rejected unsafe import: {name}")
                         return False
@@ -67,7 +69,7 @@ class SkillManager:
                     if node.func.id in ["exec", "eval", "globals", "locals"]:
                         logger.warning(f"Rejected unsafe function call: {node.func.id}")
                         return False
-        
+
         return True
 
     def _install_dependencies(self, code: str):
@@ -77,29 +79,29 @@ class SkillManager:
         try:
             tree = ast.parse(code)
         except SyntaxError:
-            return # Should be caught by validate_code anyway, but safe to ignore here
+            return  # Should be caught by validate_code anyway, but safe to ignore here
 
         imports = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for n in node.names:
-                    imports.add(n.name.split('.')[0])
+                    imports.add(n.name.split(".")[0])
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
-                    imports.add(node.module.split('.')[0])
+                    imports.add(node.module.split(".")[0])
 
         # Whitelist of standard libs to skip (incomplete but helpful)
         sys_modules = sys.builtin_module_names
         # We can also check if importlib can find it
-        
+
         for pkg in imports:
             if pkg in sys_modules:
                 continue
-            
+
             # Check if installed
             if importlib.util.find_spec(pkg):
                 continue
-                
+
             # Attempt install
             logger.info(f"Auto-installing missing dependency: {pkg}")
             try:
@@ -121,24 +123,24 @@ class SkillManager:
         self._install_dependencies(code)
 
         # Sanitize filename
-        safe_name = "".join([c for c in name if c.isalnum() or c == '_'])
+        safe_name = "".join([c for c in name if c.isalnum() or c == "_"])
         if not safe_name:
             raise ValueError("Invalid tool name.")
 
         file_path = os.path.join(self.tools_dir, f"{safe_name}.py")
-        
+
         # Write to file
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(code)
-        
+
         logger.info(f"Skill '{safe_name}' written to {file_path}")
-        
+
         # Attempt to load immediately to verify syntax and structure
         try:
             self.load_single_tool(safe_name)
             return f"Tool '{safe_name}' created and loaded successfully."
         except Exception as e:
-            # If load fails, delete the file to keep state clean? 
+            # If load fails, delete the file to keep state clean?
             # Or keep it for debugging? Let's keep it but rename to .failed maybe?
             # For now just raise.
             logger.error(f"Failed to load new skill '{safe_name}': {e}")
@@ -147,9 +149,9 @@ class SkillManager:
     def load_single_tool(self, module_name: str):
         """
         Dynamically imports a module and looks for a 'tool' object or a function decorated as tool.
-        Expectation: The file must define a LangChain Tool object named `tool` 
+        Expectation: The file must define a LangChain Tool object named `tool`
         OR a function that we can wrap.
-        
+
         Convention: The file should export a variable named `tool` which is an instance of BaseTool/Tool,
         OR a function named `execute`.
         """
@@ -161,7 +163,7 @@ class SkillManager:
         spec = importlib.util.spec_from_file_location(module_name, file_path)
         if spec is None or spec.loader is None:
             raise ImportError(f"Could not load spec for {module_name}")
-        
+
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
@@ -175,19 +177,18 @@ class SkillManager:
         if hasattr(module, "execute") and callable(module.execute):
             func_name = getattr(module, "name", module_name)
             desc = getattr(module, "description", "Custom tool")
-            
+
             # Wrap as Tool
             from langchain_core.tools import Tool
-            t = Tool(
-                name=func_name,
-                func=module.execute,
-                description=desc
-            )
+
+            t = Tool(name=func_name, func=module.execute, description=desc)
             self.loaded_tools[module_name] = t
             logger.info(f"Loaded function-tool '{func_name}' from {module_name}.py")
             return
 
-        raise ValueError(f"Module {module_name}.py must define 'tool' (LangChain Tool) or 'execute' function.")
+        raise ValueError(
+            f"Module {module_name}.py must define 'tool' (LangChain Tool) or 'execute' function."
+        )
 
     def load_skills(self):
         """Scans the directory and loads all valid tools."""
@@ -202,18 +203,18 @@ class SkillManager:
                 except Exception as e:
                     logger.warning(f"Skipping skill {filename}: {e}")
 
-
-    def get_active_tools(self) -> List[Tool]:
+    def get_active_tools(self) -> list[Tool]:
         return list(self.loaded_tools.values())
 
     # --- Claude Style Skills Support ---
-    
-    def _parse_skill_md(self, file_path: str) -> Dict[str, Any]:
+
+    def _parse_skill_md(self, file_path: str) -> dict[str, Any]:
         """Parse SKILL.md frontmatter and content."""
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             content = f.read()
 
         import yaml
+
         if content.startswith("---"):
             try:
                 parts = content.split("---", 2)
@@ -224,15 +225,15 @@ class SkillManager:
                     return {
                         "name": metadata.get("name", "unknown"),
                         "description": metadata.get("description", ""),
-                        "instruction": body.strip()
+                        "instruction": body.strip(),
                     }
             except Exception as e:
                 logger.warning(f"Error parsing yaml frontmatter in {file_path}: {e}")
-        
+
         return {
             "name": os.path.basename(os.path.dirname(file_path)),
             "description": "Custom skill",
-            "instruction": content
+            "instruction": content,
         }
 
     def load_claude_skills(self, skills_root_dir: str):
@@ -252,7 +253,7 @@ class SkillManager:
                     try:
                         skill_info = self._parse_skill_md(skill_md_path)
                         skill_name = skill_info["name"]
-                        
+
                         # Load scripts as tools
                         scripts_dir = os.path.join(skill_path, "scripts")
                         if os.path.exists(scripts_dir):
@@ -260,47 +261,48 @@ class SkillManager:
                                 if script.endswith(".py"):
                                     tool_name = f"{skill_name}_{script.replace('.py', '')}"
                                     script_full_path = os.path.join(scripts_dir, script)
-                                    
+
                                     # Create Closure for Tool execution
                                     def make_run_func(s_path):
                                         def run_script(arguments: str = "") -> str:
                                             try:
                                                 cmd = [sys.executable, s_path, arguments]
                                                 result = subprocess.run(
-                                                    cmd, 
-                                                    capture_output=True, 
-                                                    text=True, 
+                                                    cmd,
+                                                    capture_output=True,
+                                                    text=True,
                                                     timeout=60,
-                                                    encoding='utf-8',
-                                                    errors='replace'
+                                                    encoding="utf-8",
+                                                    errors="replace",
                                                 )
                                                 if result.returncode != 0:
                                                     return f"Script failed (Exit {result.returncode}):\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
                                                 return result.stdout
                                             except Exception as e:
-                                                return f"Error executing script: {str(e)}"
+                                                return f"Error executing script: {e!s}"
+
                                         return run_script
 
                                     # Create Tool
                                     t = StructuredTool.from_function(
                                         func=make_run_func(script_full_path),
                                         name=tool_name,
-                                        description=f"Execute {script} from {skill_name}. {skill_info['description']}"
+                                        description=f"Execute {script} from {skill_name}. {skill_info['description']}",
                                     )
                                     self.loaded_tools[tool_name] = t
                                     logger.info(f"Loaded Claude-style tool '{tool_name}'")
-                        
+
                         # Store Metadata if needed (e.g. for instructions)
                         # We might need a separate registry for instructions if we want to support read_skill_guide
-                        if not hasattr(self, 'skill_descriptions'):
-                             self.skill_descriptions = {}
-                        self.skill_descriptions[skill_name] = skill_info['instruction']
-                        
+                        if not hasattr(self, "skill_descriptions"):
+                            self.skill_descriptions = {}
+                        self.skill_descriptions[skill_name] = skill_info["instruction"]
+
                     except Exception as e:
                         logger.error(f"Failed to load Claude skill at {skill_path}: {e}")
 
     def get_skill_instruction(self, skill_name: str) -> str:
-        if hasattr(self, 'skill_descriptions'):
+        if hasattr(self, "skill_descriptions"):
             return self.skill_descriptions.get(skill_name, "No instruction guide found.")
         return "No instruction guide found."
 
@@ -308,12 +310,13 @@ class SkillManager:
         """Returns a string description of available skills for the system prompt."""
         if not self.loaded_tools:
             return ""
-        
+
         index = "\n\n## Custom Skills (Dynamically Loaded)\n"
         for name, tool in self.loaded_tools.items():
             index += f"- {name}: {tool.description}\n"
         return index
         return index
+
 
 # Global instance
 skill_manager = SkillManager()

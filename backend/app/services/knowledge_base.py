@@ -1,14 +1,13 @@
-import logging
 import json
+import logging
 import os
-import time
-from typing import List, Dict, Any
-from datetime import datetime, timezone, timedelta
-import httpx
-import xml.etree.ElementTree as ET
-import re
-import urllib.parse
 import ssl
+import time
+import urllib.parse
+import xml.etree.ElementTree as ET
+from datetime import UTC, datetime
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -18,28 +17,30 @@ class WebResearcher:
     Simulates a web search tool.
     In production, this would use Tavily, Bing, or Google Search API.
     """
-    def search(self, query: str) -> List[Dict[str, str]]:
+
+    def search(self, query: str) -> list[dict[str, str]]:
         # Handle user's request for space/AND support
         # If no explicit operators (AND, OR, ANDNOT) are found, assume intersection (AND)
         if not any(op in query for op in ["AND", "OR", "ANDNOT"]):
-             # Replace spaces with ' AND ' to ensure all terms must be present
-             # Collapsing multiple spaces first
-             import re
-             formatted_query = re.sub(r'\s+', ' AND ', query.strip())
-             # Wrap in parens just in case
-             formatted_query = f"({formatted_query})"
+            # Replace spaces with ' AND ' to ensure all terms must be present
+            # Collapsing multiple spaces first
+            import re
+
+            formatted_query = re.sub(r"\s+", " AND ", query.strip())
+            # Wrap in parens just in case
+            formatted_query = f"({formatted_query})"
         else:
-             formatted_query = f"({query})"
-             
+            formatted_query = f"({query})"
+
         encoded_query = urllib.parse.quote(formatted_query)
         logger.info(f"Searching web for: {query} (Encoded: {encoded_query})")
         print(f"\n[Search Run] Query: {query}")
         search_results = []
-        
+
         # 1. ArXiv Search with retry logic
         max_retries = 2
         timeout_seconds = 60.0
-        
+
         for attempt in range(max_retries + 1):
             try:
                 # Fetch 100 results and sort by relevance to get "importance"
@@ -53,38 +54,42 @@ class WebResearcher:
                 print(f"ArXiv Status: {response.status_code}")
                 if response.status_code == 200:
                     root = ET.fromstring(response.text)
-                    ns = {'atom': 'http://www.w3.org/2005/Atom'}
-                    arxiv_entries = root.findall('atom:entry', ns)
+                    ns = {"atom": "http://www.w3.org/2005/Atom"}
+                    arxiv_entries = root.findall("atom:entry", ns)
                     print(f"ArXiv Entries Found: {len(arxiv_entries)}")
                     for entry in arxiv_entries:
-                        title_elem = entry.find('atom:title', ns)
-                        summary_elem = entry.find('atom:summary', ns)
-                        id_elem = entry.find('atom:id', ns)
-                        published_elem = entry.find('atom:published', ns)
-                        
+                        title_elem = entry.find("atom:title", ns)
+                        summary_elem = entry.find("atom:summary", ns)
+                        id_elem = entry.find("atom:id", ns)
+                        published_elem = entry.find("atom:published", ns)
+
                         if title_elem is not None and summary_elem is not None:
-                            title = title_elem.text.strip().replace('\n', ' ')
-                            summary = summary_elem.text.strip().replace('\n', ' ')
+                            title = title_elem.text.strip().replace("\n", " ")
+                            summary = summary_elem.text.strip().replace("\n", " ")
                             paper_id = id_elem.text if id_elem is not None else "Unknown ID"
                             published = published_elem.text if published_elem is not None else ""
-                            
-                            search_results.append({
-                                "title": title,
-                                "abstract": summary, # Keep full abstract for translation
-                                "source": paper_id,
-                                "published": published
-                            })
+
+                            search_results.append(
+                                {
+                                    "title": title,
+                                    "abstract": summary,  # Keep full abstract for translation
+                                    "source": paper_id,
+                                    "published": published,
+                                }
+                            )
                     break  # Success, exit retry loop
                 else:
                     logger.warning(f"ArXiv returned non-200 status: {response.status_code}")
                     if attempt < max_retries:
-                        wait_time = (2 ** attempt) * 1  # Exponential backoff starting at 1s
+                        wait_time = (2**attempt) * 1  # Exponential backoff starting at 1s
                         logger.info(f"Retrying ArXiv in {wait_time}s...")
                         time.sleep(wait_time)
             except httpx.TimeoutException as e:
                 if attempt < max_retries:
-                    wait_time = (2 ** attempt) * 2  # Exponential backoff starting at 2s for timeouts
-                    logger.warning(f"ArXiv search timed out (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s...")
+                    wait_time = (2**attempt) * 2  # Exponential backoff starting at 2s for timeouts
+                    logger.warning(
+                        f"ArXiv search timed out (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s..."
+                    )
                     print(f"ArXiv Timeout: {e} - Retrying...")
                     time.sleep(wait_time)
                 else:
@@ -93,8 +98,12 @@ class WebResearcher:
             except httpx.ConnectError as e:
                 # Handle connection errors including SSL issues
                 if attempt < max_retries:
-                    wait_time = (2 ** attempt) * 2  # Exponential backoff starting at 2s for connection errors
-                    logger.warning(f"ArXiv connection error (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s...")
+                    wait_time = (
+                        2**attempt
+                    ) * 2  # Exponential backoff starting at 2s for connection errors
+                    logger.warning(
+                        f"ArXiv connection error (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s..."
+                    )
                     print(f"ArXiv Connection Error: {e} - Retrying...")
                     time.sleep(wait_time)
                 else:
@@ -103,8 +112,12 @@ class WebResearcher:
             except ssl.SSLError as e:
                 # Handle SSL errors specifically (including UNEXPECTED_EOF_WHILE_READING)
                 if attempt < max_retries:
-                    wait_time = (2 ** attempt) * 2  # Exponential backoff starting at 2s for SSL errors
-                    logger.warning(f"ArXiv SSL error (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s...")
+                    wait_time = (
+                        2**attempt
+                    ) * 2  # Exponential backoff starting at 2s for SSL errors
+                    logger.warning(
+                        f"ArXiv SSL error (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s..."
+                    )
                     print(f"ArXiv SSL Error: {e} - Retrying...")
                     time.sleep(wait_time)
                 else:
@@ -112,8 +125,10 @@ class WebResearcher:
                     print(f"ArXiv SSL Error (final): {e}")
             except Exception as e:
                 if attempt < max_retries:
-                    wait_time = (2 ** attempt) * 1
-                    logger.warning(f"ArXiv search failed (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s...")
+                    wait_time = (2**attempt) * 1
+                    logger.warning(
+                        f"ArXiv search failed (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s..."
+                    )
                     print(f"ArXiv Error: {e} - Retrying...")
                     time.sleep(wait_time)
                 else:
@@ -124,8 +139,9 @@ class WebResearcher:
         try:
             # Shorten window to 30 days to avoid timeouts (prev search from 2025-01-01 was too large)
             from datetime import timedelta
-            start_date = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+            start_date = (datetime.now(UTC) - timedelta(days=30)).strftime("%Y-%m-%d")
+            today = datetime.now(UTC).strftime("%Y-%m-%d")
             biorxiv_url = f"https://api.biorxiv.org/details/biorxiv/{start_date}/{today}/0"
             resp = httpx.get(biorxiv_url, timeout=30.0)
             print(f"BioRxiv Status: {resp.status_code}")
@@ -137,13 +153,16 @@ class WebResearcher:
                     for item in biorxiv_data["collection"]:
                         # Match any of the words if it's a multiple topic field
                         if q_lower in item["title"].lower() or q_lower in item["abstract"].lower():
-                            search_results.append({
-                                "title": item["title"],
-                                "abstract": item["abstract"][:300] + "...",
-                                "source": f"BioRxiv ({item['doi']})"
-                            })
+                            search_results.append(
+                                {
+                                    "title": item["title"],
+                                    "abstract": item["abstract"][:300] + "...",
+                                    "source": f"BioRxiv ({item['doi']})",
+                                }
+                            )
                             match_count += 1
-                            if match_count >= 2: break
+                            if match_count >= 2:
+                                break
                     print(f"BioRxiv Relevant Matches: {match_count}")
         except httpx.TimeoutException as e:
             logger.error(f"BioRxiv search timed out: {e}")
@@ -159,18 +178,23 @@ try:
     import chromadb
     from chromadb.config import Settings
     from sentence_transformers import SentenceTransformer
+
     CHROMA_AVAILABLE = True
 except ImportError:
     CHROMA_AVAILABLE = False
-    logger.warning("ChromaDB or SentenceTransformers not found. Falling back to simple keyword search.")
+    logger.warning(
+        "ChromaDB or SentenceTransformers not found. Falling back to simple keyword search."
+    )
 
 
 try:
     import sqlite3
+
     SQLITE_AVAILABLE = True
 except ImportError:
     SQLITE_AVAILABLE = False
     logger.warning("sqlite3 not found. Keyword search will be disabled.")
+
 
 class KnowledgeBase:
     """
@@ -178,26 +202,30 @@ class KnowledgeBase:
     Indexes local history (Memory) and public archives (Blockchain).
     Uses ChromaDB for Vector Semantic Search.
     """
+
     def __init__(self):
-        self.documents: List[Dict] = [] # Fallback / Cache
+        self.documents: list[dict] = []  # Fallback / Cache
         self.web_researcher = WebResearcher()
         self.chroma_client = None
         self.collection = None
         self.embedding_model = None
-        
+
         if CHROMA_AVAILABLE:
             try:
                 # Initialize Persistent Client
                 data_path = "backend/data/chroma"
                 self.chroma_client = chromadb.PersistentClient(path=data_path)
-                
-                
+
                 # Initialize Embedding Model with Offline Fallback & Frequency Check
                 # Use full model name to avoid alias resolution network call
-                self.embedding_model = self._load_embedding_model('sentence-transformers/all-MiniLM-L6-v2')
-                
+                self.embedding_model = self._load_embedding_model(
+                    "sentence-transformers/all-MiniLM-L6-v2"
+                )
+
                 # Get or Create Collection
-                self.collection = self.chroma_client.get_or_create_collection(name="episodic_memory")
+                self.collection = self.chroma_client.get_or_create_collection(
+                    name="episodic_memory"
+                )
                 logger.info(f"ChromaDB initialized at {data_path}")
             except Exception as e:
                 logger.error(f"Failed to initialize ChromaDB: {e}")
@@ -225,7 +253,7 @@ class KnowledgeBase:
             except Exception as e:
                 logger.error(f"Failed to initialize SQLite FTS5: {e}")
                 self.fts_conn = None
-        
+
         # Incremental Sync State
         self.sync_state_path = "backend/data/knowledge_sync.json"
         self.topic_sync_state = {}
@@ -234,7 +262,7 @@ class KnowledgeBase:
     def _load_sync_state(self):
         if os.path.exists(self.sync_state_path):
             try:
-                with open(self.sync_state_path, "r") as f:
+                with open(self.sync_state_path) as f:
                     self.topic_sync_state = json.load(f)
             except Exception:
                 self.topic_sync_state = {}
@@ -246,7 +274,6 @@ class KnowledgeBase:
         except Exception as e:
             logger.error(f"Failed to save sync state: {e}")
 
-
     def _load_embedding_model(self, model_name: str):
         """
         Load SentenceTransformer with smart offline/fallback logic.
@@ -256,24 +283,26 @@ class KnowledgeBase:
         cache_dir = "backend/data"
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
-            
+
         check_file = os.path.join(cache_dir, ".model_last_check")
         should_check_online = True
-        
+
         # 1. Frequency Check (30 days = 2592000 seconds)
         if os.path.exists(check_file):
             try:
-                with open(check_file, 'r') as f:
+                with open(check_file) as f:
                     last_check = float(f.read().strip())
                 if time.time() - last_check < 2592000:
                     should_check_online = False
-                    logger.info(f"Skipping model update check (Last checked: {time.ctime(last_check)})")
+                    logger.info(
+                        f"Skipping model update check (Last checked: {time.ctime(last_check)})"
+                    )
             except Exception:
-                pass # File corrupted, check online
+                pass  # File corrupted, check online
 
         # 2. Try Load
         model = None
-        original_offline = os.environ.get("HF_HUB_OFFLINE") # Backup
+        original_offline = os.environ.get("HF_HUB_OFFLINE")  # Backup
 
         try:
             # Try to load offline first if we decided to skip online check
@@ -282,9 +311,13 @@ class KnowledgeBase:
                     # Force offline
                     os.environ["HF_HUB_OFFLINE"] = "1"
                     logger.info(f"Loading {model_name} in Offline Mode...")
-                    model = SentenceTransformer(model_name, cache_folder=cache_dir, local_files_only=True)
+                    model = SentenceTransformer(
+                        model_name, cache_folder=cache_dir, local_files_only=True
+                    )
                 except Exception as offline_error:
-                    logger.warning(f"Offline load failed ({offline_error}). Forcing online check...")
+                    logger.warning(
+                        f"Offline load failed ({offline_error}). Forcing online check..."
+                    )
                     should_check_online = True
                     if "HF_HUB_OFFLINE" in os.environ:
                         del os.environ["HF_HUB_OFFLINE"]
@@ -294,12 +327,12 @@ class KnowledgeBase:
                 # Allow online
                 if "HF_HUB_OFFLINE" in os.environ:
                     del os.environ["HF_HUB_OFFLINE"]
-                
+
                 logger.info(f"Checking for updates for {model_name}...")
                 model = SentenceTransformer(model_name, cache_folder=cache_dir)
-                
+
                 # Save timestamp on success
-                with open(check_file, 'w') as f:
+                with open(check_file, "w") as f:
                     f.write(str(time.time()))
 
         except Exception as e:
@@ -314,15 +347,11 @@ class KnowledgeBase:
 
         return model
 
-          
-
-
         # Hybrid Search Init
         self.bm25 = None
-        self.bm25_corpus = [] # List of {text, metadata}
+        self.bm25_corpus = []  # List of {text, metadata}
 
-
-    def ingest_history(self, history: List[Dict]):
+    def ingest_history(self, history: list[dict]):
         """Load resident chat history/memory into Vector Store."""
         if not CHROMA_AVAILABLE or not self.collection:
             self._ingest_history_fallback(history)
@@ -332,7 +361,7 @@ class KnowledgeBase:
         metadatas = []
         ids = []
         embeddings = []
-        
+
         count = 0
         seen_ids = set()
         for msg in history:
@@ -340,36 +369,33 @@ class KnowledgeBase:
             if text:
                 # Use message ID or hash as ID
                 msg_id = msg.get("id") or str(hash(text + str(msg.get("timestamp"))))
-                
+
                 # Deduplicate within batch to prevent ChromaDB DuplicateIDError
                 if msg_id in seen_ids:
                     continue
                 seen_ids.add(msg_id)
-                
+
                 # Metadata
                 meta = {
                     "source": "resident_history",
                     "timestamp": str(msg.get("timestamp", "")),
                     "type": str(msg.get("type", "chat")),
-                    "sender": str(msg.get("sender", "unknown"))
+                    "sender": str(msg.get("sender", "unknown")),
                 }
-                
+
                 documents.append(text)
                 metadatas.append(meta)
                 ids.append(msg_id)
                 count += 1
-        
+
         if count > 0:
             # Generate Embeddings Batch
             logger.info(f"Computing embeddings for {count} items...")
             embeddings = self.embedding_model.encode(documents).tolist()
-            
+
             # Upsert to Chroma
             self.collection.upsert(
-                documents=documents,
-                embeddings=embeddings,
-                metadatas=metadatas,
-                ids=ids
+                documents=documents, embeddings=embeddings, metadatas=metadatas, ids=ids
             )
             logger.info(f"Ingested {count} items into Semantic Memory")
         else:
@@ -384,47 +410,49 @@ class KnowledgeBase:
         data_dir = "backend/data"
         if not os.path.exists(data_dir):
             return
-            
+
         sync_count = 0
         for filename in os.listdir(data_dir):
             if filename.endswith(".jsonl"):
                 topic = filename.replace(".jsonl", "")
                 file_path = os.path.join(data_dir, filename)
-                
+
                 # Get last synced timestamp for this topic
                 last_sync = self.topic_sync_state.get(topic, "1970-01-01T00:00:00")
-                
+
                 new_messages = []
                 try:
-                    with open(file_path, "r", encoding="utf-8") as f:
+                    with open(file_path, encoding="utf-8") as f:
                         for line in f:
-                            if not line.strip(): continue
+                            if not line.strip():
+                                continue
                             msg = json.loads(line)
                             ts = msg.get("timestamp", "")
                             if ts > last_sync:
                                 # Ensure minimal fields for KnowledgeBase
-                                msg["topic"] = topic 
-                                if "sender" not in msg: msg["sender"] = "unknown"
-                                if "type" not in msg: msg["type"] = "entry"
+                                msg["topic"] = topic
+                                if "sender" not in msg:
+                                    msg["sender"] = "unknown"
+                                if "type" not in msg:
+                                    msg["type"] = "entry"
                                 new_messages.append(msg)
                                 if ts > last_sync:
                                     last_sync = ts
-                    
+
                     if new_messages:
                         logger.info(f"Syncing {len(new_messages)} new messages from topic: {topic}")
                         self.ingest_history(new_messages)
                         self.topic_sync_state[topic] = last_sync
                         sync_count += len(new_messages)
-                        
+
                 except Exception as e:
                     logger.error(f"Failed to sync topic {topic}: {e}")
-        
+
         if sync_count > 0:
             self._save_sync_state()
             logger.info(f"Incremental sync complete. Total new items: {sync_count}")
 
-
-    def ingest_insights(self, insights: List[str]):
+    def ingest_insights(self, insights: list[str]):
         """Ingest consolidated insights into Vector Store."""
         if not CHROMA_AVAILABLE or not self.collection:
             logger.warning("ChromaDB unavailable, skipping insight ingestion.")
@@ -434,67 +462,74 @@ class KnowledgeBase:
         metadatas = []
         ids = []
         embeddings = []
-        
+
         seen_ids = set()
         for text in insights:
             if text:
                 # Use hash as ID
                 import hashlib
-                doc_id = hashlib.md5(text.encode()).hexdigest()
-                
+
+                doc_id = hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
+
                 # Deduplicate within batch
                 if doc_id in seen_ids:
                     continue
                 seen_ids.add(doc_id)
-                
+
                 meta = {
                     "source": "core_memory",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "type": "insight"
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "type": "insight",
                 }
-                
+
                 documents.append(text)
                 metadatas.append(meta)
                 ids.append(doc_id)
-        
+
         if documents:
             logger.info(f"Computing embeddings for {len(documents)} insights...")
             embeddings = self.embedding_model.encode(documents).tolist()
-            
+
             self.collection.upsert(
-                documents=documents,
-                embeddings=embeddings,
-                metadatas=metadatas,
-                ids=ids
+                documents=documents, embeddings=embeddings, metadatas=metadatas, ids=ids
             )
             logger.info(f"Ingested {len(documents)} insights into Core Memory")
-            
 
             # Also update FTS
             if self.fts_conn:
                 # reconstruct dicts to match _update_fts_index expectation
-                mock_history = [{"content": t, "timestamp": m["timestamp"], "sender": "system", "type": "insight"} for t, m in zip(documents, metadatas)]
+                mock_history = [
+                    {
+                        "content": t,
+                        "timestamp": m["timestamp"],
+                        "sender": "system",
+                        "type": "insight",
+                    }
+                    for t, m in zip(documents, metadatas)
+                ]
                 self._update_fts_index(mock_history)
 
-    def _ingest_history_fallback(self, history: List[Dict]):
+    def _ingest_history_fallback(self, history: list[dict]):
         """Legacy keyword ingestion."""
-        self.documents = [] 
+        self.documents = []
         for msg in history:
             text = msg.get("content", "")
             if text:
-                self.documents.append({
-                    "content": text,
-                    "source": "resident_history",
-                    "timestamp": msg.get("timestamp"),
-                    "metadata": {"type": msg.get("type", "chat")}
-                })
+                self.documents.append(
+                    {
+                        "content": text,
+                        "source": "resident_history",
+                        "timestamp": msg.get("timestamp"),
+                        "metadata": {"type": msg.get("type", "chat")},
+                    }
+                )
         logger.info(f"Ingested {len(history)} history items into Knowledge Base (Fallback)")
 
-    def ingest_archives(self, chain_data: List[Dict]):
+    def ingest_archives(self, chain_data: list[dict]):
         """Load blockchain blocks."""
         # TODO: Implement vector ingestion for archives too
         # For now, just logging
-        logger.info(f"Archive ingestion not yet implemented for Vector Store")
+        logger.info("Archive ingestion not yet implemented for Vector Store")
 
     def retrieve_local_context(self, query: str, limit: int = 3) -> str:
         """
@@ -502,8 +537,8 @@ class KnowledgeBase:
         STRICTLY NO EXTERNAL ACADEMIC SEARCHES.
         """
         if not CHROMA_AVAILABLE or not self.collection:
-             return self._retrieve_context_fallback(query, limit)
-        
+            return self._retrieve_context_fallback(query, limit)
+
         # Call hybrid search directly which uses Chroma + FTS
         return self.retrieve_hybrid(query, limit)
 
@@ -514,8 +549,7 @@ class KnowledgeBase:
         """
         return self.retrieve_local_context(query, limit)
 
-
-    def _update_fts_index(self, history: List[Dict]):
+    def _update_fts_index(self, history: list[dict]):
         """Update SQLite FTS5 index."""
         if not self.fts_conn:
             return
@@ -526,33 +560,39 @@ class KnowledgeBase:
             for msg in history:
                 text = msg.get("content", "")
                 if text:
-                    new_rows.append((
-                        text,
-                        "resident_history",
-                        str(msg.get("timestamp", "")),
-                        str(msg.get("sender", "unknown")),
-                        str(msg.get("type", "chat"))
-                    ))
-            
+                    new_rows.append(
+                        (
+                            text,
+                            "resident_history",
+                            str(msg.get("timestamp", "")),
+                            str(msg.get("sender", "unknown")),
+                            str(msg.get("type", "chat")),
+                        )
+                    )
+
             if new_rows:
-                cursor.executemany("INSERT INTO memory_fts (content, source, timestamp, sender, type) VALUES (?, ?, ?, ?, ?)", new_rows)
+                cursor.executemany(
+                    "INSERT INTO memory_fts (content, source, timestamp, sender, type) VALUES (?, ?, ?, ?, ?)",
+                    new_rows,
+                )
                 self.fts_conn.commit()
                 logger.info(f"Inserted {len(new_rows)} items into FTS index.")
         except Exception as e:
             logger.error(f"Failed to update FTS index: {e}")
 
-    def _search_fts(self, query: str, limit: int = 10) -> List[Dict]:
+    def _search_fts(self, query: str, limit: int = 10) -> list[dict]:
         """Search SQLite FTS5 index."""
         if not self.fts_conn:
             return []
-            
+
         try:
             # Sanitize query for FTS5 to prevent syntax errors like "fts5: syntax error near '['"
             # We remove reserved FTS5 operators and treat the query as a set of simple tokens.
             import re
+
             # Replace all non-alphanumeric characters with spaces for a 100% safe FTS5 query
-            safe_query = re.sub(r'[^\w\s]', ' ', query).strip()
-            
+            safe_query = re.sub(r"[^\w\s]", " ", query).strip()
+
             if not safe_query:
                 return []
 
@@ -561,18 +601,20 @@ class KnowledgeBase:
             sql = "SELECT content, source, timestamp, sender, type FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?"
             cursor.execute(sql, (safe_query, limit))
             rows = cursor.fetchall()
-            
+
             results = []
             for r in rows:
-                results.append({
-                    "content": r[0],
-                    "metadata": {
-                        "source": r[1],
-                        "timestamp": r[2],
-                        "sender": r[3],
-                        "type": r[4]
+                results.append(
+                    {
+                        "content": r[0],
+                        "metadata": {
+                            "source": r[1],
+                            "timestamp": r[2],
+                            "sender": r[3],
+                            "type": r[4],
+                        },
                     }
-                })
+                )
             return results
         except Exception as e:
             logger.warning(f"FTS search error: {e}")
@@ -585,22 +627,26 @@ class KnowledgeBase:
         """
         if not CHROMA_AVAILABLE:
             return self._retrieve_context_fallback(query, limit)
-        
+
         try:
             # 1. Vector Search
             vector_docs = []
             query_embedding = self.embedding_model.encode([query]).tolist()
-            chroma_res = self.collection.query(query_embeddings=query_embedding, n_results=limit * 2) 
-            
-            if chroma_res['documents']:
-                c_docs = chroma_res['documents'][0]
-                c_metas = chroma_res['metadatas'][0]
+            chroma_res = self.collection.query(
+                query_embeddings=query_embedding, n_results=limit * 2
+            )
+
+            if chroma_res["documents"]:
+                c_docs = chroma_res["documents"][0]
+                c_metas = chroma_res["metadatas"][0]
                 for i, text in enumerate(c_docs):
-                    vector_docs.append({
-                        "content": text,
-                        "metadata": c_metas[i],
-                        "score": 0.0 # Placeholder
-                    })
+                    vector_docs.append(
+                        {
+                            "content": text,
+                            "metadata": c_metas[i],
+                            "score": 0.0,  # Placeholder
+                        }
+                    )
 
             # 2. Keyword Search (SQLite FTS5)
             fts_docs = []
@@ -608,19 +654,16 @@ class KnowledgeBase:
                 # Get top N * 2
                 fts_top = self._search_fts(query, limit=limit * 2)
                 for doc in fts_top:
-                    fts_docs.append({
-                        "content": doc["content"],
-                        "metadata": doc["metadata"]
-                    })
+                    fts_docs.append({"content": doc["content"], "metadata": doc["metadata"]})
             else:
-                 # Fallback if no FTS
-                 return self.retrieve_context(query, limit)
+                # Fallback if no FTS
+                return self.retrieve_context(query, limit)
 
             # 3. Reciprocal Rank Fusion
             # RRF Score = 1 / (k + rank)
             k = 60
-            fusion_scores = {} # text -> score
-            doc_map = {} # text -> doc_obj
+            fusion_scores = {}  # text -> score
+            doc_map = {}  # text -> doc_obj
 
             # Score Vector Results
             for rank, doc in enumerate(vector_docs):
@@ -632,7 +675,7 @@ class KnowledgeBase:
             for rank, doc in enumerate(fts_docs):
                 text = doc["content"]
                 if text not in doc_map:
-                     doc_map[text] = doc
+                    doc_map[text] = doc
                 fusion_scores[text] = fusion_scores.get(text, 0) + (1 / (k + rank + 1))
 
             # Sort by fused score
@@ -658,29 +701,29 @@ class KnowledgeBase:
         """Simple retrieval based on keyword overlap."""
         query_terms = set(query.lower().split())
         scored_docs = []
-        
+
         for doc in self.documents:
             content = doc["content"].lower()
             score = sum(1 for term in query_terms if term in content)
             if score > 0:
                 scored_docs.append((score, doc))
-        
+
         scored_docs.sort(key=lambda x: (x[0], x[1].get("timestamp", "")), reverse=True)
         top_docs = scored_docs[:limit]
-        
+
         context_parts = []
         for score, doc in top_docs:
             source = doc["source"]
             text = doc["content"]
             context_parts.append(f"[{source.upper()}] {text}")
-            
+
         return "\n\n".join(context_parts) if context_parts else "No relevant local context found."
 
     def search_web_and_context(self, query: str) -> str:
         """Combined Local Context + Web Search"""
         local_context = self.retrieve_context(query)
         web_context = self.web_researcher.search(query)
-        
+
         return f"""
 === Local Knowledge (Semantic Memory) ===
 {local_context}
@@ -688,5 +731,6 @@ class KnowledgeBase:
 === Web Research ===
 {web_context}
 """
+
 
 knowledge_base = KnowledgeBase()

@@ -1,0 +1,62 @@
+Metadata-Version: 2.4
+Name: bit-politeia
+Version: 0.1.0
+Summary: Bit-Politeia: A P2P Scientific Community Platform
+Author-email: Bit-Politeia Team <team@bit-politeia.org>
+License: MIT
+Project-URL: Homepage, https://github.com/bit-politeia/bit-politeia
+Project-URL: Documentation, https://bit-politeia.readthedocs.io
+Project-URL: Repository, https://github.com/bit-politeia/bit-politeia
+Project-URL: Issues, https://github.com/bit-politeia/bit-politeia/issues
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.109.0
+Requires-Dist: uvicorn>=0.27.0
+Requires-Dist: pydantic>=2.5.0
+Requires-Dist: python-multipart>=0.0.6
+Requires-Dist: websockets>=12.0
+Requires-Dist: aiohttp>=3.9.0
+Requires-Dist: aiofiles>=23.2.0
+Requires-Dist: sqlalchemy>=2.0.0
+Requires-Dist: alembic>=1.13.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: pydantic-settings>=2.1.0
+Requires-Dist: typer>=0.9.0
+Requires-Dist: rich>=13.7.0
+Requires-Dist: cryptography>=42.0.0
+Requires-Dist: bcrypt>=4.1.0
+Requires-Dist: pyjwt>=2.12.0
+Requires-Dist: structlog>=24.1.0
+Requires-Dist: loguru>=0.7.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.1.0; extra == "dev"
+Requires-Dist: pytest-xdist>=3.5.0; extra == "dev"
+Requires-Dist: pytest-html>=4.1.0; extra == "dev"
+Requires-Dist: pytest-mock>=3.12.0; extra == "dev"
+Requires-Dist: pytest-randomly>=3.15.0; extra == "dev"
+Requires-Dist: hypothesis>=6.98.0; extra == "dev"
+Requires-Dist: black>=24.2.0; extra == "dev"
+Requires-Dist: ruff>=0.3.0; extra == "dev"
+Requires-Dist: mypy>=1.9.0; extra == "dev"
+Requires-Dist: bandit>=1.7.8; extra == "dev"
+Requires-Dist: pre-commit>=3.6.0; extra == "dev"
+Requires-Dist: types-requests>=2.33.0; extra == "dev"
+Requires-Dist: types-python-dateutil>=2.8.0; extra == "dev"
+Requires-Dist: mkdocs>=1.5.0; extra == "dev"
+Requires-Dist: mkdocs-material>=9.5.0; extra == "dev"
+Requires-Dist: ipdb>=0.13.0; extra == "dev"
+Requires-Dist: icecream>=2.1.0; extra == "dev"
+Provides-Extra: docs
+Requires-Dist: mkdocs>=1.5.0; extra == "docs"
+Requires-Dist: mkdocs-material>=9.5.0; extra == "docs"
+Requires-Dist: mkdocstrings[python]>=0.24.0; extra == "docs"

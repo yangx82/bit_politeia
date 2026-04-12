@@ -1,13 +1,15 @@
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
 
 class TaskStatus(str, Enum):
     PENDING = "pending"
@@ -16,27 +18,30 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
+
 class SubTask(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     description: str
     status: TaskStatus = TaskStatus.PENDING
-    result: Optional[str] = None
+    result: str | None = None
+
 
 class Task(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     goal: str
     status: TaskStatus = TaskStatus.PENDING
-    subtasks: List[SubTask] = Field(default_factory=list)
-    checkpoint: Optional[str] = None # Last reasoning summary + next planned action
-    lessons_learned: Optional[str] = None # Filled during Retrospective
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    priority: int = 5 # 1-10
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    subtasks: list[SubTask] = Field(default_factory=list)
+    checkpoint: str | None = None  # Last reasoning summary + next planned action
+    lessons_learned: str | None = None  # Filled during Retrospective
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    priority: int = 5  # 1-10
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     def update_status(self, new_status: TaskStatus):
         self.status = new_status
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
+
 
 class TaskManager:
     def __init__(self, storage_path: str = None):
@@ -44,17 +49,19 @@ class TaskManager:
             self.storage_path = Path(storage_path)
         else:
             # Default to backend/data/tasks.json
-            self.storage_path = Path(__file__).resolve().parent.parent.parent / "data" / "tasks.json"
-        
+            self.storage_path = (
+                Path(__file__).resolve().parent.parent.parent / "data" / "tasks.json"
+            )
+
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.tasks: Dict[str, Task] = {}
+        self.tasks: dict[str, Task] = {}
         self.load_tasks()
 
     def load_tasks(self):
         """Load tasks from disk."""
         if self.storage_path.exists():
             try:
-                with open(self.storage_path, 'r', encoding='utf-8') as f:
+                with open(self.storage_path, encoding="utf-8") as f:
                     data = json.load(f)
                     for t_id, t_data in data.items():
                         self.tasks[t_id] = Task(**t_data)
@@ -65,13 +72,13 @@ class TaskManager:
     def save_tasks(self):
         """Persist tasks to disk and generate a human-readable summary."""
         try:
-            data = {t_id: t.model_dump(mode='json') for t_id, t in self.tasks.items()}
-            with open(self.storage_path, 'w', encoding='utf-8') as f:
+            data = {t_id: t.model_dump(mode="json") for t_id, t in self.tasks.items()}
+            with open(self.storage_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            
+
             # Generate human-readable summary
             summary_path = self.storage_path.parent / "tasks_summary.md"
-            with open(summary_path, 'w', encoding='utf-8') as f:
+            with open(summary_path, "w", encoding="utf-8") as f:
                 f.write("# Long-term Task Summary\n\n")
                 active = self.get_active_tasks()
                 if not active:
@@ -90,36 +97,42 @@ class TaskManager:
                                 check = "[x]" if st.status == TaskStatus.COMPLETED else "[ ]"
                                 f.write(f"  - {check} {st.description}\n")
                         f.write("\n")
-                
+
                 # Recently completed
-                completed = [t for t in self.tasks.values() if t.status == TaskStatus.COMPLETED][-5:]
+                completed = [t for t in self.tasks.values() if t.status == TaskStatus.COMPLETED][
+                    -5:
+                ]
                 if completed:
                     f.write("---\n## Recently Completed\n\n")
                     for t in completed:
                         f.write(f"- ✅ {t.goal} (Lessons: {t.lessons_learned or 'None'})\n")
-                        
+
         except Exception as e:
             logger.error(f"Failed to save tasks: {e}")
 
-    def create_task(self, goal: str, priority: int = 5, subtasks: List[str] = None) -> Task:
+    def create_task(self, goal: str, priority: int = 5, subtasks: list[str] = None) -> Task:
         """Create a new long-term task."""
         task = Task(goal=goal, priority=priority)
         if subtasks:
             for st_desc in subtasks:
                 task.subtasks.append(SubTask(description=st_desc))
-        
+
         self.tasks[task.id] = task
         self.save_tasks()
         return task
 
-    def get_active_tasks(self) -> List[Task]:
+    def get_active_tasks(self) -> list[Task]:
         """Return tasks that are not completed or failed."""
-        return [t for t in self.tasks.values() if t.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]]
+        return [
+            t
+            for t in self.tasks.values()
+            if t.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]
+        ]
 
     def update_task_checkpoint(self, task_id: str, checkpoint: str):
         if task_id in self.tasks:
             self.tasks[task_id].checkpoint = checkpoint
-            self.tasks[task_id].updated_at = datetime.now(timezone.utc)
+            self.tasks[task_id].updated_at = datetime.now(UTC)
             self.save_tasks()
 
     def complete_task(self, task_id: str, lessons: str = None):
@@ -141,7 +154,7 @@ class TaskManager:
         active = self.get_active_tasks()
         if not active:
             return ""
-        
+
         lines = ["# ACTIVE LONG-TERM TASKS"]
         for t in active:
             lines.append(f"## Task: {t.goal} (Status: {t.status})")

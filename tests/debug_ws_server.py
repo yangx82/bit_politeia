@@ -1,13 +1,11 @@
-
-from fastapi import FastAPI, WebSocket
 import uvicorn
-import asyncio
-import logging
+from fastapi import FastAPI, WebSocket
 
 # Minimal WebSocket Server to test connectivity on Port 8001
 # Usage: python tests/debug_ws_server.py
 
 app = FastAPI()
+
 
 @app.websocket("/ws/gateway")
 async def websocket_endpoint(websocket: WebSocket):
@@ -20,9 +18,11 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"[DEBUG] Received: {data}")
         await websocket.send_text(f"Echo: {data}")
 
+
 @app.get("/")
 def read_root():
     return {"status": "Minimal Server Running"}
+
 
 if __name__ == "__main__":
     print("Starting Minimal WS Server on 0.0.0.0:8001...")
