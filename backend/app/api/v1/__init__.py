@@ -59,12 +59,12 @@ async def search_history(q: str = None, date_from: str = None, date_to: str = No
 
 
 @router.post("/p2p/message")
-async def receive_p2p_message(message: P2PMessage):
+async def receive_p2p_message(message: P2PMessage) -> dict:
     return await agent_service.receive_p2p_message(message)
 
 
 @router.get("/debug/inbox")
-async def debug_inbox():
+async def debug_inbox() -> dict:
     """Debug: Get current contents of P2P inbox."""
     from ...services.p2p_service import p2p_service
 
@@ -75,19 +75,19 @@ async def debug_inbox():
 
 # Frontend P2P Endpoints
 @router.get("/p2p/peers")
-async def get_peers():
+async def get_peers() -> list:
     """Get list of connected P2P nodes."""
     return await agent_service.get_peers()
 
 
 @router.get("/p2p/groups")
-async def get_groups():
+async def get_groups() -> list:
     """Get list of P2P groups."""
     return await agent_service.get_groups()
 
 
 @router.post("/p2p/send")
-async def send_p2p_message(payload: dict = Body(...)):
+async def send_p2p_message(payload: dict = Body(...)) -> dict:
     """Send a P2P message to a node or group."""
     target_id = payload.get("target_id")
     content = payload.get("content")
@@ -121,23 +121,22 @@ async def send_p2p_message(payload: dict = Body(...)):
 
 
 @router.get("/archive/chain")
-async def get_archive_chain():
+async def get_archive_chain() -> list:
     """Get the local blockchain archive."""
     return await agent_service.get_archive_chain()
 
 
 @router.post("/archive/generate")
-async def generate_archive_block():
+async def generate_archive_block() -> dict:
     """Manually trigger generation of a new archive block."""
     result = await agent_service.run_archiving()
     return {"message": result}
 
 
 @router.get("/status", response_model=AgentStatus)
-async def get_status():
+async def get_status() -> AgentStatus:
     status = await agent_service.get_status()
     # Inject Public Key from Crypto Service
-    status.public_key = crypto_service.get_public_key_string()
     status.public_key = crypto_service.get_public_key_string()
     return status
 
@@ -152,7 +151,7 @@ async def get_proposals():
 
 
 @router.post("/governance/proposals")
-async def create_proposal(request: ProposalCreateRequest):
+async def create_proposal(request: ProposalCreateRequest) -> dict:
     """Send a suggestion to the agent to create a new proposal."""
     instruction = (
         f"【RESIDENT SUGGESTION】 I suggest you initiate a new governance proposal for group '{request.group_id}'.\n"
@@ -170,13 +169,13 @@ async def create_proposal(request: ProposalCreateRequest):
 
 
 @router.get("/governance/elections", response_model=list[dict])
-async def get_elections():
+async def get_elections() -> list:
     """Get active elections."""
     return await agent_service.get_elections()
 
 
 @router.post("/governance/vote")
-async def cast_vote(request: VoteRequest):
+async def cast_vote(request: VoteRequest) -> dict:
     """Send a suggestion to the agent to cast a vote."""
     vote_str = "Approve" if request.approval else "Reject"
     instruction = (
@@ -194,7 +193,7 @@ async def cast_vote(request: VoteRequest):
 
 
 @router.delete("/governance/proposals/{proposal_id}")
-async def delete_proposal(proposal_id: str):
+async def delete_proposal(proposal_id: str) -> dict:
     """Remove a proposal and its associated election."""
     success = await agent_service.delete_proposal(proposal_id)
     if success:
@@ -204,7 +203,7 @@ async def delete_proposal(proposal_id: str):
 
 
 @router.delete("/governance/elections/{election_id}")
-async def delete_election(election_id: str):
+async def delete_election(election_id: str) -> dict:
     """Remove a specific election."""
     success = await agent_service.delete_election(election_id)
     if success:

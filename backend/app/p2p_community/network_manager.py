@@ -271,26 +271,17 @@ class NetworkManager:
     async def handle_relayed_message(self, message_data: dict):
         """Handle messages received via RelayClient."""
         try:
-            # Check for system messages first
+            # Check for system messages first (these are not signed by peers but by the relay server itself)
             msg_type = message_data.get("type", message_data.get("message_type"))
             if msg_type == "SYSTEM_ERROR":
                 self._log_throttled(
                     "warning",
-                    f"[Network] Relay System Error: {message_data.get('content')} (Target: {message_data.get('recipient_id')}, Message: {message_id})",
+                    f"[Network] Relay System Error: {message_data.get('content')} (Target: {message_data.get('recipient_id')})",
                 )
-                # Propagate to local node for handling (async status update)
+                # Propagate to local node for handling
                 if self.local_node_id in self.nodes:
                     await self.nodes[self.local_node_id].receive_message(message_data)
                 return
-
-            if msg_type == "GROUP_CONFIG":
-                # Governance-level event ingestion
-                from ..services.agent_service import agent_service
-
-                if agent_service and agent_service.governance_manager:
-                    agent_service.governance_manager.receive_p2p_event(
-                        "group_config", message_data.get("content", {})
-                    )
 
             # Basic Validation before parsing
             if "timestamp" not in message_data:
@@ -303,7 +294,24 @@ class NetworkManager:
 
             # Parse dict back to SignedMessage
             message = SignedMessage.from_dict(message_data)
-            logger.info(
+
+            # SECURITY: Verify signature for governance-impacting messages before routing/ingesting
+            if message.message_type == MessageType.GROUP_CONFIG:
+                if not self.message_protocol.verify_message(message, message.sender_id):
+                    logger.warning(
+                        f"[Network] Security Alert: Invalid signature for GROUP_CONFIG from {message.sender_id}. Dropping."
+                    )
+                    return
+
+                # Only ingest if verified
+                from ..services.agent_service import agent_service
+
+                if agent_service and agent_service.governance_manager:
+                    agent_service.governance_manager.receive_p2p_event(
+                        "group_config", message.content
+                    )
+
+            logger.debug(
                 f"[Network] Received RELAYED message {message.message_id} from {message.sender_id}"
             )
 
@@ -503,8 +511,16 @@ class NetworkManager:
             if self.local_node_id in self.nodes:
                 if group_id in self.nodes[self.local_node_id].group_ids:
                     if message.sender_id != self.local_node_id:
-                        # Before adding to inbox, check if it's a config update that impacts local view
+                        # SECURITY: Signed messages delivered to self MUST be verified if they impact state
+                        # Note: Most verification happens at the ingress point (Relay or HTTP)
+                        # but we check again for group config.
                         if message.message_type == MessageType.GROUP_CONFIG:
+                            if not self.message_protocol.verify_message(message, message.sender_id):
+                                logger.warning(
+                                    f"[Network] Dropping unverified GROUP_CONFIG message from {message.sender_id}"
+                                )
+                                return
+
                             from ..services.agent_service import agent_service
 
                             if agent_service and agent_service.governance_manager:

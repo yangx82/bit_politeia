@@ -116,23 +116,23 @@ class MemoryStore:
             parts.append("## Today's Notes\n" + today)
 
         return "\n\n".join(parts) if parts else ""
-    
+
     def read_summary(self) -> str:
         """Read the compressed summary of old daily notes."""
         if self.summary_file.exists():
             return self.summary_file.read_text(encoding="utf-8")
         return ""
-    
+
     def write_summary(self, content: str) -> None:
         """Write/update the compressed summary."""
         self.summary_file.write_text(content, encoding="utf-8")
         logger.info(f"Updated daily notes summary: {len(content)} chars")
-    
+
     def append_summary(self, content: str) -> None:
         """Append to existing summary with date marker."""
         existing = self.read_summary()
         date_marker = f"\n\n---\n### 压缩日期: {today_date()}\n\n"
-        
+
         if existing:
             # Check if we already have content from today
             if f"压缩日期: {today_date()}" in existing:
@@ -145,40 +145,40 @@ class MemoryStore:
             # Create new summary with header
             header = "# Daily Notes 历史摘要\n\n此文件包含已压缩的历史 Daily Notes 摘要。\n原始文件已归档至 `archive/` 目录。\n\n"
             self.summary_file.write_text(header + content, encoding="utf-8")
-        
+
         logger.info(f"Appended to daily notes summary: +{len(content)} chars")
-    
+
     def get_old_daily_notes(self, before_days: int = 3) -> list[tuple[str, str, Path]]:
         """
         Get daily notes older than specified days.
-        
+
         Returns:
             List of tuples: (date_str, content, file_path)
         """
         old_notes = []
         today = datetime.now(UTC).date()
         cutoff_date = today - timedelta(days=before_days)
-        
+
         # Get all .md files that look like dates
         for file_path in sorted(self.memory_dir.glob("*.md")):
             # Skip MEMORY.md and summary files
             if file_path.name in ["MEMORY.md", "daily_notes_summary.md"]:
                 continue
-            
+
             # Try to parse as date
             try:
                 date_str = file_path.stem  # YYYY-MM-DD
                 file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                
+
                 if file_date < cutoff_date:
                     content = file_path.read_text(encoding="utf-8")
                     old_notes.append((date_str, content, file_path))
             except ValueError:
                 # Not a date file, skip
                 continue
-        
+
         return old_notes
-    
+
     def archive_daily_note(self, file_path: Path) -> None:
         """Move a daily note to the archive directory."""
         archive_path = self.archive_dir / file_path.name

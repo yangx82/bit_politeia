@@ -171,16 +171,42 @@ class Node:
 
     async def receive_message(self, message: Any):
         """
-        Receive a message (SignedMessage object or dict).
+        Receive a message (SignedMessage object or dict) with signature verification.
         """
-        # If it's a SignedMessage object, convert to something loggable or store it
+        # 1. Parsing & Basic Validation
         if hasattr(message, "to_dict"):
-            msg_data = message.to_dict()
+            msg_dict = message.to_dict()
         else:
-            msg_data = message
+            msg_dict = message
 
-        # 0. Deduplication (Write-level)
+        m_id = msg_data = msg_dict  # Contextual rename for clarity in this snippet
         m_id = msg_data.get("message_id")
+        sender_id = msg_data.get("sender_id")
+
+        # 2. SECURITY: Mandatory Signature Verification for signed payloads
+        # We verify if signature is present and it's a standard P2P message
+        if msg_data.get("signature") and sender_id:
+            try:
+                from .message_protocol import SignedMessage
+
+                # Re-parse to SignedMessage to use protocol verification
+                msg_obj = (
+                    message if hasattr(message, "signature") else SignedMessage.from_dict(msg_data)
+                )
+
+                # Verify signature
+                # Note: This assumes sender_id IS the public key or that verify_message handles resolution.
+                # In this protocol, sender_id is currently the public key PEM.
+                if not self.network_manager.message_protocol.verify_message(msg_obj, sender_id):
+                    logger.warning(
+                        f"[Security] Received message {m_id} from {sender_id[:8]} with INVALID signature. Dropping."
+                    )
+                    return
+            except Exception as ve:
+                logger.error(f"[Security] Failed to verify message {m_id}: {ve}")
+                return
+
+        # 3. Deduplication (Write-level)
         if m_id:
             if m_id in self.recent_inbox_ids:
                 logger.debug(f"Duplicate P2P message {m_id} ignored at receive stage.")
@@ -189,17 +215,7 @@ class Node:
 
             # Keep set size reasonable
             if len(self.recent_inbox_ids) > 1000:
-                # Remove oldest (roughly)
-                it = iter(self.recent_inbox_ids)
-                for _ in range(100):
-                    try:
-                        next(it)
-                        # We can't easily pop from set by order, but we can clear or convert.
-                        # For a simple sliding window in a set, we just want to avoid memory leak.
-                        # Better to use a list if order matters, but here set is fine for fast lookup.
-                    except StopIteration:
-                        break
-                # Simple strategy: just clear if it gets too big, or use a list based queue.
+                # Simple cleanup: Clear and restart window
                 if len(self.recent_inbox_ids) > 2000:
                     self.recent_inbox_ids.clear()
 
@@ -207,7 +223,7 @@ class Node:
             f"[{msg_data.get('sender_id', 'unknown')}] <<< RECEIVED via {msg_data.get('message_type', 'P2P')}: {str(msg_data.get('content'))[:100]}..."
         )
 
-        # Allow external handler to intercept (e.g., for WebRTC Signaling)
+        # 4. Allow external handler to intercept (e.g., for WebRTC Signaling)
         if self.message_handler:
             try:
                 # Assuming handler is async

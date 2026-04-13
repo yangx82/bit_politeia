@@ -169,12 +169,11 @@ class P2PService:
 
     async def handle_p2p_message(self, message: dict[str, Any]) -> bool:
         """
-        Intercept P2P messages for WebRTC signaling.
+        Intercept P2P messages for WebRTC signaling and Governance.
         Returns True if handled, False otherwise.
         """
         msg_type = message.get("message_type")
         sender_id = message.get("sender_id")
-        content = message.get("content", {})
         message_id = message.get("message_id")
 
         # 1. Deduplication for signaling messages
@@ -194,68 +193,78 @@ class P2PService:
                 if len(self.processed_signaling_ids) > 1000:
                     self.processed_signaling_ids.clear()
 
-        # 2. Dispatch by Message Type
+        # 2. SECURITY: For governance messages, verify signature before processing
+        gov_msg_types = [
+            MessageType.PROPOSAL.value,
+            MessageType.VOTE.value,
+            MessageType.ELECTION.value,
+        ]
+
+        if msg_type in gov_msg_types:
+            from ..p2p_community.message_protocol import SignedMessage
+
+            try:
+                msg_obj = SignedMessage.from_dict(message)
+                if not self.message_protocol.verify_message(msg_obj, sender_id):
+                    logger.warning(
+                        f"[Security] Rejected unverified {msg_type} from {sender_id[:8]}..."
+                    )
+                    return True  # Handled (by rejection)
+
+                # Signature valid, proceed to governance manager
+                from .agent_service import agent_service
+
+                if agent_service and agent_service.governance_manager:
+                    event_type = msg_type.lower()
+                    agent_service.governance_manager.receive_p2p_event(
+                        event_type, msg_obj.content
+                    )
+
+                    # GOSSIP FORWARD: Ensure propagation
+                    recipient_id = message.get("recipient_id")
+                    if recipient_id and recipient_id in self.network_manager.groups:
+                        asyncio.create_task(
+                            self._forward_governance_message(msg_obj, event_type)
+                        )
+                return True
+            except Exception as e:
+                logger.error(f"Error validating governance message: {e}")
+                return True  # Handled (error)
+
+        # 3. Dispatch remaining by Message Type
         if msg_type == MessageType.SDP_OFFER.value:
             if self.webrtc_manager:
-                asyncio.create_task(self.webrtc_manager.handle_offer(sender_id, content))
+                asyncio.create_task(
+                    self.webrtc_manager.handle_offer(sender_id, message.get("content", {}))
+                )
             return True
 
         elif msg_type == MessageType.SDP_ANSWER.value:
             if self.webrtc_manager:
-                asyncio.create_task(self.webrtc_manager.handle_answer(sender_id, content))
+                asyncio.create_task(
+                    self.webrtc_manager.handle_answer(sender_id, message.get("content", {}))
+                )
             return True
 
         elif msg_type == MessageType.ICE_CANDIDATE.value:
             if self.webrtc_manager:
-                asyncio.create_task(self.webrtc_manager.handle_candidate(sender_id, content))
+                asyncio.create_task(
+                    self.webrtc_manager.handle_candidate(sender_id, message.get("content", {}))
+                )
             return True
 
         elif msg_type == "SYSTEM_ERROR":
             # Asynchronous delivery failure from the relay
             m_id = message.get("message_id")
             if m_id:
-                logger.warning(f"P2P Delivery Failure for message {m_id}: {content}")
+                logger.warning(
+                    f"P2P Delivery Failure for message {m_id}: {message.get('content')}"
+                )
                 from .agent_service import agent_service
 
-                asyncio.create_task(agent_service.handle_remote_delivery_error(m_id, content))
-            return True
-
-        elif msg_type == MessageType.PROPOSAL.value:
-            # Import here to avoid circular dependency
-            from .agent_service import agent_service
-
-            if agent_service.governance_manager:
-                agent_service.governance_manager.receive_p2p_event("proposal", content)
-
-                # GOSSIP FORWARD: Forward to other group members to ensure propagation
-                # This implements the "rumor mongering" phase of the Gossip protocol
-                recipient_id = message.get("recipient_id")
-                if recipient_id and recipient_id in self.network_manager.groups:
-                    asyncio.create_task(self._forward_governance_message(message, "proposal"))
-            return True
-
-        elif msg_type == MessageType.VOTE.value:
-            from .agent_service import agent_service
-
-            if agent_service.governance_manager:
-                agent_service.governance_manager.receive_p2p_event("vote", content)
-
-                # GOSSIP FORWARD: Forward votes as well
-                recipient_id = message.get("recipient_id")
-                if recipient_id and recipient_id in self.network_manager.groups:
-                    asyncio.create_task(self._forward_governance_message(message, "vote"))
-            return True
-
-        elif msg_type == MessageType.ELECTION.value:
-            from .agent_service import agent_service
-
-            if agent_service.governance_manager:
-                agent_service.governance_manager.receive_p2p_event("election", content)
-
-                # GOSSIP FORWARD: Ensure elections propagate
-                recipient_id = message.get("recipient_id")
-                if recipient_id and recipient_id in self.network_manager.groups:
-                    asyncio.create_task(self._forward_governance_message(message, "election"))
+                asyncio.create_task(
+                    agent_service.handle_remote_delivery_error(m_id, message.get("content"))
+                )
             return True
 
         elif msg_type == MessageType.SYNC.value:
@@ -264,6 +273,8 @@ class P2PService:
             if content.get("sync_type") == "state_request":
                 asyncio.create_task(self.network_manager.handle_state_sync_request(message))
             return True
+
+        return False
 
         return False
 
