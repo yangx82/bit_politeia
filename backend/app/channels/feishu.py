@@ -26,7 +26,7 @@ try:
         CreateMessageRequestBody,
         Emoji,
         GetMessageResourceRequest,
-        P2ImMessageReadV1,
+        P2ImMessageMessageReadV1,
         P2ImMessageReceiveV1,
     )
 
@@ -35,6 +35,8 @@ except ImportError:
     FEISHU_AVAILABLE = False
     lark = None
     Emoji = None
+    P2ImMessageMessageReadV1 = None
+    P2ImMessageReceiveV1 = None
 
 # Message type display mapping
 MSG_TYPE_MAP = {
