@@ -121,7 +121,7 @@ class FeishuChannel(BaseChannel):
                 self.config.verification_token or "",
             )
             .register_p2_im_message_receive_v1(self._on_message_sync)
-            .register_p2_im_message_read_v1(self._on_message_read_sync)
+            .register_p2_im_message_message_read_v1(self._on_message_read_sync)
             .build()
         )
 
