@@ -8,6 +8,7 @@
 !/.gitignore
 !/README.md
 !/tests/
+!/scripts/setup_research_node.py
 # Exclude agent-specific and sync tools
 .antigravity/
 sync_all_robust.ps1
