@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
@@ -35,6 +36,11 @@ class BitPoliteiaContextManager:
         )
 
         self.threshold_tokens = int(self.aux_context_len * self.threshold_percent)
+        
+        # Cache for static content size (updated when memory changes)
+        self._static_content_chars = 0
+        self._static_content_last_update = None
+        
         logger.info(
             f"ContextManager initialized. Threshold: {self.threshold_tokens} tokens using {self.aux_name}"
         )
@@ -53,14 +59,221 @@ class BitPoliteiaContextManager:
         if task_id:
             lineage_msg = self._get_task_lineage_context(task_id)
 
-        # 3. Iterative Compression Check
-        processed_history = await self._ensure_compact_history(lc_history, task_id)
+        # 3. Check if Daily Notes compression is needed (async)
+        needs_compression, old_notes_count = self._check_daily_notes_compression_needed()
+        if needs_compression:
+            logger.info(f"Daily Notes compression needed: {old_notes_count} old notes found")
+            await self._compress_daily_notes(target_days=3)
+            # Re-estimate static content after compression
+            static_chars = self._estimate_static_content_size()
+        else:
+            static_chars = self._estimate_static_content_size()
+        
+        # 4. Iterative Compression Check (with dynamic threshold)
+        processed_history = await self._ensure_compact_history(lc_history, task_id, static_chars)
 
-        # 4. Tool Integrity (Sanitize orphaned/missing tool pairs)
+        # 5. Tool Integrity (Sanitize orphaned/missing tool pairs)
         sanitized_history = self._sanitize_messages(processed_history)
 
-        # 5. Construct Final Message List
+        # 6. Construct Final Message List
         return sanitized_history, task_id, lineage_msg
+    
+    def _estimate_static_content_size(self) -> int:
+        """
+        Estimate the size of static content that will be embedded in system prompt.
+        Includes: MEMORY.md, Daily Notes (recent + summary), Skills, and other fixed content.
+        Returns size in characters.
+        
+        Note: Compression is now handled asynchronously in get_optimized_messages().
+        """
+        total_chars = 0
+        daily_notes_chars = 0
+        
+        try:
+            # 1. MEMORY.md (Long-term memory)
+            long_term = self.resident_memory.read_long_term()
+            if long_term:
+                total_chars += len(long_term)
+            
+            # 2. Daily Notes Summary (compressed historical notes)
+            summary = self.resident_memory.read_summary()
+            if summary:
+                total_chars += len(summary)
+            
+            # 3. Recent Daily Notes (last 3 days, uncompressed)
+            recent_memories = self.resident_memory.get_recent_memories(days=3)
+            if recent_memories:
+                daily_notes_chars = len(recent_memories)
+                total_chars += daily_notes_chars
+            
+            # 4. Skills index (approximate - get from skill manager if available)
+            if hasattr(self.agent, 'skill_manager'):
+                skill_index = self.agent.skill_manager.get_skill_index()
+                if skill_index:
+                    total_chars += len(skill_index)
+            
+            # 5. Community rules (approximate)
+            from .community_config import community_config
+            rules_text = community_config.get_all_rules_text()
+            if rules_text:
+                total_chars += len(rules_text)
+            
+            # 6. Base system prompt overhead (approximate)
+            # Includes role blocks, time, host info, etc.
+            total_chars += 2000  # Conservative estimate for base overhead
+            
+            logger.debug(f"Static content estimate: {total_chars} chars (~{total_chars // 4} tokens)")
+            
+        except Exception as e:
+            logger.warning(f"Failed to estimate static content size: {e}")
+            # Return cached value or 0 if error
+            return self._static_content_chars
+        
+        # Cache the result
+        self._static_content_chars = total_chars
+        return total_chars
+    
+    def _check_daily_notes_compression_needed(self) -> tuple[bool, int]:
+        """
+        Check if Daily Notes compression is needed.
+        
+        Returns:
+            (needs_compression, old_notes_count)
+        """
+        static_chars = self._estimate_static_content_size()
+        static_tokens = static_chars / 4
+        compression_threshold = self.threshold_tokens * 0.5  # 50% of threshold
+        
+        # Check if compression is needed
+        if static_tokens > compression_threshold:
+            old_notes = self.resident_memory.get_old_daily_notes(before_days=3)
+            if len(old_notes) > 0:
+                return True, len(old_notes)
+        
+        return False, 0
+    
+    async def _compress_daily_notes(self, target_days: int = 3) -> None:
+        """
+        Compress Daily Notes by summarizing old notes and archiving originals.
+        
+        This is TRUE compression:
+        1. Read all daily notes older than target_days
+        2. Use LLM to generate a structured summary
+        3. Append summary to daily_notes_summary.md
+        4. Archive original files to archive/
+        
+        Args:
+            target_days: Number of recent days to keep uncompressed (default: 3)
+        """
+        try:
+            # Get old daily notes
+            old_notes = self.resident_memory.get_old_daily_notes(before_days=target_days)
+            
+            if not old_notes:
+                logger.info("No Daily Notes to compress.")
+                return
+            
+            logger.info(f"Compressing {len(old_notes)} old daily notes...")
+            
+            # Generate summary using LLM
+            summary = await self._summarize_daily_notes(old_notes)
+            
+            if summary:
+                # Append to summary file
+                self.resident_memory.append_summary(summary)
+                
+                # Archive original files
+                for date_str, content, file_path in old_notes:
+                    self.resident_memory.archive_daily_note(file_path)
+                
+                logger.info(f"Compressed Daily Notes: {len(old_notes)} files summarized and archived")
+            else:
+                logger.warning("Summarization returned empty result, skipping compression")
+            
+        except Exception as e:
+            logger.error(f"Failed to compress Daily Notes: {e}")
+    
+    async def _summarize_daily_notes(self, notes: list[tuple[str, str, Path]]) -> str:
+        """
+        Use LLM to generate a structured summary of daily notes.
+        
+        Args:
+            notes: List of (date_str, content, file_path) tuples
+            
+        Returns:
+            Structured markdown summary
+        """
+        if not notes:
+            return ""
+        
+        # Combine all notes with date headers
+        notes_text = ""
+        total_chars = 0
+        max_chars = 50000  # Limit input size for summarizer
+        
+        for date_str, content, _ in notes:
+            section = f"\n## {date_str}\n{content}\n"
+            if total_chars + len(section) > max_chars:
+                # Truncate if too long, keep most recent notes
+                notes_text += f"\n## {date_str}\n[内容过长已截断...]\n"
+                break
+            notes_text += section
+            total_chars += len(section)
+        
+        prompt = f"""
+请对以下历史 Daily Notes 进行结构化压缩摘要。
+
+要求：
+1. **提取关键信息**：重要决策、经验教训、未完成任务
+2. **保留具体细节**：如错误信息、配置参数、文件路径等
+3. **按主题归类**：相同主题的内容合并
+4. **标注时间**：保留原始日期信息
+
+输出格式（Markdown）：
+```
+### [主题/日期范围]
+
+**关键决策**:
+- ...
+
+**经验教训**:
+- ...
+
+**未完成任务**:
+- ...
+
+**技术细节**:
+- ...
+```
+
+---
+
+{notes_text}
+
+---
+请生成压缩摘要：
+"""
+
+        try:
+            response = await self.summarizer_llm.ainvoke([HumanMessage(content=prompt)])
+            summary = response.content.strip()
+            
+            # Add metadata header
+            date_range = f"{notes[0][0]} ~ {notes[-1][0]}" if len(notes) > 1 else notes[0][0]
+            metadata = f"### 摘要范围: {date_range}\n压缩日期: {self.resident_memory._get_today_date()}\n原始文件数: {len(notes)}\n\n"
+            
+            return metadata + summary
+            
+        except Exception as e:
+            logger.error(f"Daily notes summarization failed: {e}")
+            # Fallback: simple extraction of headers and key points
+            fallback = f"### 摘要范围: {notes[0][0]} ~ {notes[-1][0]}\n（LLM 摘要失败，保留原始标题）\n\n"
+            for date_str, content, _ in notes:
+                # Extract headers (lines starting with #)
+                headers = [line for line in content.split('\n') if line.strip().startswith('#')]
+                if headers:
+                    fallback += f"**{date_str}**:\n" + '\n'.join(headers[:5]) + "\n\n"
+            return fallback
 
     async def detect_focus(
         self, session_id: str, query: str, channel: str = "resident"
@@ -134,21 +347,44 @@ class BitPoliteiaContextManager:
         return context
 
     async def _ensure_compact_history(
-        self, history: list[BaseMessage], task_id: str | None
+        self, history: list[BaseMessage], task_id: str | None, static_chars: int = 0
     ) -> list[BaseMessage]:
         """
         Hermes-style iterative compression logic.
         If history tokens exceed threshold, summarize the middle turns.
+        
+        Now accounts for static content (MEMORY.md, Daily Notes, Skills) in threshold calculation.
         """
-        # 1. Estimate tokens (rough estimate: 4 chars per token)
-        total_chars = sum(len(m.content) for m in history if isinstance(m.content, str))
-        approx_tokens = total_chars / 4
+        # 1. Calculate effective threshold accounting for static content
+        static_tokens = static_chars / 4
+        effective_threshold = self.threshold_tokens - static_tokens
+        
+        # Ensure minimum threshold (at least 10k tokens for conversation)
+        min_threshold = 10000
+        if effective_threshold < min_threshold:
+            logger.warning(
+                f"Static content ({static_tokens:.0f} tokens) exceeds {(self.threshold_tokens - min_threshold):.0f} tokens. "
+                f"Consider compressing MEMORY.md or Daily Notes. Using minimum threshold: {min_threshold}"
+            )
+            effective_threshold = min_threshold
+        
+        # 2. Estimate tokens from conversation history (rough estimate: 4 chars per token)
+        history_chars = sum(len(m.content) for m in history if isinstance(m.content, str))
+        approx_tokens = history_chars / 4
 
-        if approx_tokens < self.threshold_tokens:
+        # 3. Log context breakdown for debugging
+        logger.info(
+            f"Context size: History={approx_tokens:.0f}t, Static={static_tokens:.0f}t, "
+            f"Total={approx_tokens + static_tokens:.0f}t, Threshold={self.threshold_tokens}t, "
+            f"Effective={effective_threshold:.0f}t"
+        )
+
+        if approx_tokens < effective_threshold:
             return history
 
         logger.warning(
-            f"Context threshold hit ({approx_tokens:.0f} > {self.threshold_tokens}). Compressing..."
+            f"Context threshold hit ({approx_tokens:.0f} + {static_tokens:.0f} = {approx_tokens + static_tokens:.0f} > {self.threshold_tokens}). "
+            f"Compressing history..."
         )
 
         # 2. Divide History

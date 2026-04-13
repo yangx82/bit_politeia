@@ -1,7 +1,7 @@
 """Memory system for persistent agent memory (Long-term & Daily Notes)."""
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,7 @@ class MemoryStore:
     Memory system for the agent.
 
     Supports daily notes (memory/YYYY-MM-DD.md) and long-term memory (MEMORY.md).
+    Also supports compressed summaries (memory/daily_notes_summary.md).
     """
 
     def __init__(self, workspace_root: str = None):
@@ -38,8 +39,14 @@ class MemoryStore:
 
         self.memory_dir = ensure_dir(self.workspace / "memory")
         self.memory_file = self.memory_dir / "MEMORY.md"
+        self.summary_file = self.memory_dir / "daily_notes_summary.md"
+        self.archive_dir = ensure_dir(self.memory_dir / "archive")
 
         logger.info(f"MemoryStore initialized at {self.memory_dir}")
+
+    def _get_today_date(self) -> str:
+        """Get today's date string."""
+        return today_date()
 
     def get_today_file(self) -> Path:
         """Get path to today's memory file."""
@@ -109,6 +116,74 @@ class MemoryStore:
             parts.append("## Today's Notes\n" + today)
 
         return "\n\n".join(parts) if parts else ""
+    
+    def read_summary(self) -> str:
+        """Read the compressed summary of old daily notes."""
+        if self.summary_file.exists():
+            return self.summary_file.read_text(encoding="utf-8")
+        return ""
+    
+    def write_summary(self, content: str) -> None:
+        """Write/update the compressed summary."""
+        self.summary_file.write_text(content, encoding="utf-8")
+        logger.info(f"Updated daily notes summary: {len(content)} chars")
+    
+    def append_summary(self, content: str) -> None:
+        """Append to existing summary with date marker."""
+        existing = self.read_summary()
+        date_marker = f"\n\n---\n### 压缩日期: {today_date()}\n\n"
+        
+        if existing:
+            # Check if we already have content from today
+            if f"压缩日期: {today_date()}" in existing:
+                # Append to today's section
+                self.summary_file.write_text(existing + "\n" + content, encoding="utf-8")
+            else:
+                # Add new dated section
+                self.summary_file.write_text(existing + date_marker + content, encoding="utf-8")
+        else:
+            # Create new summary with header
+            header = "# Daily Notes 历史摘要\n\n此文件包含已压缩的历史 Daily Notes 摘要。\n原始文件已归档至 `archive/` 目录。\n\n"
+            self.summary_file.write_text(header + content, encoding="utf-8")
+        
+        logger.info(f"Appended to daily notes summary: +{len(content)} chars")
+    
+    def get_old_daily_notes(self, before_days: int = 3) -> list[tuple[str, str, Path]]:
+        """
+        Get daily notes older than specified days.
+        
+        Returns:
+            List of tuples: (date_str, content, file_path)
+        """
+        old_notes = []
+        today = datetime.now(UTC).date()
+        cutoff_date = today - timedelta(days=before_days)
+        
+        # Get all .md files that look like dates
+        for file_path in sorted(self.memory_dir.glob("*.md")):
+            # Skip MEMORY.md and summary files
+            if file_path.name in ["MEMORY.md", "daily_notes_summary.md"]:
+                continue
+            
+            # Try to parse as date
+            try:
+                date_str = file_path.stem  # YYYY-MM-DD
+                file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                
+                if file_date < cutoff_date:
+                    content = file_path.read_text(encoding="utf-8")
+                    old_notes.append((date_str, content, file_path))
+            except ValueError:
+                # Not a date file, skip
+                continue
+        
+        return old_notes
+    
+    def archive_daily_note(self, file_path: Path) -> None:
+        """Move a daily note to the archive directory."""
+        archive_path = self.archive_dir / file_path.name
+        file_path.rename(archive_path)
+        logger.info(f"Archived daily note: {file_path.name} -> archive/")
 
 
 # Global instance
