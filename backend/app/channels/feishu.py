@@ -3,6 +3,9 @@
 import asyncio
 import json
 import logging
+import multiprocessing
+import os
+import sys
 import threading
 from collections import OrderedDict
 from typing import Any
@@ -12,6 +15,77 @@ from ..bus.queue import MessageBus
 from .base import BaseChannel
 
 logger = logging.getLogger(__name__)
+
+
+def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verification_token: str, queue: multiprocessing.Queue):
+    """
+    独立的飞书 WebSocket 工作进程。
+    避免与主进程的事件循环冲突。
+    """
+    import lark_oapi as lark
+    import time
+    
+    # 配置日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s:    %(name)s - %(message)s"
+    )
+    ws_logger = logging.getLogger("feishu_ws")
+    
+    reconnect_delay = 5
+    max_reconnect_delay = 60
+    max_attempts = 10
+    attempts = 0
+    
+    # 创建事件处理器
+    event_handler = (
+        lark.EventDispatcherHandler.builder(
+            encrypt_key or "",
+            verification_token or "",
+        )
+        .register_p2_im_message_receive_v1(lambda data: _handle_message_in_worker(data, queue))
+        .register_p2_im_message_message_read_v1(lambda data: ws_logger.debug(f"Message read: {data}"))
+        .build()
+    )
+    
+    # 创建 WebSocket 客户端
+    ws_client = lark.ws.Client(
+        app_id,
+        app_secret,
+        event_handler=event_handler,
+        log_level=lark.LogLevel.INFO,
+    )
+    
+    ws_logger.info(f"Feishu WebSocket worker started (PID: {os.getpid()})")
+    
+    while attempts < max_attempts:
+        try:
+            ws_logger.info(f"Feishu WebSocket connecting (attempt {attempts + 1})")
+            ws_client.start()
+            # 如果 start() 返回，说明连接断开
+            attempts += 1
+            ws_logger.warning(f"Feishu WebSocket disconnected, reconnecting in {reconnect_delay}s...")
+        except Exception as e:
+            attempts += 1
+            ws_logger.error(f"Feishu WebSocket error (attempt {attempts}): {e}")
+        
+        if attempts >= max_attempts:
+            break
+            
+        time.sleep(reconnect_delay)
+        reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+    
+    ws_logger.error(f"Feishu WebSocket max reconnect attempts ({max_attempts}) reached, worker exiting")
+
+
+def _handle_message_in_worker(data, queue: multiprocessing.Queue):
+    """在工作进程中处理收到的消息，转发到主进程"""
+    try:
+        import pickle
+        # 将消息序列化后放入队列
+        queue.put(("message", data))
+    except Exception as e:
+        logging.getLogger("feishu_ws").error(f"Failed to queue message: {e}")
 
 try:
     import lark_oapi as lark
@@ -85,9 +159,15 @@ class FeishuChannel(BaseChannel):
         self.config = config
         self._client: Any = None
         self._ws_client: Any = None
-        self._ws_thread: threading.Thread | None = None
+        self._ws_process: multiprocessing.Process | None = None
+        self._ws_queue: multiprocessing.Queue | None = None
         self._processed_message_ids: OrderedDict[str, None] = OrderedDict()  # Ordered dedup cache
         self._loop: asyncio.AbstractEventLoop | None = None
+        # 新增：WebSocket重连机制
+        self._ws_reconnect_delay = 5  # 初始重连延迟（秒）
+        self._ws_max_reconnect_delay = 60  # 最大重连延迟（秒）
+        self._ws_reconnect_attempts = 0
+        self._ws_max_reconnect_attempts = 10  # 最大重连次数
 
     async def start(self) -> None:
         """Start the Feishu bot with WebSocket long connection."""
@@ -104,6 +184,19 @@ class FeishuChannel(BaseChannel):
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             logger.warning("No running event loop found for Feishu channel.")
+            # 延迟获取事件循环，避免消息丢失
+            def acquire_loop_later():
+                import time
+                for attempt in range(10):
+                    time.sleep(1)
+                    try:
+                        self._loop = asyncio.get_running_loop()
+                        logger.info("Successfully acquired event loop for Feishu channel")
+                        return
+                    except RuntimeError:
+                        continue
+                logger.error("Failed to acquire event loop after 10 attempts")
+            threading.Thread(target=acquire_loop_later, daemon=True).start()
 
         # Create Lark client for sending messages
         self._client = (
@@ -133,17 +226,40 @@ class FeishuChannel(BaseChannel):
             log_level=lark.LogLevel.INFO,
         )
 
-        # Start WebSocket client in a separate thread
-        def run_ws():
-            try:
-                self._ws_client.start()
-            except Exception as e:
-                logger.error(f"Feishu WebSocket error: {e}")
-
-        self._ws_thread = threading.Thread(target=run_ws, daemon=True)
-        self._ws_thread.start()
-
-        logger.info("Feishu bot started with WebSocket long connection")
+        # Start WebSocket client in a separate PROCESS to avoid event loop conflict
+        self._ws_queue = multiprocessing.Queue()
+        self._ws_process = multiprocessing.Process(
+            target=_feishu_ws_worker,
+            args=(
+                self.config.app_id,
+                self.config.app_secret,
+                self.config.encrypt_key or "",
+                self.config.verification_token or "",
+                self._ws_queue
+            ),
+            daemon=True
+        )
+        self._ws_process.start()
+        logger.info(f"Feishu WebSocket worker process started (PID: {self._ws_process.pid})")
+        
+        # Start queue processor to handle messages from worker
+        async def process_ws_queue():
+            while self._running:
+                try:
+                    # Non-blocking queue get with timeout
+                    msg_type, data = self._ws_queue.get_nowait()
+                    if msg_type == "message":
+                        # Schedule message handling in main event loop
+                        if self._loop and self._loop.is_running():
+                            asyncio.run_coroutine_threadsafe(self._on_message(data), self._loop)
+                except Exception:
+                    # Queue empty or other error
+                    pass
+                await asyncio.sleep(0.1)
+        
+        self._queue_processor_task = asyncio.create_task(process_ws_queue())
+        
+        logger.info("Feishu bot started with WebSocket subprocess")
 
         # Keep running until stopped
         while self._running:
@@ -152,11 +268,31 @@ class FeishuChannel(BaseChannel):
     async def stop(self) -> None:
         """Stop the Feishu bot."""
         self._running = False
-        if self._ws_client:
-            # lark-oapi doesn't seem to expose a clean stop for WS client in all versions,
-            # but usually it runs in a loop.
-            # We just stop our own loop and let the thread die or rely on app shutdown.
-            pass
+        
+        # 关闭子进程
+        if self._ws_process and self._ws_process.is_alive():
+            logger.info("Stopping Feishu WebSocket worker process...")
+            self._ws_process.terminate()
+            self._ws_process.join(timeout=5.0)
+            if self._ws_process.is_alive():
+                logger.warning("Feishu WebSocket worker process did not terminate, killing...")
+                self._ws_process.kill()
+                self._ws_process.join(timeout=2.0)
+        
+        # 关闭队列处理任务
+        if hasattr(self, '_queue_processor_task') and self._queue_processor_task:
+            self._queue_processor_task.cancel()
+            try:
+                await self._queue_processor_task
+            except asyncio.CancelledError:
+                pass
+        
+        # 兼容旧代码：关闭线程（如果有）
+        if hasattr(self, '_ws_thread') and self._ws_thread and self._ws_thread.is_alive():
+            self._ws_thread.join(timeout=5.0)
+            if self._ws_thread.is_alive():
+                logger.warning("Feishu WebSocket thread did not terminate within timeout")
+        
         logger.info("Feishu bot stopped")
 
     def _add_reaction_sync(self, message_id: str, emoji_type: str) -> None:
@@ -246,8 +382,8 @@ class FeishuChannel(BaseChannel):
             else:
                 receive_id_type = "open_id"
 
-            # 1. Send text content if present
-            if msg.content or not msg.media:
+            # 1. Send text content if present (修复：空内容但有附件时跳过文本发送)
+            if msg.content and msg.content.strip():
                 content = json.dumps({"text": msg.content})
                 request = (
                     CreateMessageRequest.builder()
@@ -262,6 +398,26 @@ class FeishuChannel(BaseChannel):
                     .build()
                 )
 
+                response = self._client.im.v1.message.create(request)
+                if not response.success():
+                    logger.error(
+                        f"Failed to send Feishu text: code={response.code}, msg={response.msg}"
+                    )
+            elif not msg.media:
+                # 如果既没有文本也没有附件，发送默认提示
+                content = json.dumps({"text": "(empty message)"})
+                request = (
+                    CreateMessageRequest.builder()
+                    .receive_id_type(receive_id_type)
+                    .request_body(
+                        CreateMessageRequestBody.builder()
+                        .receive_id(msg.session_id)
+                        .msg_type("text")
+                        .content(content)
+                        .build()
+                    )
+                    .build()
+                )
                 response = self._client.im.v1.message.create(request)
                 if not response.success():
                     logger.error(
@@ -323,10 +479,21 @@ class FeishuChannel(BaseChannel):
         Sync handler for incoming messages (called from WebSocket thread).
         Schedules async handling in the main event loop.
         """
-        if self._loop and self._loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._on_message(data), self._loop)
+        # 重试机制：如果事件循环尚未就绪，延迟重试
+        if not self._loop or not self._loop.is_running():
+            logger.warning("Main event loop not ready, scheduling retry for Feishu message")
+            # 延迟重试机制
+            def retry_later():
+                import time
+                for attempt in range(5):
+                    time.sleep(0.5)
+                    if self._loop and self._loop.is_running():
+                        asyncio.run_coroutine_threadsafe(self._on_message(data), self._loop)
+                        return
+                logger.error("Failed to schedule Feishu message after 5 retries")
+            threading.Thread(target=retry_later, daemon=True).start()
         else:
-            logger.warning("Main event loop not running, cannot handle Feishu message")
+            asyncio.run_coroutine_threadsafe(self._on_message(data), self._loop)
 
     def _on_message_read_sync(self, data: Any) -> None:
         """
@@ -356,6 +523,10 @@ class FeishuChannel(BaseChannel):
         if not response.success():
             raise Exception(f"Failed to get Feishu resource: {response.code} {response.msg}")
 
+        # 修复：空指针检查 - response.file 可能为 None
+        if response.file is None:
+            raise Exception(f"Feishu response returned None file content for {file_key}")
+
         download_dir = Path("data/downloads")
         download_dir.mkdir(parents=True, exist_ok=True)
 
@@ -366,6 +537,8 @@ class FeishuChannel(BaseChannel):
             file_data = (
                 response.file.getvalue() if hasattr(response.file, "getvalue") else response.file
             )
+            if not file_data:
+                raise Exception(f"Feishu file content is empty for {file_key}")
             f.write(file_data)
 
         return str(file_path.absolute())
@@ -409,14 +582,14 @@ class FeishuChannel(BaseChannel):
                     content = json.loads(message.content).get("text", "")
                 except json.JSONDecodeError:
                     content = message.content or ""
-            else:
+            elif msg_type in ("image", "file", "audio", "video", "sticker"):
                 try:
                     parsed_content = json.loads(message.content)
                     file_key = parsed_content.get("file_key") or parsed_content.get("image_key")
 
                     if file_key:
-                        file_name = parsed_content.get("file_name", f"{file_key}.file")
-                        resource_type = "image" if msg_type == "image" else "file"
+                        file_name = parsed_content.get("file_name", f"{file_key}.{msg_type}")
+                        resource_type = "image" if msg_type == "image" else msg_type
 
                         loop = asyncio.get_running_loop()
                         file_path = await loop.run_in_executor(
@@ -431,7 +604,7 @@ class FeishuChannel(BaseChannel):
                         content = f"[System] User sent a {resource_type}: {file_name}"
                         media_items.append(
                             {
-                                "type": "image" if resource_type == "image" else "file",
+                                "type": resource_type,
                                 "path": file_path,
                                 "name": file_name,
                             }
@@ -444,6 +617,25 @@ class FeishuChannel(BaseChannel):
                     content = (
                         f"[System] User attempted to send a {msg_type}, but processing failed."
                     )
+            elif msg_type == "rich_text":
+                # 处理富文本消息
+                try:
+                    parsed_content = json.loads(message.content)
+                    # 提取纯文本内容
+                    text_parts = []
+                    for block in parsed_content.get("content", []):
+                        if isinstance(block, dict):
+                            for run in block.get("runs", []):
+                                if "text" in run:
+                                    text_parts.append(run["text"])
+                    content = "".join(text_parts) if text_parts else "[Rich text message]"
+                except Exception as e:
+                    logger.error(f"Failed to process Feishu rich text: {e}")
+                    content = "[Rich text message - parsing failed]"
+            else:
+                # 处理其他未知消息类型
+                content = MSG_TYPE_MAP.get(msg_type, f"[{msg_type}]")
+                logger.warning(f"Received unsupported message type: {msg_type}")
 
             if not content and not media_items:
                 return

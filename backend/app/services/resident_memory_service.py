@@ -398,6 +398,46 @@ class ResidentMemory:
             filtered.append(entry)
         return filtered
 
+    # ============================================================
+    # Delegate methods to MemoryStore for context_manager compatibility
+    # ============================================================
+
+    def read_long_term(self) -> str:
+        """Read long-term memory (MEMORY.md). Delegated to MemoryStore."""
+        return memory_store.read_long_term()
+
+    def write_long_term(self, content: str) -> None:
+        """Write to long-term memory (MEMORY.md). Delegated to MemoryStore."""
+        memory_store.write_long_term(content)
+
+    def read_summary(self) -> str:
+        """Read the compressed summary of old daily notes. Delegated to MemoryStore."""
+        return memory_store.read_summary()
+
+    def write_summary(self, content: str) -> None:
+        """Write/update the compressed summary. Delegated to MemoryStore."""
+        memory_store.write_summary(content)
+
+    def append_summary(self, content: str) -> None:
+        """Append to existing summary with date marker. Delegated to MemoryStore."""
+        memory_store.append_summary(content)
+
+    def get_recent_memories(self, days: int = 7) -> str:
+        """Get memories from the last N days. Delegated to MemoryStore."""
+        return memory_store.get_recent_memories(days=days)
+
+    def get_old_daily_notes(self, before_days: int = 3) -> list:
+        """Get daily notes older than specified days. Delegated to MemoryStore."""
+        return memory_store.get_old_daily_notes(before_days=before_days)
+
+    def archive_daily_note(self, file_path) -> None:
+        """Move a daily note to the archive directory. Delegated to MemoryStore."""
+        memory_store.archive_daily_note(file_path)
+
+    def _get_today_date(self) -> str:
+        """Get today's date string. Delegated to MemoryStore."""
+        return memory_store._get_today_date()
+
 
 class ResidentReporter:
     def __init__(self, agent_service):

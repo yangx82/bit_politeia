@@ -26,3 +26,43 @@ ERR-20260409-001 (虚假报告安装成功)
 
 ---
 *自动记录：Aristocles Self-Improvement System*
+
+---
+[LRN-20260409-002] P2P 选举同步故障模式确认
+TYPE: knowledge_gap
+DATE: 2026-04-09
+PRIORITY: HIGH (recurring pattern)
+
+### 问题描述
+P2P 网络中选举/提案数据广播机制失效，导致部分节点无法查询到已创建的选举记录。
+
+### 症状特征
+- 创建选举后，发起节点可见，其他节点返回 "Election not found"
+- 投票提交失败（invalid/closed/validation failed）
+- 计票结果不一致或部分节点无法参与
+
+### 历史案例汇总
+1. **2026-03-24**: Aarron 事件 - 投票 ID 同步失败
+2. **2026-04-07**: Aristocles vs Bit Plato - 选举数据不同步
+3. **2026-04-08**: 选举 ad33c26b - Aristocles 节点不可见
+
+### 技术根因
+`submit_proposal` Gossip 广播机制存在同步延迟或丢失，未实现确认/重试逻辑。
+
+### 影响范围
+- 治理流程阻塞（需人工干预）
+- 选举结果可能无效（quorum 不足）
+- 节点间信任度下降
+
+### 建议解决方案
+1. **短期**: 居民手动触发同步或代码修复
+2. **中期**: 选举创建后增加确认机制（所有节点 ACK）
+3. **长期**: 改进 P2P 广播协议，增加重试队列和超时重传
+
+### 验证方法
+```bash
+# 所有节点执行以下命令应返回相同结果
+get_election_status <election_id>
+```
+
+---
