@@ -74,3 +74,11 @@ venv/
 **/resident_memory_backup_*.json
 **/data/logs/
 **/p2p/inbox_*.jsonl
+
+# Self-improvement logs and daily reports (Local only)
+**/.learnings/
+**/LEARNINGS.md
+**/ERRORS.md
+**/FEATURE_REQUESTS.md
+**/daily_report_*.md
+**/daily-*.md
