@@ -17,12 +17,14 @@ from .base import BaseChannel
 logger = logging.getLogger(__name__)
 
 
-def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verification_token: str, queue: multiprocessing.Queue):
+def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verification_token: str, queue: multiprocessing.Queue, stop_event: multiprocessing.Event):
     """
     独立的飞书 WebSocket 工作进程。
     避免与主进程的事件循环冲突。
+    支持通过 stop_event 优雅退出。
     """
     import lark_oapi as lark
+    import signal
     import time
     
     # 配置日志
@@ -31,6 +33,14 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
         format="%(asctime)s - %(levelname)s:    %(name)s - %(message)s"
     )
     ws_logger = logging.getLogger("feishu_ws")
+    
+    # 信号处理：捕获 SIGINT/SIGTERM 实现优雅退出
+    def signal_handler(signum, frame):
+        ws_logger.info(f"Received signal {signum}, setting stop event")
+        stop_event.set()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
     reconnect_delay = 5
     max_reconnect_delay = 60
@@ -58,24 +68,57 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
     
     ws_logger.info(f"Feishu WebSocket worker started (PID: {os.getpid()})")
     
-    while attempts < max_attempts:
+    while attempts < max_attempts and not stop_event.is_set():
         try:
             ws_logger.info(f"Feishu WebSocket connecting (attempt {attempts + 1})")
-            ws_client.start()
+            # ws_client.start() 是阻塞调用，我们需要在另一个线程中监控 stop_event
+            # 使用 threading 来超时等待
+            import threading
+            
+            start_completed = threading.Event()
+            start_exception = [None]
+            
+            def start_ws():
+                try:
+                    ws_client.start()
+                except Exception as e:
+                    start_exception[0] = e
+                finally:
+                    start_completed.set()
+            
+            ws_thread = threading.Thread(target=start_ws, daemon=True)
+            ws_thread.start()
+            
+            # 等待连接完成或收到停止信号
+            while not start_completed.is_set() and not stop_event.is_set():
+                start_completed.wait(timeout=1.0)
+            
+            if stop_event.is_set():
+                ws_logger.info("Stop event detected, exiting worker loop")
+                break
+            
             # 如果 start() 返回，说明连接断开
-            attempts += 1
-            ws_logger.warning(f"Feishu WebSocket disconnected, reconnecting in {reconnect_delay}s...")
+            if start_exception[0]:
+                attempts += 1
+                ws_logger.error(f"Feishu WebSocket error (attempt {attempts}): {start_exception[0]}")
+            else:
+                attempts += 1
+                ws_logger.warning(f"Feishu WebSocket disconnected, reconnecting in {reconnect_delay}s...")
         except Exception as e:
             attempts += 1
             ws_logger.error(f"Feishu WebSocket error (attempt {attempts}): {e}")
         
-        if attempts >= max_attempts:
+        if attempts >= max_attempts or stop_event.is_set():
             break
             
-        time.sleep(reconnect_delay)
+        # 在等待重连时也检查停止信号
+        for _ in range(int(reconnect_delay)):
+            if stop_event.is_set():
+                break
+            time.sleep(1)
         reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
     
-    ws_logger.error(f"Feishu WebSocket max reconnect attempts ({max_attempts}) reached, worker exiting")
+    ws_logger.info(f"Feishu WebSocket worker exiting (attempts={attempts}, stopped={stop_event.is_set()})")
 
 
 def _handle_message_in_worker(data, queue: multiprocessing.Queue):
@@ -168,6 +211,8 @@ class FeishuChannel(BaseChannel):
         self._ws_max_reconnect_delay = 60  # 最大重连延迟（秒）
         self._ws_reconnect_attempts = 0
         self._ws_max_reconnect_attempts = 10  # 最大重连次数
+        # 新增：优雅关闭子进程的事件
+        self._ws_stop_event: multiprocessing.Event | None = None
 
     async def start(self) -> None:
         """Start the Feishu bot with WebSocket long connection."""
@@ -228,6 +273,7 @@ class FeishuChannel(BaseChannel):
 
         # Start WebSocket client in a separate PROCESS to avoid event loop conflict
         self._ws_queue = multiprocessing.Queue()
+        self._ws_stop_event = multiprocessing.Event()
         self._ws_process = multiprocessing.Process(
             target=_feishu_ws_worker,
             args=(
@@ -235,7 +281,8 @@ class FeishuChannel(BaseChannel):
                 self.config.app_secret,
                 self.config.encrypt_key or "",
                 self.config.verification_token or "",
-                self._ws_queue
+                self._ws_queue,
+                self._ws_stop_event
             ),
             daemon=True
         )
@@ -269,15 +316,27 @@ class FeishuChannel(BaseChannel):
         """Stop the Feishu bot."""
         self._running = False
         
-        # 关闭子进程
+        # 优雅关闭子进程：先发送停止信号
+        if self._ws_stop_event:
+            logger.info("Signaling Feishu WebSocket worker to stop...")
+            self._ws_stop_event.set()
+        
+        # 等待子进程优雅退出
         if self._ws_process and self._ws_process.is_alive():
-            logger.info("Stopping Feishu WebSocket worker process...")
-            self._ws_process.terminate()
-            self._ws_process.join(timeout=5.0)
+            logger.info("Waiting for Feishu WebSocket worker process to exit...")
+            self._ws_process.join(timeout=10.0)
+            
+            # 如果子进程仍未退出，尝试 terminate
             if self._ws_process.is_alive():
-                logger.warning("Feishu WebSocket worker process did not terminate, killing...")
-                self._ws_process.kill()
-                self._ws_process.join(timeout=2.0)
+                logger.warning("Feishu WebSocket worker did not exit gracefully, terminating...")
+                self._ws_process.terminate()
+                self._ws_process.join(timeout=5.0)
+                
+                # 如果 terminate 也失败，最后使用 kill
+                if self._ws_process.is_alive():
+                    logger.warning("Feishu WebSocket worker did not respond to terminate, killing...")
+                    self._ws_process.kill()
+                    self._ws_process.join(timeout=2.0)
         
         # 关闭队列处理任务
         if hasattr(self, '_queue_processor_task') and self._queue_processor_task:
