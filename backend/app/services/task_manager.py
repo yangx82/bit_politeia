@@ -167,3 +167,7 @@ class TaskManager:
                     check = "[x]" if st.status == TaskStatus.COMPLETED else "[ ]"
                     lines.append(f"  {check} {st.description}")
         return "\n".join(lines)
+
+
+# Global task manager instance for singleton pattern access
+task_manager = TaskManager()

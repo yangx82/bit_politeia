@@ -50,10 +50,14 @@ class LocalSandbox(Sandbox):
 
         # Prepare Environment (Allow only essential variables)
         safe_env = {
-            "PATH": os.environ.get("PATH", ""),
             "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
             "TEMP": self.temp_dir,
             "TMP": self.temp_dir,
+            # Pass through ResearchClaw context
+            "RESEARCHCLAW_HOME": os.environ.get("RESEARCHCLAW_HOME", ""),
+            "BAILIAN_SP_KEY": os.environ.get("BAILIAN_SP_KEY", ""),
+            "SEMANTIC_SCHOLAR_API_KEY": os.environ.get("SEMANTIC_SCHOLAR_API_KEY", ""),
+            "OPENALEX_EMAIL": os.environ.get("OPENALEX_EMAIL", ""),
         }
 
         # Windows requires these to start subprocesses reliably

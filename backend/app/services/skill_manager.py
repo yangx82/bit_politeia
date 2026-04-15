@@ -266,6 +266,17 @@ class SkillManager:
                                     def make_run_func(s_path):
                                         def run_script(arguments: str = "") -> str:
                                             try:
+                                                # Calculate project root for PYTHONPATH (4 levels up from scripts dir)
+                                                # backend/skills/{skill}/scripts -> backend/skills/{skill} -> backend/skills -> backend -> bit_politeia
+                                                root_path = os.path.abspath(
+                                                    os.path.join(
+                                                        scripts_dir, "..", "..", "..", ".."
+                                                    )
+                                                )
+                                                
+                                                env = os.environ.copy()
+                                                env["PYTHONPATH"] = root_path + os.pathsep + env.get("PYTHONPATH", "")
+                                                
                                                 cmd = [sys.executable, s_path, arguments]
                                                 result = subprocess.run(
                                                     cmd,
@@ -274,6 +285,7 @@ class SkillManager:
                                                     timeout=60,
                                                     encoding="utf-8",
                                                     errors="replace",
+                                                    env=env,
                                                 )
                                                 if result.returncode != 0:
                                                     return f"Script failed (Exit {result.returncode}):\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"

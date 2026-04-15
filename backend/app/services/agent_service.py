@@ -85,8 +85,8 @@ class AgentService:
         self.api_key = None
         self.llm = None
 
-        # Identity Config Path
-        self.config_path = "agent_config.json"
+        # Identity Config Path (Consolidated to project root)
+        self.config_path = str(self.backend_dir.parent / "agent_config.json")
 
         # P2P Reply Delay Default
 
@@ -498,21 +498,10 @@ class AgentService:
             set_key(env_file, "AGENT_BASE_URL", self.base_url)
             set_key(env_file, "AGENT_API_KEY", self.api_key)
             set_key(env_file, "AGENT_MODEL", self.model)
-            set_key(env_file, "AGENT_RESEARCH_FIELD", self.research_field)
             # if bootstrap_url:
             set_key(env_file, "AGENT_BOOTSTRAP_URL", self.bootstrap_url)
-            set_key(env_file, "AGENT_VERBOSE_LLM", "true" if self.verbose_llm else "false")
-            set_key(
-                env_file, "AGENT_BOOTSTRAP_VERIFY", "true" if self.bootstrap_verify else "false"
-            )
-            set_key(env_file, "AGENT_NAME", self.name)
-            set_key(env_file, "AGENT_PERSONALITY", self.personality)
-            set_key(env_file, "AGENT_P2P_REPLY_DELAY", str(self.p2p_reply_delay))
-            set_key(env_file, "AGENT_LANGUAGE", self.agent_language)
-            set_key(
-                env_file, "AGENT_RALPH_WIGGUM_MODE", "true" if self.ralph_wiggum_mode else "false"
-            )
-            logger.info(f"Settings saved to {env_file}")
+            
+            logger.info(f"Infrastructure settings saved to {env_file}")
         except Exception as e:
             logger.error(f"Failed to save configuration to .env: {e}")
 
@@ -738,26 +727,21 @@ class AgentService:
         base_url = os.getenv("AGENT_BASE_URL")
         api_key = os.getenv("AGENT_API_KEY")
         model = os.getenv("AGENT_MODEL", "gpt-4o")
-        research_field = os.getenv("AGENT_RESEARCH_FIELD", "AI Governance")
         bootstrap_url = os.getenv("AGENT_BOOTSTRAP_URL", "https://bootstrap.bitpoliteia.com")
-        verbose_llm = os.getenv("AGENT_VERBOSE_LLM", "true").lower() == "true"
-        bootstrap_verify = os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true"
-        name = os.getenv("AGENT_NAME", "Anonym")
-        personality = os.getenv("AGENT_PERSONALITY", "Professional, helfpful, and humorous")
-        p2p_reply_delay = int(os.getenv("AGENT_P2P_REPLY_DELAY", "5"))
-        agent_language = os.getenv("AGENT_LANGUAGE", "中文")
-        ralph_wiggum_mode = os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true"
-        self.enable_welcome = os.getenv("AGENT_ENABLE_WELCOME", "true").lower() == "true"
-        llm_timeout = float(os.getenv("AGENT_LLM_TIMEOUT", "60.0"))
-
-        # Load identity from JSON config explicitly to override ENV
+        
+        # Load identity and behavioral parameters from JSON config
         json_config = self._load_config()
-        name = json_config.get("name", name)
-        personality = json_config.get("personality", personality)
-        p2p_reply_delay = json_config.get("p2p_reply_delay", p2p_reply_delay)
-        agent_language = json_config.get("agent_language", agent_language)
-        ralph_wiggum_mode = json_config.get("ralph_wiggum_mode", ralph_wiggum_mode)
-        llm_timeout = json_config.get("llm_timeout", llm_timeout)
+        
+        name = json_config.get("name", os.getenv("AGENT_NAME", "Anonym"))
+        personality = json_config.get("personality", os.getenv("AGENT_PERSONALITY", "Professional, helpfup, and humorous"))
+        research_field = json_config.get("research_field", os.getenv("AGENT_RESEARCH_FIELD", "AI Governance"))
+        p2p_reply_delay = int(json_config.get("p2p_reply_delay", os.getenv("AGENT_P2P_REPLY_DELAY", "5")))
+        agent_language = json_config.get("agent_language", os.getenv("AGENT_LANGUAGE", "中文"))
+        ralph_wiggum_mode = json_config.get("ralph_wiggum_mode", os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true")
+        llm_timeout = float(json_config.get("llm_timeout", os.getenv("AGENT_LLM_TIMEOUT", "60.0")))
+        verbose_llm = json_config.get("verbose_llm", os.getenv("AGENT_VERBOSE_LLM", "true").lower() == "true")
+        bootstrap_verify = json_config.get("bootstrap_verify", os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true")
+        self.enable_welcome = os.getenv("AGENT_ENABLE_WELCOME", "true").lower() == "true"
 
         if base_url and api_key:
             return {
@@ -820,7 +804,7 @@ class AgentService:
         import json
 
         # Keys to exclude from JSON (they go to .env)
-        EXCLUDED_KEYS = {"api_key", "base_url", "bootstrap_url", "model", "research_field"}
+        EXCLUDED_KEYS = {"api_key", "base_url", "bootstrap_url", "model"}
 
         try:
             # Merge with existing

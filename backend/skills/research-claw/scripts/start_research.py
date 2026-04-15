@@ -2,17 +2,21 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, UTC
+import uuid
 from pathlib import Path
 
-# Add project root to path to import TaskManager
+# 0. Add project root to path BEFORE any backend imports
+# This allows 'import backend...' to work reliably
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
-sys.path.append(str(PROJECT_ROOT))
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
+# 1. Backend Imports
 try:
     from backend.app.services.task_manager import TaskStatus, task_manager
-except ImportError:
-    # Handle direct script execution if needed
-    print("Error: Could not import TaskManager. Ensure bit_politeia is in PYTHONPATH.")
+except ImportError as e:
+    print(f"Error: Could not import TaskManager ({e}). Current sys.path: {sys.path}")
     sys.exit(1)
 
 
@@ -70,6 +74,7 @@ def start_research(topic: str):
     )
     python_cmd = str(venv_python) if venv_python.exists() else sys.executable
 
+    config_path = ARC_SRC / "config.arc.yaml"
     cmd = [
         python_cmd,
         "-m",
@@ -79,7 +84,7 @@ def start_research(topic: str):
         topic,
         "--auto-approve",
         "--config",
-        "config.arc.yaml",
+        str(config_path),
     ]
 
     env = os.environ.copy()
