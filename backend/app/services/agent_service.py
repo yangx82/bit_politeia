@@ -115,6 +115,7 @@ class AgentService:
         self.personality = "Professional and helpful"
         self.agent_language = "中文"
         self.context_manager = None
+        self.knowledge_base = knowledge_base
 
         # Hydrate History and System State from Disk
         self._hydrate_history()
@@ -3039,7 +3040,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 msg_ts = msg_ts.replace(tzinfo=UTC)
 
             if msg_ts > last_ts:
-                if msg.session_id != "resident" and msg.sender != "system":
+                if msg.channel == "p2p" and msg.sender != "system":
                     new_messages.append(msg.dict())
 
         # 2.3 Gather Transactions since last block

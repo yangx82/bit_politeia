@@ -255,7 +255,7 @@ def main():
             year_start = int(sys.argv[i + 1])
             i += 2
         elif arg == '--year-end' and i + 1 < len(sys.argv):
-            year_end = int(sys.argv[i + 1]
+            year_end = int(sys.argv[i + 1])
             i += 2
         elif arg == '--deduplicate':
             do_dedup = True
