@@ -85,6 +85,8 @@ def start_research(topic: str):
         "--auto-approve",
         "--config",
         str(config_path),
+        "--output",
+        str(run_dir),
     ]
 
     env = os.environ.copy()
