@@ -30,10 +30,13 @@ class SessionManager:
     def get_session(self, entity_id: str, channel: str) -> Session:
         """
         Retrieve existing session or create a new one.
-        Currently simple: one active session per user.
+        Uses IdentityManager to resolve unified IDs for multi-channel support.
         """
-        # Unique key per participant+channel (or just entity if we want cross-channel)
-        session_key = entity_id
+        from .identity_service import identity_manager
+        
+        # Resolve unified ID for cross-channel consistency
+        unified_id = identity_manager.resolve_unified_id(entity_id, channel)
+        session_key = unified_id
 
         if session_key in self.sessions:
             session = self.sessions[session_key]
@@ -47,9 +50,9 @@ class SessionManager:
             return session
 
         # Create New
-        new_session = Session(entity_id=entity_id, channel=channel)
+        new_session = Session(entity_id=unified_id, channel=channel)
         self.sessions[session_key] = new_session
-        logger.info(f"Created new session {new_session.session_id} for entity {entity_id}")
+        logger.info(f"Created new session {new_session.session_id} for unified_id {unified_id} (original-id: {entity_id})")
         return new_session
 
     def save_session(self, session: Session):

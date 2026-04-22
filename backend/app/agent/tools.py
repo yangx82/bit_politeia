@@ -681,6 +681,7 @@ from ..agent.tools_exec import execute_shell_command
 from ..agent.tools_fs import copy_files, edit_file, list_dir, move_files, read_file, write_file
 from ..agent.tools_task import TASK_TOOLS
 from ..agent.tools_web import academic_research, fetch_web_page
+from ..agent.tools_identity import get_account_pairing_code, bind_account_by_code, unbind_account
 
 
 @tool
@@ -847,6 +848,9 @@ AGENT_TOOLS = [
     delegate_task,
     repair_code,
     restart_node,
+    get_account_pairing_code,
+    bind_account_by_code,
+    unbind_account,
 ] + TASK_TOOLS
 
 # Specialized toolset for the Self-Healing Sub-Agent
