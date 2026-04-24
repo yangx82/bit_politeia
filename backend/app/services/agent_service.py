@@ -41,6 +41,7 @@ from .context_manager import BitPoliteiaContextManager
 from .knowledge_base import knowledge_base
 from .resident_memory_service import ResidentMemory, ResidentReporter
 from .session_service import session_manager
+from .identity_service import identity_manager
 from .skill_manager import skill_manager
 from .task_manager import TaskManager, TaskStatus
 
@@ -407,14 +408,18 @@ class AgentService:
 
         return info
 
-    def _normalize_session_id(self, sid: str) -> str:
-        """Standardize Session/Chat IDs to Hex 64-char format if it looks like a P2P ID."""
+    def _normalize_session_id(self, sid: str, channel: str = None) -> str:
+        """Standardize Session/Chat IDs via IdentityManager for cross-channel consistency."""
         if not sid:
             return sid
-        # Strip potential prefixes
+        
+        # 1. Resolve unified ID if channel is provided
+        if channel:
+            return identity_manager.resolve_unified_id(sid, channel)
+
+        # 2. Legacy fallback for P2P IDs (if no channel provided)
         if sid.startswith("[p2p] "):
             sid = sid[6:]
-        # If it's a known name, try to resolve to Node ID
         if p2p_service._initialized and p2p_service.network_manager:
             for node_id, node in p2p_service.network_manager.nodes.items():
                 if node.name == sid:
@@ -1221,7 +1226,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         """Process an inbound message from a channel."""
         # 1. Log to history (Frontend Sync)
         # Standardize ID: P2P messages use Hex ID consistently
-        raw_session_id = self._normalize_session_id(msg.session_id)
+        raw_session_id = self._normalize_session_id(msg.session_id, channel=msg.channel)
         formatted_sender = msg.sender_id  # Default
 
         # Identity Normalization for History
@@ -1363,7 +1368,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         self,
         content: str,
         type: str = "agent_message",
-        session_id: str = "resident",
+        session_id: str = None,
         broadcast: bool = True,
         media: list = None,
     ):
@@ -1372,6 +1377,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         If broadcast=True, sends to all known bridges (Feishu, etc.).
         If broadcast=False, only sends to local Gateway (Web UI).
         """
+        if session_id is None or session_id == "resident":
+            session_id = identity_manager.resolve_unified_id("resident", "resident")
+
         logger.info(f"Notifying resident (broadcast={broadcast}): {content[:50]}...")
 
         # 1. Log to history (Web UI)
@@ -1411,28 +1419,32 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
     # 1. User Contact
     async def process_user_instruction(self, content: str, broadcast: bool = False) -> Message:
+        # 1. Standardize Session ID
+        session_id = identity_manager.resolve_unified_id("resident", "resident")
+        msg_id = str(uuid.uuid4())
+
         # 1. Log User Message
         user_msg = Message(
-            id=str(uuid.uuid4()),
+            id=msg_id,
             content=content,
-            sender="user",
+            sender="resident",
             timestamp=datetime.now(UTC),
-            session_id="resident",
+            session_id=session_id,
         )
         self.history.append(user_msg)
         self.resident_memory.log_interaction(
-            "resident", content, msg_type="chat", session_id="resident"
+            "resident", content, msg_type="chat", session_id=session_id
         )  # Log to private memory
 
         # 2. Agent response via Pipeline
         msg_obj = InboundMessage(
-            channel="resident", sender_id="resident", content=content, session_id="resident"
+            channel="resident", sender_id="resident", content=content, session_id=session_id
         )
         # Pass through the pipeline with Ralph Wiggum loop wrapping
         response_text, _, _ = await self._run_ralph_wiggum_loop(msg_obj)
 
         # 3. Notify Resident (Targeted or Broadcast depending on caller)
-        await self.notify_resident(response_text, session_id="resident", broadcast=broadcast)
+        await self.notify_resident(response_text, session_id=session_id, broadcast=broadcast)
 
         # Return the last Message object from history
         return self.history[-1] if self.history else None

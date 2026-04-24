@@ -303,22 +303,32 @@ class PlanStage(PipelineStage):
                 status="sent",
             )
 
-            # CRITICAL FIX: Distinguish between internal reasoning and premature intents.
-            # If tool calls are present, the non-reasoning content is an 'Intent' (e.g., "I will send it").
-            # Label it so the user knows it's currently in progress.
+            # CRITICAL FIX: Route thoughts to the active session so the user sees progress on their platform (Feishu, etc.)
+            # Always mirror to gateway too for monitoring.
             is_intent_only = len(context.tool_calls) > 0 and not thought_content
             content_to_publish = str(display_thought)
             if is_intent_only:
                 content_to_publish = f"**[计划执行中]**: {content_to_publish}"
 
-            logger.info(f"Pipeline: Publishing thought to gateway: {content_to_publish[:50]}...")
-            out_msg = OutboundMessage(
+            logger.info(f"Pipeline: Publishing thought to gateway & session {context.input_message.session_id}: {content_to_publish[:50]}...")
+            
+            # 1. Send to Gateway (for resident monitoring)
+            await agent.message_bus.publish_outbound(OutboundMessage(
                 channel="gateway",
-                session_id="resident",  # ALWAYS route thoughts to resident for privacy
+                session_id="resident",
                 content=content_to_publish,
                 type="thought",
-            )
-            await agent.message_bus.publish_outbound(out_msg)
+            ))
+
+            # 2. ALSO send to current channel if it's not the resident (e.g. Feishu)
+            # This ensures cross-channel users see the 'Agent is thinking' bubbles.
+            if context.input_message.channel != "resident":
+                 await agent.message_bus.publish_outbound(OutboundMessage(
+                    channel=context.input_message.channel,
+                    session_id=context.input_message.session_id,
+                    content=content_to_publish,
+                    type="thought",
+                ))
 
         if response.tool_calls:
             context.tool_calls = response.tool_calls
@@ -344,16 +354,25 @@ class ExecuteStage(PipelineStage):
             tool_call_id = tool_call["id"]
 
             # Emit Tool Call Event
-            # Emit Tool Call Event - Internal Log
-            out_msg = OutboundMessage(
+            # Emit Tool Call Event - Unified Log
+            # We send to the current session so the specific channel sees the tool invoking bubble
+            tool_msg = OutboundMessage(
                 channel="gateway",
                 session_id=context.input_message.session_id,
                 content=f"Invoking {tool_name} with {args}",
                 type="tool_call",
                 metadata={"tool": tool_name, "args": args},
             )
-            # print(f"[DEBUG-AG] Publishing Tool Call: {tool_name} to {out_msg.channel}")
-            await agent.message_bus.publish_outbound(out_msg)
+            await agent.message_bus.publish_outbound(tool_msg)
+
+            if context.input_message.channel != "resident":
+                await agent.message_bus.publish_outbound(OutboundMessage(
+                    channel=context.input_message.channel,
+                    session_id=context.input_message.session_id,
+                    content=f"Invoking {tool_name}...",
+                    type="tool_call",
+                    metadata={"tool": tool_name, "args": args},
+                ))
 
             try:
                 # HEARTBEAT: Notify user/network before invoking slow tools
