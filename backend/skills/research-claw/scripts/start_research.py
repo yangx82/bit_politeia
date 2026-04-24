@@ -40,7 +40,7 @@ def get_arc_src():
     return None
 
 
-def start_research(topic: str):
+def start_research(topic: str, task_id: str = None, resume: bool = False, from_stage: str = None):
     # 1. Setup paths
     research_root = PROJECT_ROOT / "backend" / "data" / "research"
     research_root.mkdir(parents=True, exist_ok=True)
@@ -52,20 +52,31 @@ def start_research(topic: str):
             "message": "AutoResearchClaw not found. Please run 'python scripts/setup_research_node.py' first.",
         }
 
-    # 2. Create Task in bit_politeia
-    task = task_manager.create_task(
-        goal=f"Autonomous Research: {topic}",
-        priority=7,
-        subtasks=[
-            "Scoping & Literature Search",
-            "Experiment Design & Execution",
-            "Drafting & Peer Review",
-            "Final Paper Generation",
-        ],
-    )
-    task_id = task.id
-    run_dir = research_root / f"rc-{task_id}"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    # 2. Resolve Task & Run Dir
+    if task_id and resume:
+        if task_id not in task_manager.tasks:
+            return {"status": "error", "message": f"Task ID {task_id} not found for resumption."}
+        task = task_manager.tasks[task_id]
+        run_dir_str = task.metadata.get("research_path")
+        if not run_dir_str or not os.path.exists(run_dir_str):
+             return {"status": "error", "message": f"Research path for Task {task_id} does not exist on disk."}
+        run_dir = Path(run_dir_str)
+        print(f"Resuming research task {task_id} in {run_dir}")
+    else:
+        # Create NEW Task
+        task = task_manager.create_task(
+            goal=f"Autonomous Research: {topic}",
+            priority=7,
+            subtasks=[
+                "Scoping & Literature Search",
+                "Experiment Design & Execution",
+                "Drafting & Peer Review",
+                "Final Paper Generation",
+            ],
+        )
+        task_id = task.id
+        run_dir = research_root / f"rc-{task_id}"
+        run_dir.mkdir(parents=True, exist_ok=True)
 
     # 3. Prepare command
     # Try to use the venv python if it exists, otherwise system python
@@ -89,6 +100,11 @@ def start_research(topic: str):
         str(run_dir),
     ]
 
+    if resume:
+        cmd.append("--resume")
+    if from_stage:
+        cmd.extend(["--from-stage", from_stage])
+
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ARC_SRC) + os.pathsep + env.get("PYTHONPATH", "")
 
@@ -96,13 +112,15 @@ def start_research(topic: str):
 
     try:
         # Launch as background process
+        # We append to log if resuming
+        log_mode = "a" if resume else "w"
+        
         if sys.platform == "win32":
-            # DETACHED_PROCESS = 0x00000008
             process = subprocess.Popen(
                 cmd,
                 cwd=str(ARC_SRC),
                 env=env,
-                stdout=open(log_file, "w"),
+                stdout=open(log_file, log_mode),
                 stderr=subprocess.STDOUT,
                 creationflags=0x00000008,
             )
@@ -111,7 +129,7 @@ def start_research(topic: str):
                 cmd,
                 cwd=str(ARC_SRC),
                 env=env,
-                stdout=open(log_file, "w"),
+                stdout=open(log_file, log_mode),
                 stderr=subprocess.STDOUT,
                 preexec_fn=os.setpgrp,
             )
@@ -119,24 +137,43 @@ def start_research(topic: str):
         # Update Task Metadata
         task.metadata["research_path"] = str(run_dir)
         task.metadata["pid"] = process.pid
+        if resume:
+            task.status = "running"
         task_manager.save_tasks()
 
+        mode_str = "Resumed" if resume else "Started"
         return {
             "status": "success",
             "task_id": task_id,
-            "message": f"Research task started for topic: '{topic}'. Check status with Task ID: {task_id}",
+            "message": f"Research task {mode_str.lower()} for topic: '{topic}'. Check status with Task ID: {task_id}",
             "log_path": str(log_file),
+            "resume": resume,
+            "from_stage": from_stage
         }
     except Exception as e:
-        task_manager.fail_task(task_id, str(e))
-        return {"status": "error", "message": f"Failed to start research: {e!s}"}
+        if not resume:
+            task_manager.fail_task(task_id, str(e))
+        return {"status": "error", "message": f"Failed to { 'resume' if resume else 'start' } research: {e!s}"}
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print(json.dumps({"status": "error", "message": "Missing topic argument."}))
+        print(json.dumps({"status": "error", "message": "Missing arguments."}))
         sys.exit(1)
 
-    topic_arg = sys.argv[1]
-    result = start_research(topic_arg)
+    raw_args = sys.argv[1]
+    
+    # Try to parse as JSON for advanced control
+    try:
+        args_obj = json.loads(raw_args)
+        topic = args_obj.get("topic", "Unknown Topic")
+        task_id = args_obj.get("task_id")
+        resume = args_obj.get("resume", False)
+        from_stage = args_obj.get("from_stage")
+        
+        result = start_research(topic, task_id=task_id, resume=resume, from_stage=from_stage)
+    except json.JSONDecodeError:
+        # Fallback to simple topic string
+        result = start_research(raw_args)
+        
     print(json.dumps(result))

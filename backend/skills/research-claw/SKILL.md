@@ -21,10 +21,17 @@ This skill runs in the background. You must launch a research task, then check i
 Call `research-claw_start_research` with the research topic. This will return a `Task ID`.
 Example: `research-claw_start_research(arguments="Research the impact of random matrix theory on neural network initialization")`
 
-### 2. Check Status
+### 2. Resume Research
+If a task was interrupted, failed, or you modified its code (e.g. in its `research_path`), you can resume it using a JSON object as the argument.
+Example: `research-claw_start_research(arguments='{"topic": "...", "resume": true, "task_id": "[TASK_ID]"}')`
+
+**Advanced Resumption**: You can specify a starting stage (e.g. `ENVIRONMENT_SETUP`, `CODE_GENERATION`, `EXPERIMENT_RUN`, `RESULT_ANALYSIS`) to skip earlier completed steps.
+Example: `research-claw_start_research(arguments='{"topic": "...", "resume": true, "task_id": "[TASK_ID]", "from_stage": "CODE_GENERATION"}')`
+
+### 3. Check Status
 Call `research-claw_check_status` with the Task ID to get the current stage (1-23) and progress updates.
 Example: `research-claw_check_status(arguments="[TASK_ID]")`
 
-### 3. Retrieve Results
+### 4. Retrieve Results
 Once the status is `COMPLETED`, call `research-claw_get_paper` to retrieve the final paper's content or file path.
 Example: `research-claw_get_paper(arguments="[TASK_ID]")`
