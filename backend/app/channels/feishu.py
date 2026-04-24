@@ -34,6 +34,23 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
     )
     ws_logger = logging.getLogger("feishu_ws")
     
+    # 过滤 Lark SDK 的 WebSocket 断开连接错误日志
+    # "no close frame received or sent" 是正常的断开连接情况，代码已处理重连
+    class LarkWebSocketFilter(logging.Filter):
+        def filter(self, record):
+            # 过滤掉 WebSocket 正常断开连接的错误日志
+            if "no close frame received" in record.getMessage():
+                return False
+            if "receive message loop exit" in record.getMessage():
+                return False
+            return True
+    
+    # 应用过滤器到 Lark 相关的日志记录器
+    lark_logger = logging.getLogger("Lark")
+    lark_logger.addFilter(LarkWebSocketFilter())
+    lark_ws_logger = logging.getLogger("lark")
+    lark_ws_logger.addFilter(LarkWebSocketFilter())
+    
     # 信号处理：捕获 SIGINT/SIGTERM 实现优雅退出
     def signal_handler(signum, frame):
         ws_logger.info(f"Received signal {signum}, setting stop event")

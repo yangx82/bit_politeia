@@ -635,13 +635,14 @@ class AgentService:
                 base_prompt + identity_section + host_info + "\n" + skill_index_prompt
             )
 
+            # Initialize Context Manager before LLM is ready to prevent race conditions during message processing
+            from .context_manager import BitPoliteiaContextManager
+            self.context_manager = BitPoliteiaContextManager(self)
+
             self.llm = raw_llm.bind_tools(all_tools)
             self.tools_map = {t.name: t for t in all_tools}
 
             logger.info(f"Agent LLM Initialized. Active Tools: {list(self.tools_map.keys())}")
-
-            # Initialize Context Manager after LLM is ready
-            self.context_manager = BitPoliteiaContextManager(self)
 
             # Hydrate system state (inbox, de-dup IDs) after potential initialization
             self._hydrate_system_state()
@@ -850,6 +851,11 @@ class AgentService:
         )
         from ..services.session_service import session_manager
 
+        # 0. Check Initialization State
+        if not self.context_manager or not self.llm:
+            logger.warning(f"Pipeline triggered while agent is still initializing. msg={msg.content[:50]}")
+            return "智能体正在初始化配置中，请稍后再试...", False, "INITIALIZING"
+
         # 0. Get or Create Session
         session = session_manager.get_session(msg.sender_id, msg.channel)
 
@@ -864,9 +870,12 @@ class AgentService:
             # Calculate remaining delay relative to message timestamp
             # This ensures that the total delay is consistent regardless of transit time.
             now = datetime.now(UTC)
-            # If msg.timestamp is offset-naive and now is naive, they compare fine.
-            # Assuming both are local or both are UTC.
-            target_time = msg.timestamp + timedelta(seconds=delay_val)
+            # Ensure msg.timestamp is offset-aware for comparison
+            msg_ts = msg.timestamp
+            if msg_ts.tzinfo is None:
+                msg_ts = msg_ts.replace(tzinfo=UTC)
+                
+            target_time = msg_ts + timedelta(seconds=delay_val)
             remaining_seconds = (target_time - now).total_seconds()
 
             if remaining_seconds > 0:
