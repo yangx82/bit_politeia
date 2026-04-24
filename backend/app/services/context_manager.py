@@ -37,12 +37,13 @@ class BitPoliteiaContextManager:
 
         self.threshold_tokens = int(self.aux_context_len * self.threshold_percent)
 
-        # Cache for static content size (updated when memory changes)
-        self._static_content_chars = 0
-        self._static_content_last_update = None
+        # Qwen/DashScope Tool-Calling Penalty: Limit is ~200k tokens
+        self.tool_mode_limit = 200000
+        self.is_tool_mode = True  # Agent always uses tools in this system
 
         logger.info(
-            f"ContextManager initialized. Threshold: {self.threshold_tokens} tokens using {self.aux_name}"
+            f"ContextManager initialized. Threshold: {self.threshold_tokens} tokens. "
+            f"Tool-mode limit enforced: {self.tool_mode_limit} tokens."
         )
 
     async def get_optimized_messages(
@@ -90,38 +91,36 @@ class BitPoliteiaContextManager:
         daily_notes_chars = 0
 
         try:
-            # 1. MEMORY.md (Long-term memory)
+            # 1. MEMORY.md (Long-term memory) - Limit to 20k chars
             long_term = self.resident_memory.read_long_term()
             if long_term:
-                total_chars += len(long_term)
+                total_chars += len(long_term[:20000])
 
-            # 2. Daily Notes Summary (compressed historical notes)
+            # 2. Daily Notes Summary (compressed historical notes) - Limit to 20k chars
             summary = self.resident_memory.read_summary()
             if summary:
-                total_chars += len(summary)
+                total_chars += len(summary[:20000])
 
-            # 3. Recent Daily Notes (last 3 days, uncompressed)
+            # 3. Recent Daily Notes (last 3 days, uncompressed) - Limit to 30k chars
             recent_memories = self.resident_memory.get_recent_memories(days=3)
             if recent_memories:
-                daily_notes_chars = len(recent_memories)
+                daily_notes_chars = len(recent_memories[:30000])
                 total_chars += daily_notes_chars
 
-            # 4. Skills index (approximate - get from skill manager if available)
+            # 4. Skills index (approximate) - Limit to 10k chars
             if hasattr(self.agent, "skill_manager"):
                 skill_index = self.agent.skill_manager.get_skill_index()
                 if skill_index:
-                    total_chars += len(skill_index)
+                    total_chars += len(skill_index[:10000])
 
-            # 5. Community rules (approximate)
+            # 5. Community rules (approximate) - Limit to 20k chars
             from .community_config import community_config
-
             rules_text = community_config.get_all_rules_text()
             if rules_text:
-                total_chars += len(rules_text)
+                total_chars += len(rules_text[:20000])
 
-            # 6. Base system prompt overhead (approximate)
-            # Includes role blocks, time, host info, etc.
-            total_chars += 2000  # Conservative estimate for base overhead
+            # 6. Base system prompt overhead
+            total_chars += 5000  # More conservative estimate
 
             logger.debug(
                 f"Static content estimate: {total_chars} chars (~{total_chars // 4} tokens)"
@@ -364,14 +363,17 @@ class BitPoliteiaContextManager:
         """
         # 1. Calculate effective threshold accounting for static content
         static_tokens = static_chars / 4
-        effective_threshold = self.threshold_tokens - static_tokens
+        
+        # In tool mode, the absolute limit is 200k. 
+        # We must ensure History + Static < 200k * threshold_percent
+        absolute_limit = self.tool_mode_limit if self.is_tool_mode else self.threshold_tokens
+        effective_threshold = (absolute_limit * self.threshold_percent) - static_tokens
 
-        # Ensure minimum threshold (at least 10k tokens for conversation)
-        min_threshold = 10000
+        # Ensure minimum threshold (at least 5k tokens for conversation)
+        min_threshold = 5000
         if effective_threshold < min_threshold:
             logger.warning(
-                f"Static content ({static_tokens:.0f} tokens) exceeds {(self.threshold_tokens - min_threshold):.0f} tokens. "
-                f"Consider compressing MEMORY.md or Daily Notes. Using minimum threshold: {min_threshold}"
+                f"Static content ({static_tokens:.0f}t) is very large. Effective threshold for history is small: {effective_threshold:.0f}t"
             )
             effective_threshold = min_threshold
 
@@ -406,6 +408,15 @@ class BitPoliteiaContextManager:
 
         # 3. Generate Summary
         summary_text = await self._summarize_middle_turns(middle, task_id)
+        
+        # 3.5 Emergency Truncation: If summarization failed or total history is still massive, 
+        # perform a hard drop of older messages.
+        if "[Error generating iterative summary" in summary_text or approx_tokens > (absolute_limit * 1.5):
+            logger.error(f"Context compression failed or insufficient. Performing hard truncation. (approx_tokens={approx_tokens:.0f})")
+            # Keep only the last 10 messages
+            if len(history) > 10:
+                truncated_history = history[:2] + [SystemMessage(content="[Earlier conversation dropped due to context limits]")] + history[-8:]
+                return truncated_history
 
         # 4. Log to System Archive (Hash Integrity)
         checkpoint_id = str(os.urandom(4).hex())

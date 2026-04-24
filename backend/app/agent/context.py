@@ -50,15 +50,15 @@ Use this absolute time for any date calculations or temporal awareness."""
         if host_info:
             parts.append(host_info)
 
-        # 2. Skill Index (Progressive Disclosure)
+        # 2. Skill Index (Progressive Disclosure) - Limit to 10k chars
         skill_index = self.skill_manager.get_skill_index()
         if skill_index:
-            parts.append(f"\n\n# Available Skills\n{skill_index}")
+            parts.append(f"\n\n# Available Skills\n{skill_index[:10000]}")
 
-        # 3. Memory Context
+        # 3. Memory Context - Limit to 20k chars
         memory_context = self.memory.get_memory_context()
         if memory_context:
-            parts.append(f"\n\n# Memory Context\n{memory_context}")
+            parts.append(f"\n\n# Memory Context\n{memory_context[:20000]}")
 
         # 4. Long-term Tasks
         if self.task_manager:
@@ -73,7 +73,7 @@ Use this absolute time for any date calculations or temporal awareness."""
 Below is the current community organization and election protocol. 
 Reference these rules for all governance decisions, election proposals, and group management tasks.
 ```json
-{rules_text}
+{rules_text[:15000]}
 ```"""
             parts.append(protocol_block)
 
@@ -161,7 +161,7 @@ Reference these rules for all governance decisions, election proposals, and grou
         if resident_memory_context:
             messages.append(
                 SystemMessage(
-                    content=f"Your Internal Memory (Semantic & Working):\n{resident_memory_context}"
+                    content=f"Your Internal Memory (Semantic & Working):\n{resident_memory_context[:10000]}"
                 )
             )
 
@@ -181,7 +181,7 @@ Reference these rules for all governance decisions, election proposals, and grou
         if governance_context:
             messages.append(
                 SystemMessage(
-                    content=f"LIVE GOVERNANCE STATE (Active Elections/Proposals):\n{governance_context}"
+                    content=f"LIVE GOVERNANCE STATE (Active Elections/Proposals):\n{governance_context[:10000]}"
                 )
             )
 
