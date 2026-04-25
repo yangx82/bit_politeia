@@ -55,8 +55,22 @@ def start_research(topic: str, task_id: str = None, resume: bool = False, from_s
     # 2. Resolve Task & Run Dir
     if task_id and resume:
         if task_id not in task_manager.tasks:
-            return {"status": "error", "message": f"Task ID {task_id} not found for resumption."}
+            # Try to see if it's a directory name like rc-xxxx
+            found_id = None
+            for tid, t in task_manager.tasks.items():
+                if t.metadata.get("research_path") and Path(t.metadata["research_path"]).name == task_id:
+                    found_id = tid
+                    break
+            if found_id:
+                task_id = found_id
+            else:
+                return {"status": "error", "message": f"Task ID or run directory '{task_id}' not found for resumption."}
+        
         task = task_manager.tasks[task_id]
+        if not topic or topic == "Unknown Topic":
+            # Recover topic from task goal
+            topic = task.goal.replace("Autonomous Research: ", "")
+
         run_dir_str = task.metadata.get("research_path")
         if not run_dir_str or not os.path.exists(run_dir_str):
              return {"status": "error", "message": f"Research path for Task {task_id} does not exist on disk."}
@@ -173,7 +187,14 @@ if __name__ == "__main__":
         
         result = start_research(topic, task_id=task_id, resume=resume, from_stage=from_stage)
     except json.JSONDecodeError:
-        # Fallback to simple topic string
-        result = start_research(raw_args)
+        # Fallback: Check if it looks like a CLI resume command (e.g. "--resume rc-2026...")
+        if raw_args.strip().startswith("--resume"):
+            parts = raw_args.strip().split()
+            resume_val = parts[1] if len(parts) > 1 else None
+            # If resume_val is provided, treat it as task_id
+            result = start_research("Unknown Topic", task_id=resume_val, resume=True)
+        else:
+            # Fallback to simple topic string
+            result = start_research(raw_args)
         
     print(json.dumps(result))
