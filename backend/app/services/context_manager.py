@@ -449,25 +449,45 @@ class BitPoliteiaContextManager:
         )
 
         history_text = ""
-        for m in messages:
+        # Limit total characters to stay well within the summarizer's context window (e.g., 260k tokens)
+        # 100k chars is approx 25k-40k tokens, which is very safe.
+        MAX_INPUT_CHARS = 100000 
+        
+        for m in reversed(messages): # Work backwards to keep most recent "middle" context if we hit limit
             role = "Assistant" if isinstance(m, AIMessage) else "User"
+            content = m.content if isinstance(m.content, str) else str(m.content)
+            
+            msg_repr = f"[{role}]: {content[:300]}"
+            
+            # Include tool calls in the summary input so the LLM knows what was attempted
+            if isinstance(m, AIMessage) and hasattr(m, "tool_calls") and m.tool_calls:
+                tcs = [tc.get("name", "unknown") for tc in m.tool_calls if isinstance(tc, dict)]
+                if tcs:
+                    msg_repr += f" (Calls tools: {', '.join(tcs)})"
+            
             if isinstance(m, ToolMessage):
                 role = f"Tool ({m.name})"
-            history_text += f"[{role}]: {m.content[:500]}\n"  # Truncate very long tool outputs in summarizer input
+                msg_repr = f"[{role}]: {content[:300]}"
+
+            if len(history_text) + len(msg_repr) > MAX_INPUT_CHARS:
+                history_text = "[... Earlier turns in this segment truncated ...]\n" + history_text
+                break
+            
+            history_text = msg_repr + "\n" + history_text
 
         prompt = f"""
-        Summarize the following conversation segment for an AI agent. 
-        Focus on:
-        - Work completed so far.
-        - Unresolved problems or errors encountered.
-        - Important decisions made.
-        - The current state of Task: "{task_goal}"
-        
-        Conversation Segment:
-        {history_text}
-        
-        Format the summary as a structured Markdown list. Keep it concise but information-dense (max 500 words).
-        """
+Summarize the following conversation segment for an AI agent. 
+Focus on:
+- Work completed so far.
+- Unresolved problems or errors encountered.
+- Important decisions made.
+- The current state of Task: "{task_goal}"
+
+Conversation Segment:
+{history_text}
+
+Format the summary as a structured Markdown list. Keep it concise but information-dense (max 800 words).
+"""
 
         try:
             response = await self.summarizer_llm.ainvoke([HumanMessage(content=prompt)])
