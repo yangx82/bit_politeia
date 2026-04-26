@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 class TaskStatus(str, Enum):
     PENDING = "pending"
     ACTIVE = "active"
+    RUNNING = "running"
     BLOCKED = "blocked"
     COMPLETED = "completed"
     FAILED = "failed"

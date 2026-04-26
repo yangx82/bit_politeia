@@ -152,7 +152,7 @@ def start_research(topic: str, task_id: str = None, resume: bool = False, from_s
         task.metadata["research_path"] = str(run_dir)
         task.metadata["pid"] = process.pid
         if resume:
-            task.status = "running"
+            task.status = TaskStatus.RUNNING
         task_manager.save_tasks()
 
         mode_str = "Resumed" if resume else "Started"
