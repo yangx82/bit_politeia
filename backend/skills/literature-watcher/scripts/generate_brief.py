@@ -4,11 +4,73 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from watcher_service import WatcherService, _load_env_file
+from watcher_service import WatcherService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+def _load_env_file():
+    """Load .env file from current directory, parent directories, or package directory.
+    Supports manual parsing if python-dotenv is not installed.
+    """
+    def parse_env_content(content):
+        """Simple manual parser for .env files."""
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip("'").strip('"')
+                if key and key not in os.environ:
+                    os.environ[key] = value
+
+    try:
+        from dotenv import load_dotenv
+        has_dotenv = True
+    except ImportError:
+        has_dotenv = False
+
+    # Potential locations to check
+    search_dirs = [Path.cwd()]
+    
+    # Add parent directories of CWD
+    cwd = Path.cwd()
+    for _ in range(5):
+        cwd = cwd.parent
+        search_dirs.append(cwd)
+        if cwd == cwd.parent: break
+
+    # Add parent directories of the script itself
+    script_dir = Path(__file__).resolve().parent
+    for _ in range(5):
+        search_dirs.append(script_dir)
+        script_dir = script_dir.parent
+        if script_dir == script_dir.parent: break
+
+    # Remove duplicates while preserving order
+    unique_dirs = []
+    seen = set()
+    for d in search_dirs:
+        if d not in seen:
+            unique_dirs.append(d)
+            seen.add(d)
+
+    for d in unique_dirs:
+        env_path = d / ".env"
+        if env_path.exists():
+            if has_dotenv:
+                load_dotenv(dotenv_path=env_path, override=False)
+            else:
+                try:
+                    with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                        parse_env_content(f.read())
+                except Exception:
+                    pass
+            return True
+    return False
 
 def generate_markdown_brief(topic, papers, output_path):
     """

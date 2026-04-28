@@ -29,43 +29,64 @@ from pathlib import Path
 # Try to load .env file from multiple potential locations
 def _load_env_file():
     """Load .env file from current directory, parent directories, or package directory.
-
-    Returns True if a .env file was found and loaded, False otherwise.
-    Note: This does NOT override existing environment variables.
+    Supports manual parsing if python-dotenv is not installed.
     """
+    def parse_env_content(content):
+        """Simple manual parser for .env files."""
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip("'").strip('"')
+                if key and key not in os.environ:
+                    os.environ[key] = value
+
     try:
         from dotenv import load_dotenv
+        has_dotenv = True
     except ImportError:
-        return False  # python-dotenv not installed
+        has_dotenv = False
 
-    # Try current working directory first
-    env_path = Path.cwd() / ".env"
-    if env_path.exists():
-        load_dotenv(dotenv_path=env_path, override=False)
-        return True
-
-    # Try parent directories (up to 5 levels)
+    # Potential locations to check
+    search_dirs = [Path.cwd()]
+    
+    # Add parent directories of CWD
     cwd = Path.cwd()
     for _ in range(5):
-        env_path = cwd / ".env"
-        if env_path.exists():
-            load_dotenv(dotenv_path=env_path, override=False)
-            return True
         cwd = cwd.parent
-        if cwd == cwd.parent:  # Reached root
-            break
+        search_dirs.append(cwd)
+        if cwd == cwd.parent: break
 
-    # Try the package's parent directory (bit_politeia project root)
+    # Add parent directories of the script itself
     script_dir = Path(__file__).resolve().parent
     for _ in range(5):
-        env_path = script_dir / ".env"
-        if env_path.exists():
-            load_dotenv(dotenv_path=env_path, override=False)
-            return True
+        search_dirs.append(script_dir)
         script_dir = script_dir.parent
-        if script_dir == script_dir.parent:
-            break
+        if script_dir == script_dir.parent: break
 
+    # Remove duplicates while preserving order
+    unique_dirs = []
+    seen = set()
+    for d in search_dirs:
+        if d not in seen:
+            unique_dirs.append(d)
+            seen.add(d)
+
+    for d in unique_dirs:
+        env_path = d / ".env"
+        if env_path.exists():
+            if has_dotenv:
+                load_dotenv(dotenv_path=env_path, override=False)
+            else:
+                try:
+                    with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                        parse_env_content(f.read())
+                except Exception:
+                    pass
+            return True
     return False
 
 
