@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Scientific schematic generation using Nano Banana Pro.
+Scientific schematic generation using Google Gemini.
 
 Generate any scientific diagram by describing it in natural language.
-Nano Banana Pro handles everything automatically with smart iterative refinement.
+Google Gemini handles everything automatically with smart iterative refinement.
 
 Smart iteration: Only regenerates if quality is below threshold for your document type.
-Quality review: Uses Gemini 3 Pro for professional scientific evaluation.
+Quality review: Uses Gemini for professional scientific evaluation.
 
 Usage:
     # Generate for journal paper (highest quality threshold)
@@ -26,17 +26,60 @@ import sys
 from pathlib import Path
 
 
+# Try to load .env file from multiple potential locations
+def _load_env_file():
+    """Load .env file from current directory, parent directories, or package directory.
+
+    Returns True if a .env file was found and loaded, False otherwise.
+    Note: This does NOT override existing environment variables.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return False  # python-dotenv not installed
+
+    # Try current working directory first
+    env_path = Path.cwd() / ".env"
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path, override=False)
+        return True
+
+    # Try parent directories (up to 5 levels)
+    cwd = Path.cwd()
+    for _ in range(5):
+        env_path = cwd / ".env"
+        if env_path.exists():
+            load_dotenv(dotenv_path=env_path, override=False)
+            return True
+        cwd = cwd.parent
+        if cwd == cwd.parent:  # Reached root
+            break
+
+    # Try the package's parent directory (bit_politeia project root)
+    script_dir = Path(__file__).resolve().parent
+    for _ in range(5):
+        env_path = script_dir / ".env"
+        if env_path.exists():
+            load_dotenv(dotenv_path=env_path, override=False)
+            return True
+        script_dir = script_dir.parent
+        if script_dir == script_dir.parent:
+            break
+
+    return False
+
+
 def main():
     """Command-line interface."""
     parser = argparse.ArgumentParser(
-        description="Generate scientific schematics using AI with smart iterative refinement",
+        description="Generate scientific schematics using Google Gemini AI with smart iterative refinement",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 How it works:
   Simply describe your diagram in natural language
-  Nano Banana Pro generates it automatically with:
+  Google Gemini generates it automatically with:
   - Smart iteration (only regenerates if quality is below threshold)
-  - Quality review by Gemini 3 Pro
+  - Quality review by Gemini
   - Document-type aware quality thresholds
   - Publication-ready output
 
@@ -68,7 +111,8 @@ Examples:
   python generate_schematic.py "Circuit diagram" -o circuit.png -v
 
 Environment Variables:
-  OPENROUTER_API_KEY    Required for AI generation
+  GEMINI_API_KEY    Google Gemini API key (required)
+  Get your key at: https://aistudio.google.com/app/apikey
         """,
     )
 
@@ -96,19 +140,31 @@ Environment Variables:
         default=2,
         help="Maximum refinement iterations (default: 2, max: 2)",
     )
-    parser.add_argument("--api-key", help="OpenRouter API key (or use OPENROUTER_API_KEY env var)")
+    parser.add_argument(
+        "--model",
+        default="nano-banana-2",
+        choices=["nano-banana-pro", "nano-banana-2"],
+        help="Image generation model (default: nano-banana-2)",
+    )
+    parser.add_argument("--api-key", help="Google Gemini API key (or use GEMINI_API_KEY env var)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
 
     # Check for API key
-    api_key = args.api_key or os.getenv("OPENROUTER_API_KEY")
+    api_key = args.api_key or os.getenv("GEMINI_API_KEY")
+    
+    # If not found in environment, try loading from .env file
     if not api_key:
-        print("Error: OPENROUTER_API_KEY environment variable not set")
-        print("\nFor AI generation, you need an OpenRouter API key.")
-        print("Get one at: https://openrouter.ai/keys")
+        _load_env_file()
+        api_key = os.getenv("GEMINI_API_KEY")
+        
+    if not api_key:
+        print("Error: GEMINI_API_KEY environment variable not set")
+        print("\nFor AI generation, you need a Google Gemini API key.")
+        print("Get one at: https://aistudio.google.com/app/apikey")
         print("\nSet it with:")
-        print("  export OPENROUTER_API_KEY='your_api_key'")
+        print("  export GEMINI_API_KEY='your_api_key'")
         print("\nOr use --api-key flag")
         sys.exit(1)
 
@@ -125,6 +181,8 @@ Environment Variables:
 
     if args.doc_type != "default":
         cmd.extend(["--doc-type", args.doc_type])
+
+    cmd.extend(["--model", args.model])
 
     # Enforce max 2 iterations
     iterations = min(args.iterations, 2)

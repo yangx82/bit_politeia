@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-AI-powered slide image generation using Nano Banana Pro.
+AI-powered slide image generation using Google Gemini models.
 
 This script generates presentation slides or slide visuals using AI:
-- full_slide mode: Generate complete slides with title, content, and visuals (for PDF workflow)
+- full_slide mode: Generate complete slides with title, content, visuals (for PDF workflow)
 - visual_only mode: Generate just images/figures to place on slides (for PPT workflow)
 
 Supports attaching reference images for context (e.g., "create a slide about this chart").
 
 Uses smart iterative refinement:
-1. Generate initial image with Nano Banana Pro
-2. Quality review using Gemini 3 Pro
+1. Generate initial image with Nano Banana Pro or Nano Banana 2 via Google API
+2. Quality review using Gemini 3.1 Pro
 3. Only regenerate if quality is below threshold
 4. Repeat until quality meets standards (max iterations)
 
 Requirements:
-    - OPENROUTER_API_KEY environment variable
+    - GEMINI_API_KEY environment variable (Google AI Studio API key)
     - requests library
 
 Usage:
@@ -46,11 +46,15 @@ except ImportError:
 
 
 def _load_env_file():
-    """Load .env file from current directory, parent directories, or package directory."""
+    """Load .env file from current directory, parent directories, or package directory.
+
+    Returns True if a .env file was found and loaded, False otherwise.
+    Note: This does NOT override existing environment variables.
+    """
     try:
         from dotenv import load_dotenv
     except ImportError:
-        return False
+        return False  # python-dotenv not installed
 
     # Try current working directory first
     env_path = Path.cwd() / ".env"
@@ -66,7 +70,7 @@ def _load_env_file():
             load_dotenv(dotenv_path=env_path, override=False)
             return True
         cwd = cwd.parent
-        if cwd == cwd.parent:
+        if cwd == cwd.parent:  # Reached root
             break
 
     # Try the package's parent directory
@@ -86,13 +90,20 @@ def _load_env_file():
 class SlideImageGenerator:
     """Generate presentation slides or visuals using AI with iterative refinement.
 
-    Two modes:
-    - full_slide: Generate complete slide with title, content, visuals (for PDF workflow)
-    - visual_only: Generate just the image/figure for a slide (for PPT workflow)
+    Uses Google Gemini API for both image generation and quality review.
     """
 
     # Quality threshold for presentations (lower than journal/conference papers)
     QUALITY_THRESHOLD = 6.5
+    
+    # Available image generation models via Google Gemini API
+    IMAGE_GENERATION_MODELS = {
+        "nano-banana-pro": "gemini-3-pro-image-preview",  # Nano Banana Pro (Gemini 3 Pro)
+        "nano-banana-2": "gemini-3.1-flash-image-preview",  # Nano Banana 2 (Gemini 3.1 Flash)
+    }
+    
+    # Review model for quality evaluation
+    REVIEW_MODEL = "gemini-3.1-pro-preview"  # Gemini 3.1 Pro for quality review
 
     # Guidelines for generating full slides (complete slide images)
     FULL_SLIDE_GUIDELINES = """
@@ -166,36 +177,41 @@ STYLE:
 - Corporate/academic level of polish
 """
 
-    def __init__(self, api_key: str | None = None, verbose: bool = False):
+    def __init__(self, api_key: str | None = None, verbose: bool = False, image_model: str = "nano-banana-2"):
         """
         Initialize the generator.
 
         Args:
-            api_key: OpenRouter API key (or use OPENROUTER_API_KEY env var)
+            api_key: Google Gemini API key (or use GEMINI_API_KEY env var)
             verbose: Print detailed progress information
+            image_model: Image generation model to use ("nano-banana-pro" or "nano-banana-2")
         """
-        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
 
         if not self.api_key:
             _load_env_file()
-            self.api_key = os.getenv("OPENROUTER_API_KEY")
+            self.api_key = os.getenv("GEMINI_API_KEY")
 
         if not self.api_key:
             raise ValueError(
-                "OPENROUTER_API_KEY not found. Please either:\n"
-                "  1. Set the OPENROUTER_API_KEY environment variable\n"
-                "  2. Add OPENROUTER_API_KEY to your .env file\n"
+                "GEMINI_API_KEY not found. Please either:\n"
+                "  1. Set the GEMINI_API_KEY environment variable\n"
+                "  2. Add GEMINI_API_KEY to your .env file\n"
                 "  3. Pass api_key parameter to the constructor\n"
-                "Get your API key from: https://openrouter.ai/keys"
+                "Get your API key from: https://aistudio.google.com/app/apikey"
             )
 
         self.verbose = verbose
         self._last_error = None
-        self.base_url = "https://openrouter.ai/api/v1"
-        # Nano Banana Pro for image generation
-        self.image_model = "google/gemini-3-pro-image-preview"
-        # Gemini 3 Pro for quality review
-        self.review_model = "google/gemini-3-pro"
+        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        
+        # Select image generation model
+        if image_model in self.IMAGE_GENERATION_MODELS:
+            self.image_model = self.IMAGE_GENERATION_MODELS[image_model]
+        else:
+            self.image_model = self.IMAGE_GENERATION_MODELS["nano-banana-2"]
+            
+        self.review_model = self.REVIEW_MODEL
 
     def _log(self, message: str):
         """Log message if verbose mode is enabled."""
@@ -203,26 +219,26 @@ STYLE:
             print(f"[{time.strftime('%H:%M:%S')}] {message}")
 
     def _make_request(
-        self, model: str, messages: list[dict[str, Any]], modalities: list[str] | None = None
+        self, model: str, contents: list[dict[str, Any]], generation_config: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        """Make a request to OpenRouter API."""
+        """Make a request to Google Gemini API."""
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/scientific-writer",
-            "X-Title": "Scientific Slide Generator",
         }
 
-        payload = {"model": model, "messages": messages}
-
-        if modalities:
-            payload["modalities"] = modalities
+        payload = {
+            "contents": contents,
+        }
+        
+        if generation_config:
+            payload["generationConfig"] = generation_config
 
         self._log(f"Making request to {model}...")
 
         try:
+            url = f"{self.base_url}/models/{model}:generateContent?key={self.api_key}"
             response = requests.post(
-                f"{self.base_url}/chat/completions", headers=headers, json=payload, timeout=120
+                url, headers=headers, json=payload, timeout=120
             )
 
             try:
@@ -244,75 +260,36 @@ STYLE:
             raise RuntimeError(f"API request failed: {e!s}")
 
     def _extract_image_from_response(self, response: dict[str, Any]) -> bytes | None:
-        """Extract base64-encoded image from API response."""
+        """Extract base64-encoded image from Google Gemini API response."""
         try:
-            choices = response.get("choices", [])
-            if not choices:
-                self._log("No choices in response")
+            candidates = response.get("candidates", [])
+            if not candidates:
+                self._log("No candidates in response")
                 return None
 
-            message = choices[0].get("message", {})
+            content = candidates[0].get("content", {})
+            parts = content.get("parts", [])
+            
+            if not parts:
+                self._log("No parts in response content")
+                return None
 
-            # Nano Banana Pro returns images in the 'images' field
-            images = message.get("images", [])
-            if images and len(images) > 0:
-                self._log(f"Found {len(images)} image(s) in 'images' field")
-
-                first_image = images[0]
-                if isinstance(first_image, dict):
-                    if first_image.get("type") == "image_url":
-                        url = first_image.get("image_url", {})
-                        if isinstance(url, dict):
-                            url = url.get("url", "")
-
-                        if url and url.startswith("data:image"):
-                            if "," in url:
-                                base64_str = url.split(",", 1)[1]
-                                base64_str = (
-                                    base64_str.replace("\n", "").replace("\r", "").replace(" ", "")
-                                )
-                                self._log(f"Extracted base64 data (length: {len(base64_str)})")
-                                return base64.b64decode(base64_str)
-
-            # Fallback: check content field
-            content = message.get("content", "")
-
-            if isinstance(content, str) and "data:image" in content:
-                import re
-
-                match = re.search(
-                    r"data:image/[^;]+;base64,([A-Za-z0-9+/=\n\r]+)", content, re.DOTALL
-                )
-                if match:
-                    base64_str = match.group(1).replace("\n", "").replace("\r", "").replace(" ", "")
-                    self._log(f"Found image in content field (length: {len(base64_str)})")
-                    return base64.b64decode(base64_str)
-
-            if isinstance(content, list):
-                for i, block in enumerate(content):
-                    if isinstance(block, dict) and block.get("type") == "image_url":
-                        url = block.get("image_url", {})
-                        if isinstance(url, dict):
-                            url = url.get("url", "")
-                        if url and url.startswith("data:image") and "," in url:
-                            base64_str = (
-                                url.split(",", 1)[1]
-                                .replace("\n", "")
-                                .replace("\r", "")
-                                .replace(" ", "")
-                            )
-                            self._log(f"Found image in content block {i}")
-                            return base64.b64decode(base64_str)
-
+            for part in parts:
+                if "inlineData" in part:
+                    inline_data = part["inlineData"]
+                    base64_str = inline_data.get("data", "")
+                    if base64_str:
+                        self._log(f"Found image data in inlineData (length: {len(base64_str)})")
+                        return base64.b64decode(base64_str)
+            
             self._log("No image data found in response")
             return None
-
         except Exception as e:
             self._log(f"Error extracting image: {e!s}")
             return None
 
-    def _image_to_base64(self, image_path: str) -> str:
-        """Convert image file to base64 data URL."""
+    def _image_to_base64_data(self, image_path: str) -> tuple[str, str]:
+        """Convert image file to base64 and mime type."""
         with open(image_path, "rb") as f:
             image_data = f.read()
 
@@ -326,11 +303,11 @@ STYLE:
         }.get(ext, "image/png")
 
         base64_data = base64.b64encode(image_data).decode("utf-8")
-        return f"data:{mime_type};base64,{base64_data}"
+        return base64_data, mime_type
 
     def generate_image(self, prompt: str, attachments: list[str] | None = None) -> bytes | None:
         """
-        Generate an image using Nano Banana Pro.
+        Generate an image using Google Gemini image generation model.
 
         Args:
             prompt: Text description of the image to generate
@@ -341,33 +318,34 @@ STYLE:
         """
         self._last_error = None
 
-        # Build content with text and optional image attachments
-        content = []
-
+        # Build content parts
+        parts = []
+        
         # Add text prompt
-        content.append({"type": "text", "text": prompt})
+        parts.append({"text": prompt})
 
         # Add attached images as context
         if attachments:
             for img_path in attachments:
                 try:
-                    img_data_url = self._image_to_base64(img_path)
-                    content.append({"type": "image_url", "image_url": {"url": img_data_url}})
+                    b64_data, mime_type = self._image_to_base64_data(img_path)
+                    parts.append({
+                        "inlineData": {
+                            "mimeType": mime_type,
+                            "data": b64_data
+                        }
+                    })
                     self._log(f"Attached image: {img_path}")
                 except Exception as e:
                     self._log(f"Warning: Could not attach {img_path}: {e}")
 
-        messages = [{"role": "user", "content": content if attachments else prompt}]
+        contents = [{"role": "user", "parts": parts}]
+        generation_config = {"responseModalities": ["image", "text"]}
 
         try:
             response = self._make_request(
-                model=self.image_model, messages=messages, modalities=["image", "text"]
+                model=self.image_model, contents=contents, generation_config=generation_config
             )
-
-            if self.verbose:
-                self._log(f"Response keys: {response.keys()}")
-                if "error" in response:
-                    self._log(f"API Error: {response['error']}")
 
             if "error" in response:
                 error_msg = response["error"]
@@ -402,8 +380,8 @@ STYLE:
         visual_only: bool = False,
         max_iterations: int = 2,
     ) -> tuple[str, float, bool]:
-        """Review generated image using Gemini 3 Pro."""
-        image_data_url = self._image_to_base64(image_path)
+        """Review generated image using Gemini 3.1 Pro."""
+        b64_data, mime_type = self._image_to_base64_data(image_path)
         threshold = self.QUALITY_THRESHOLD
 
         image_type = "slide visual/figure" if visual_only else "presentation slide"
@@ -458,36 +436,28 @@ VERDICT: [ACCEPTABLE or NEEDS_IMPROVEMENT]
 If score >= {threshold}, the image is ACCEPTABLE.
 If score < {threshold}, mark as NEEDS_IMPROVEMENT with specific suggestions."""
 
-        messages = [
+        contents = [
             {
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": review_prompt},
-                    {"type": "image_url", "image_url": {"url": image_data_url}},
-                ],
+                "parts": [
+                    {"text": review_prompt},
+                    {"inlineData": {"mimeType": mime_type, "data": b64_data}}
+                ]
             }
         ]
 
         try:
-            response = self._make_request(model=self.review_model, messages=messages)
+            response = self._make_request(model=self.review_model, contents=contents)
 
-            choices = response.get("choices", [])
-            if not choices:
+            candidates = response.get("candidates", [])
+            if not candidates:
                 return "Image generated successfully", 7.0, False
 
-            message = choices[0].get("message", {})
-            content = message.get("content", "")
-
-            reasoning = message.get("reasoning", "")
-            if reasoning and not content:
-                content = reasoning
-
-            if isinstance(content, list):
-                text_parts = []
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
-                content = "\n".join(text_parts)
+            content_parts = candidates[0].get("content", {}).get("parts", [])
+            content = ""
+            for part in content_parts:
+                if "text" in part:
+                    content += part["text"]
 
             # Extract score
             score = 7.0
@@ -604,7 +574,7 @@ Generate a high-quality {"visual/figure" if visual_only else "presentation slide
             print(f"\n[Iteration {i}/{iterations}]")
             print("-" * 40)
 
-            print("Generating image with Nano Banana Pro...")
+            print(f"Generating image with {self.image_model}...")
             image_data = self.generate_image(current_prompt, attachments=attachments)
 
             if not image_data:
@@ -625,7 +595,7 @@ Generate a high-quality {"visual/figure" if visual_only else "presentation slide
                 f.write(image_data)
             print(f"✓ Generated image (iteration {i})")
 
-            print("Reviewing image with Gemini 3 Pro...")
+            print(f"Reviewing image with {self.review_model}...")
             critique, score, needs_improvement = self.review_image(
                 str(temp_path), user_prompt, i, visual_only, iterations
             )
@@ -689,7 +659,7 @@ Generate a high-quality {"visual/figure" if visual_only else "presentation slide
 def main():
     """Command-line interface."""
     parser = argparse.ArgumentParser(
-        description="Generate presentation slides or visuals using Nano Banana Pro AI",
+        description="Generate presentation slides or visuals using Google Gemini AI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -699,18 +669,17 @@ Examples:
   # Generate just a visual/figure (for PPT workflow)
   python generate_slide_image_ai.py "Neural network architecture diagram with input, hidden, and output layers" -o figure.png --visual-only
   
-  # With reference images attached (Nano Banana Pro will see these)
+  # With reference images attached
   python generate_slide_image_ai.py "Create a slide explaining this chart with key insights" -o slide.png --attach chart.png
-  python generate_slide_image_ai.py "Combine these images into a comparison slide" -o compare.png --attach before.png --attach after.png
   
   # With custom iterations
   python generate_slide_image_ai.py "Title slide for AI Conference 2025" -o title.png --iterations 2
   
-  # Verbose output
-  python generate_slide_image_ai.py "Data flow diagram" -o flow.png -v
+  # Using a specific model
+  python generate_slide_image_ai.py "Data flow diagram" -o flow.png --model nano-banana-pro
 
 Environment:
-  OPENROUTER_API_KEY    OpenRouter API key (required)
+  GEMINI_API_KEY    Google Gemini API key (required)
         """,
     )
 
@@ -731,16 +700,25 @@ Environment:
     parser.add_argument(
         "--iterations", type=int, default=2, help="Maximum refinement iterations (default: 2)"
     )
-    parser.add_argument("--api-key", help="OpenRouter API key (or set OPENROUTER_API_KEY)")
+    parser.add_argument(
+        "--model",
+        choices=["nano-banana-pro", "nano-banana-2"],
+        default="nano-banana-2",
+        help="Image generation model (default: nano-banana-2)",
+    )
+    parser.add_argument("--api-key", help="Google Gemini API key (or set GEMINI_API_KEY)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
 
-    api_key = args.api_key or os.getenv("OPENROUTER_API_KEY")
+    # Load .env file
+    _load_env_file()
+
+    api_key = args.api_key or os.getenv("GEMINI_API_KEY")
     if not api_key:
-        print("Error: OPENROUTER_API_KEY environment variable not set")
+        print("Error: GEMINI_API_KEY environment variable not set")
         print("\nSet it with:")
-        print("  export OPENROUTER_API_KEY='your_api_key'")
+        print("  export GEMINI_API_KEY='your_api_key'")
         sys.exit(1)
 
     if args.iterations < 1 or args.iterations > 2:
@@ -755,7 +733,7 @@ Environment:
                 sys.exit(1)
 
     try:
-        generator = SlideImageGenerator(api_key=api_key, verbose=args.verbose)
+        generator = SlideImageGenerator(api_key=api_key, verbose=args.verbose, image_model=args.model)
         results = generator.generate_slide(
             user_prompt=args.prompt,
             output_path=args.output,
@@ -772,6 +750,9 @@ Environment:
             sys.exit(1)
     except Exception as e:
         print(f"\n✗ Error: {e!s}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
         sys.exit(1)
 
 

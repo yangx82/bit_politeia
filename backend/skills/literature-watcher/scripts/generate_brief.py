@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from watcher_service import WatcherService
+from watcher_service import WatcherService, _load_env_file
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -54,6 +54,9 @@ def main():
     parser.add_argument("--no-save", action="store_true", help="Don't save to history (dry run)")
     
     args = parser.parse_args()
+    
+    # Load env vars
+    _load_env_file()
     
     service = WatcherService()
     logger.info(f"Starting scheduled update for topic: {args.topic}")

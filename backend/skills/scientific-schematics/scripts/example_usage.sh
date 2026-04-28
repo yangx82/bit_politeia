@@ -2,7 +2,7 @@
 # Example usage of AI-powered scientific schematic generation
 # 
 # Prerequisites:
-# 1. Set OPENROUTER_API_KEY environment variable
+# 1. Set GEMINI_API_KEY environment variable
 # 2. Ensure Python 3.10+ is installed
 # 3. Install requests: pip install requests
 
@@ -15,15 +15,16 @@ echo "=========================================="
 echo ""
 
 # Check for API key
-if [ -z "$OPENROUTER_API_KEY" ]; then
-    echo "❌ Error: OPENROUTER_API_KEY environment variable not set"
+# Check for API key
+if [ -z "$GEMINI_API_KEY" ]; then
+    echo "❌ Error: GEMINI_API_KEY environment variable not set"
     echo ""
-    echo "Get an API key at: https://openrouter.ai/keys"
-    echo "Then set it with: export OPENROUTER_API_KEY='your_key'"
+    echo "Get an API key at: https://aistudio.google.com/app/apikey"
+    echo "Then set it with: export GEMINI_API_KEY='your_key'"
     exit 1
 fi
 
-echo "✓ OPENROUTER_API_KEY is set"
+echo "✓ GEMINI_API_KEY is set"
 echo ""
 
 # Create output directory

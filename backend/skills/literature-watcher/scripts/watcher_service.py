@@ -10,22 +10,56 @@ from history_manager import HistoryManager
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Try to load .env file from multiple potential locations
+def _load_env_file():
+    """Load .env file from current directory, parent directories, or package directory.
+
+    Returns True if a .env file was found and loaded, False otherwise.
+    Note: This does NOT override existing environment variables.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return False  # python-dotenv not installed
+
+    # Try current working directory first
+    env_path = Path.cwd() / ".env"
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path, override=False)
+        return True
+
+    # Try parent directories (up to 5 levels)
+    cwd = Path.cwd()
+    for _ in range(5):
+        env_path = cwd / ".env"
+        if env_path.exists():
+            load_dotenv(dotenv_path=env_path, override=False)
+            return True
+        cwd = cwd.parent
+        if cwd == cwd.parent:  # Reached root
+            break
+
+    # Try the package's parent directory (bit_politeia project root)
+    script_dir = Path(__file__).resolve().parent
+    for _ in range(5):
+        env_path = script_dir / ".env"
+        if env_path.exists():
+            load_dotenv(dotenv_path=env_path, override=False)
+            return True
+        script_dir = script_dir.parent
+        if script_dir == script_dir.parent:
+            break
+
+    return False
+
+
 class WatcherService:
     def __init__(self):
+        # Load env vars first
+        _load_env_file()
         self.history = HistoryManager()
-        self.email = self._load_email()
+        self.email = os.getenv("OPENALEX_EMAIL")
         self.base_url = "https://api.openalex.org/works"
-
-    def _load_email(self):
-        # Try to find .env in project root
-        base_dir = Path(__file__).resolve().parent.parent.parent.parent
-        env_path = base_dir / ".env"
-        if env_path.exists():
-            with open(env_path, 'r') as f:
-                for line in f:
-                    if line.startswith("OPENALEX_EMAIL"):
-                        return line.split('=')[1].strip().strip("'").strip('"')
-        return None
 
     def search_openalex(self, topic, from_date=None, limit=20):
         """

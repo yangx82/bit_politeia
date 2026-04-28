@@ -134,6 +134,7 @@ class SenseStage(PipelineStage):
             query=agent_query,
             lc_history=raw_lc_history,
             channel=context.input_message.channel,
+            force_compact=context.input_message.metadata.get("force_compact", False),
         )
 
         # Store detected/explicit focus for other stages

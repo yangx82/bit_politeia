@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Slide image generation using Nano Banana Pro.
+Slide image generation using Nano Banana 2 (or Nano Banana Pro).
 
 Generate presentation slides or visuals by describing them in natural language.
-Nano Banana Pro handles everything automatically with smart iterative refinement.
+The AI handles everything automatically with smart iterative refinement.
 
 Two modes:
 - Default (full slide): Generate complete slides with title, content, visuals (for PDF workflow)
 - Visual only: Generate just images/figures to place on slides (for PPT workflow)
 
-Supports attaching reference images for context (Nano Banana Pro will see these).
+Supports attaching reference images for context (the AI will see these).
 
 Usage:
     # Generate full slide for PDF workflow
@@ -29,18 +29,64 @@ import sys
 from pathlib import Path
 
 
+def _load_env_file():
+    """Load .env file from current directory, parent directories, or package directory.
+
+    Returns True if a .env file was found and loaded, False otherwise.
+    Note: This does NOT override existing environment variables.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return False  # python-dotenv not installed
+
+    # Try current working directory first
+    env_path = Path.cwd() / ".env"
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path, override=False)
+        return True
+
+    # Try parent directories (up to 5 levels)
+    cwd = Path.cwd()
+    for _ in range(5):
+        env_path = cwd / ".env"
+        if env_path.exists():
+            load_dotenv(dotenv_path=env_path, override=False)
+            return True
+        cwd = cwd.parent
+        if cwd == cwd.parent:  # Reached root
+            break
+
+    # Try the package's parent directory
+    script_dir = Path(__file__).resolve().parent
+    for _ in range(5):
+        env_path = script_dir / ".env"
+        if env_path.exists():
+            load_dotenv(dotenv_path=env_path, override=False)
+            return True
+        script_dir = script_dir.parent
+        if script_dir == script_dir.parent:
+            break
+
+    return False
+
+
 def main():
     """Command-line interface."""
     parser = argparse.ArgumentParser(
-        description="Generate presentation slides or visuals using Nano Banana Pro AI",
+        description="Generate presentation slides or visuals using Google Gemini AI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 How it works:
   Describe your slide or visual in natural language.
-  Nano Banana Pro generates it automatically with:
+  The AI generates it automatically with:
   - Smart iteration (only regenerates if quality is below threshold)
-  - Quality review by Gemini 3 Pro
+  - Quality review by Gemini 3.1 Pro
   - Publication-ready output
+
+Models:
+  Nano Banana 2 (default):   Gemini 3.1 Flash Image (fast, resource-efficient)
+  Nano Banana Pro:           Gemini 3 Pro Image (highest quality)
 
 Modes:
   Default (full slide):  Generate complete slide with title, content, visuals
@@ -50,7 +96,7 @@ Modes:
                          Use for PPT workflow where you add text separately
 
 Attachments:
-  Use --attach to provide reference images that Nano Banana Pro will see.
+  Use --attach to provide reference images that the AI will see.
   This allows you to say "create a slide about this chart" and attach the chart.
 
 Examples:
@@ -64,12 +110,11 @@ Examples:
   python generate_slide_image.py "Create a slide explaining this chart" -o slide.png --attach chart.png
   python generate_slide_image.py "Combine these into a comparison" -o compare.png --attach before.png --attach after.png
   
-  # Multiple slides for PDF
-  python generate_slide_image.py "Title slide: AI Conference 2025" -o slides/01_title.png
-  python generate_slide_image.py "Title: Introduction\\nOverview of deep learning" -o slides/02_intro.png
+  # Using a specific model
+  python generate_slide_image.py "Complex architecture" -o arch.png --model nano-banana-pro
 
 Environment Variables:
-  OPENROUTER_API_KEY    Required for AI generation
+  GEMINI_API_KEY    Required for AI generation (Google AI Studio)
         """,
     )
 
@@ -93,19 +138,28 @@ Environment Variables:
         default=2,
         help="Maximum refinement iterations (default: 2, max: 2)",
     )
-    parser.add_argument("--api-key", help="OpenRouter API key (or use OPENROUTER_API_KEY env var)")
+    parser.add_argument(
+        "--model",
+        choices=["nano-banana-pro", "nano-banana-2"],
+        default="nano-banana-2",
+        help="Image generation model (default: nano-banana-2)",
+    )
+    parser.add_argument("--api-key", help="Google Gemini API key (or use GEMINI_API_KEY env var)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
 
+    # Load .env file
+    _load_env_file()
+
     # Check for API key
-    api_key = args.api_key or os.getenv("OPENROUTER_API_KEY")
+    api_key = args.api_key or os.getenv("GEMINI_API_KEY")
     if not api_key:
-        print("Error: OPENROUTER_API_KEY environment variable not set")
-        print("\nFor AI generation, you need an OpenRouter API key.")
-        print("Get one at: https://openrouter.ai/keys")
+        print("Error: GEMINI_API_KEY environment variable not set")
+        print("\nFor AI generation, you need a Google Gemini API key.")
+        print("Get one at: https://aistudio.google.com/app/apikey")
         print("\nSet it with:")
-        print("  export OPENROUTER_API_KEY='your_api_key'")
+        print("  export GEMINI_API_KEY='your_api_key'")
         print("\nOr use --api-key flag")
         sys.exit(1)
 
@@ -138,6 +192,9 @@ Environment Variables:
 
     if args.verbose:
         cmd.append("-v")
+
+    if args.model:
+        cmd.extend(["--model", args.model])
 
     # Execute
     try:

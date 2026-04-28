@@ -991,7 +991,11 @@ class AgentService:
             # Compress context or inject error message to heal
             if cont_reason == "MAX_ITERATIONS":
                 prompt = "System Control: You hit the 50-step execution limit. Summarize your current progress over the last 50 steps, clarify what is missing, and state your next tool call to continue."
+                meta = {"epoch": epoch}
             else:
+                # Detect token/length errors to trigger force compression
+                is_token_error = any(kw in cont_reason.lower() for kw in ["token", "length", "202745", "context_length_exceeded", "algo.invalidparameter"])
+                meta = {"epoch": epoch, "force_compact": is_token_error}
                 prompt = f"System Control: Execution interrupted by API Error: {cont_reason}. Diagnose the issue, drop redundant context if it was a token length error, and adjust your strategy before continuing."
 
             # Create a synthetic inbound message to re-trigger the loop
@@ -1000,7 +1004,7 @@ class AgentService:
                 sender_id="system",
                 session_id=msg.session_id,
                 content=prompt,
-                metadata={"epoch": epoch},
+                metadata=meta,
             )
 
         return final_response, last_cont_req, "MAX_EPOCHS_REACHED"

@@ -35,19 +35,19 @@ This skill should be used when:
 - Giving research talks at institutions or companies
 - Teaching or tutorial presentations on scientific topics
 
-## Slide Generation with Nano Banana Pro
+## Slide Generation with Google Gemini AI
 
-**This skill uses Nano Banana Pro AI to generate stunning presentation slides automatically.**
+**This skill uses Google Gemini AI (Nano Banana 2 or Nano Banana Pro) to generate stunning presentation slides automatically.**
 
 There are two workflows depending on output format:
 
 ### Default Workflow: PDF Slides (Recommended)
 
-Generate each slide as a complete image using Nano Banana Pro, then combine into a PDF. This produces the most visually stunning results.
+Generate each slide as a complete image using Google Gemini AI, then combine into a PDF. This produces the most visually stunning results.
 
 **How it works:**
 1. **Plan the deck**: Create a detailed plan for each slide (title, key points, visual elements)
-2. **Generate slides**: Call Nano Banana Pro for each slide to create complete slide images
+2. **Generate slides**: Call the AI for each slide to create complete slide images
 3. **Combine to PDF**: Assemble slide images into a single PDF presentation
 
 **Step 1: Plan Each Slide**
@@ -91,7 +91,7 @@ To ensure unified formatting across all slides in a presentation:
    - Layout approach (e.g., "generous white space, left-aligned content")
 
 2. **Always attach the previous slide** when generating subsequent slides using `--attach`:
-   - This allows Nano Banana Pro to see and match the existing style
+   - This allows the AI to see and match the existing style
    - Creates visual continuity throughout the deck
    - Ensures consistent colors, fonts, and design language
 
@@ -108,7 +108,7 @@ To ensure unified formatting across all slides in a presentation:
      - The working directory (e.g., `figures/`, `results/`, `plots/`, `images/`)
      - User-provided input files or directories
      - Any data visualizations, charts, or graphs relevant to the presentation
-   - Use `--attach` to include these figures so Nano Banana Pro can incorporate them:
+   - Use `--attach` to include these figures so the AI can incorporate them:
      - Attach the actual data figure/chart for results slides
      - Attach relevant diagrams for methodology slides
      - Attach logos or institutional images for title slides
@@ -146,7 +146,7 @@ python scripts/generate_slide_image.py "Presentation slide titled 'System Archit
 1. List files in working directory: `ls -la figures/` or `ls -la results/`
 2. Check user-provided directories for relevant figures
 3. Attach ALL relevant figures that should appear on the slide
-4. Describe how Nano Banana Pro should incorporate the attached figures
+4. Describe how the AI should incorporate the attached figures
 
 **Prompt Template:**
 
@@ -166,11 +166,11 @@ python scripts/slides_to_pdf.py slides/*.png -o presentation.pdf
 
 ### PPT Workflow: PowerPoint with Generated Visuals
 
-When creating PowerPoint presentations, use Nano Banana Pro to generate images and figures for each slide, then add text separately using the PPTX skill.
+When creating PowerPoint presentations, use Google Gemini AI to generate images and figures for each slide, then add text separately using the PPTX skill.
 
 **How it works:**
 1. **Plan the deck**: Create content plan for each slide
-2. **Generate visuals**: Use Nano Banana Pro with `--visual-only` flag to create images for slides
+2. **Generate visuals**: Use the AI with `--visual-only` flag to create images for slides
 3. **Build PPTX**: Use the PPTX skill (html2pptx or template-based) to create slides with generated visuals and separate text
 
 **Step 1: Generate Visuals for Each Slide**
@@ -197,11 +197,11 @@ See `document-skills/pptx/SKILL.md` for complete PPTX creation documentation.
 
 ---
 
-## Nano Banana Pro Script Reference
+## Google Gemini AI Script Reference
 
 ### generate_slide_image.py
 
-Generate presentation slides or visuals using Nano Banana Pro AI.
+Generate presentation slides or visuals using Google Gemini AI.
 
 ```bash
 # Full slide (default) - generates complete slide as image
@@ -210,7 +210,7 @@ python scripts/generate_slide_image.py "slide description" -o output.png
 # Visual only - generates just the image/figure for embedding in PPT
 python scripts/generate_slide_image.py "visual description" -o output.png --visual-only
 
-# With reference images attached (Nano Banana Pro will see these)
+# With reference images attached (the AI will see these)
 python scripts/generate_slide_image.py "Create a slide explaining this chart" -o slide.png --attach chart.png
 python scripts/generate_slide_image.py "Combine these into a comparison slide" -o compare.png --attach before.png --attach after.png
 ```
@@ -220,12 +220,13 @@ python scripts/generate_slide_image.py "Combine these into a comparison slide" -
 - `--attach IMAGE`: Attach image file(s) as context for generation (can use multiple times)
 - `--visual-only`: Generate just the visual/figure, not a complete slide
 - `--iterations`: Max refinement iterations (default: 2)
-- `--api-key`: OpenRouter API key (or set OPENROUTER_API_KEY env var)
+- `--api-key`: Google Gemini API key (or set GEMINI_API_KEY env var)
+- `--model`: Image generation model (`nano-banana-pro` or `nano-banana-2`, default: `nano-banana-2`)
 - `-v, --verbose`: Verbose output
 
 **Attaching Reference Images:**
 
-Use `--attach` when you want Nano Banana Pro to see existing images as context:
+Use `--attach` when you want the AI to see existing images as context:
 - "Create a slide about this data" + attach the data chart
 - "Make a title slide with this logo" + attach the logo
 - "Combine these figures into one slide" + attach multiple images
@@ -233,8 +234,8 @@ Use `--attach` when you want Nano Banana Pro to see existing images as context:
 
 **Environment Setup:**
 ```bash
-export OPENROUTER_API_KEY='your_api_key_here'
-# Get key at: https://openrouter.ai/keys
+export GEMINI_API_KEY='your_api_key_here'
+# Get key at: https://aistudio.google.com/app/apikey
 ```
 
 ### slides_to_pdf.py
@@ -466,7 +467,7 @@ Different presentation contexts require different approaches. For comprehensive 
 
 ### 5. Implementation Options
 
-#### Nano Banana Pro PDF (Default - Recommended)
+#### Google Gemini AI PDF (Default - Recommended)
 
 **Best for**: Visually stunning slides, fast creation, non-technical audiences
 
@@ -505,7 +506,7 @@ python scripts/slides_to_pdf.py slides/*.png -o presentation.pdf
 
 **Reference**: See `document-skills/pptx/SKILL.md` for complete documentation
 
-Use Nano Banana Pro with `--visual-only` to generate images, then build PPTX with text.
+Use Google Gemini AI with `--visual-only` to generate images, then build PPTX with text.
 
 **Key Resources**:
 - `assets/powerpoint_design_guide.md`: Complete PowerPoint design guide
@@ -977,7 +978,7 @@ python ../document-skills/pptx/scripts/thumbnail.py presentation.pptx review/gri
 
 ## Tools and Scripts
 
-### Nano Banana Pro Scripts
+### Google Gemini AI Scripts
 
 **generate_slide_image.py** - Generate slides or visuals with AI:
 ```bash
@@ -1084,7 +1085,7 @@ Comprehensive guides for specific aspects:
    - **Create detailed plan for each slide** (title, key points, visual elements)
    - Target 15-18 slides
 
-2. **Generate Slides with Nano Banana Pro** (1-2 hours):
+2. **Generate Slides with Google Gemini AI** (1-2 hours):
    
    **Important: Use consistent formatting, attach previous slides, and include citations!**
    

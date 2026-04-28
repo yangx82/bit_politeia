@@ -1,6 +1,6 @@
 ---
 name: scientific-schematics
-description: Create publication-quality scientific diagrams using Nano Banana Pro AI with smart iterative refinement. Uses Gemini 3 Pro for quality review. Only regenerates if quality is below threshold for your document type. Specialized in neural network architectures, system diagrams, flowcharts, biological pathways, and complex scientific visualizations.
+description: Create publication-quality scientific diagrams using Google Gemini (Nano Banana Pro/2) AI with smart iterative refinement. Uses Gemini for quality review. Only regenerates if quality is below threshold for your document type. Specialized in neural network architectures, system diagrams, flowcharts, biological pathways, and complex scientific visualizations.
 allowed-tools: [Read, Write, Edit, Bash]
 license: MIT license
 metadata:
@@ -11,12 +11,12 @@ metadata:
 
 ## Overview
 
-Scientific schematics and diagrams transform complex concepts into clear visual representations for publication. **This skill uses Nano Banana Pro AI for diagram generation with Gemini 3 Pro quality review.**
+Scientific schematics and diagrams transform complex concepts into clear visual representations for publication. **This skill uses Google Gemini (Nano Banana Pro/2) for diagram generation with Gemini quality review.**
 
 **How it works:**
 - Describe your diagram in natural language
-- Nano Banana Pro generates publication-quality images automatically
-- **Gemini 3 Pro reviews quality** against document-type thresholds
+- Google Gemini generates publication-quality images automatically
+- **Gemini reviews quality** against document-type thresholds
 - **Smart iteration**: Only regenerates if quality is below threshold
 - Publication-ready output in minutes
 - No coding, templates, or manual drawing required
@@ -56,7 +56,7 @@ python scripts/generate_schematic.py "Complex circuit diagram with op-amp, resis
 
 **What happens behind the scenes:**
 1. **Generation 1**: Nano Banana Pro creates initial image following scientific diagram best practices
-2. **Review 1**: **Gemini 3 Pro** evaluates quality against document-type threshold
+2. **Review 1**: **Gemini 3.1 Pro** evaluates quality against document-type threshold
 3. **Decision**: If quality >= threshold → **DONE** (no more iterations needed!)
 4. **If below threshold**: Improved prompt based on critique, regenerate
 5. **Repeat**: Until quality meets threshold OR max iterations reached
@@ -71,12 +71,21 @@ python scripts/generate_schematic.py "Complex circuit diagram with op-amp, resis
 
 ### Configuration
 
-Set your OpenRouter API key:
+Set your Google Gemini API key:
 ```bash
-export OPENROUTER_API_KEY='your_api_key_here'
+export GEMINI_API_KEY='your_api_key_here'
 ```
 
-Get an API key at: https://openrouter.ai/keys
+Get an API key at: https://aistudio.google.com/app/apikey
+
+### Available Models
+
+| Model Name | Gemini Model ID | Description |
+|:---|:---|:---|
+| `nano-banana-pro` | gemini-3-pro-image-preview | Gemini 3 Pro Image (Highest quality) |
+| `nano-banana-2` | gemini-3.1-flash-image-preview | Gemini 3.1 Flash Image (Fast & Default) |
+
+Use `--model nano-banana-pro` to select the high-quality Pro model.
 
 ### AI Generation Best Practices
 
@@ -150,7 +159,7 @@ python scripts/generate_schematic.py "your diagram description" -o output.png
 
 ---
 
-# AI Generation Mode (Nano Banana Pro + Gemini 3 Pro Review)
+# AI Generation Mode (Google Gemini + Gemini Review)
 
 ## Smart Iterative Refinement Workflow
 
@@ -162,7 +171,7 @@ The AI generation system uses **smart iteration** - it only regenerates if quali
 ┌─────────────────────────────────────────────────────┐
 │  1. Generate image with Nano Banana Pro             │
 │                    ↓                                │
-│  2. Review quality with Gemini 3 Pro                │
+│  2. Review quality with Gemini 3.1 Pro              │
 │                    ↓                                │
 │  3. Score >= threshold?                             │
 │       YES → DONE! (early stop)                      │
@@ -180,9 +189,9 @@ Scientific diagram guidelines + User request
 
 **Output:** `diagram_v1.png`
 
-### Quality Review by Gemini 3 Pro
+### Quality Review by Gemini 3.1 Pro
 
-Gemini 3 Pro evaluates the diagram on:
+Gemini 3.1 Pro evaluates the diagram on:
 1. **Scientific Accuracy** (0-2 points) - Correct concepts, notation, relationships
 2. **Clarity and Readability** (0-2 points) - Easy to understand, clear hierarchy
 3. **Label Quality** (0-2 points) - Complete, readable, consistent labels
@@ -258,7 +267,7 @@ from scripts.generate_schematic_ai import ScientificSchematicGenerator
 
 # Initialize generator
 generator = ScientificSchematicGenerator(
-    api_key="your_openrouter_key",
+    api_key="your_gemini_api_key",
     verbose=True
 )
 
@@ -600,9 +609,9 @@ Before submitting diagrams, verify:
 
 ```bash
 # Required
-export OPENROUTER_API_KEY='your_api_key_here'
+export GEMINI_API_KEY='your_api_key_here'
 
-# Get key at: https://openrouter.ai/keys
+# Get key at: https://aistudio.google.com/app/apikey
 ```
 
 ## Getting Started

@@ -47,7 +47,12 @@ class BitPoliteiaContextManager:
         )
 
     async def get_optimized_messages(
-        self, session_id: str, query: str, lc_history: list[BaseMessage], channel: str = "resident"
+        self,
+        session_id: str,
+        query: str,
+        lc_history: list[BaseMessage],
+        channel: str = "resident",
+        force_compact: bool = False,
     ) -> list[BaseMessage]:
         """
         Main entry point for SenseStage. Orchestrates focus detection and lineage retrieval.
@@ -71,7 +76,9 @@ class BitPoliteiaContextManager:
             static_chars = self._estimate_static_content_size()
 
         # 4. Iterative Compression Check (with dynamic threshold)
-        processed_history = await self._ensure_compact_history(lc_history, task_id, static_chars)
+        processed_history = await self._ensure_compact_history(
+            lc_history, task_id, static_chars, force_compact=force_compact
+        )
 
         # 5. Tool Integrity (Sanitize orphaned/missing tool pairs)
         sanitized_history = self._sanitize_messages(processed_history)
@@ -123,17 +130,18 @@ class BitPoliteiaContextManager:
             total_chars += 5000  # More conservative estimate
 
             logger.debug(
-                f"Static content estimate: {total_chars} chars (~{total_chars // 4} tokens)"
+                f"Static content estimate: {total_chars} chars (~{total_chars / 1.2:.0f} tokens)"
             )
 
         except Exception as e:
             logger.warning(f"Failed to estimate static content size: {e}")
             # Return cached value or 0 if error
-            return self._static_content_chars
-
+            return self._static_content_chars / 1.2
+            
         # Cache the result
         self._static_content_chars = total_chars
-        return total_chars
+        # Use a more conservative ratio for Chinese/Multilingual content (1.2 chars/token)
+        return total_chars / 1.2
 
     def _check_daily_notes_compression_needed(self) -> tuple[bool, int]:
         """
@@ -142,8 +150,7 @@ class BitPoliteiaContextManager:
         Returns:
             (needs_compression, old_notes_count)
         """
-        static_chars = self._estimate_static_content_size()
-        static_tokens = static_chars / 4
+        static_tokens = self._estimate_static_content_size()
         compression_threshold = self.threshold_tokens * 0.5  # 50% of threshold
 
         # Check if compression is needed
@@ -353,7 +360,11 @@ class BitPoliteiaContextManager:
         return context
 
     async def _ensure_compact_history(
-        self, history: list[BaseMessage], task_id: str | None, static_chars: int = 0
+        self,
+        history: list[BaseMessage],
+        task_id: str | None,
+        static_tokens: float = 0,
+        force_compact: bool = False,
     ) -> list[BaseMessage]:
         """
         Hermes-style iterative compression logic.
@@ -362,7 +373,7 @@ class BitPoliteiaContextManager:
         Now accounts for static content (MEMORY.md, Daily Notes, Skills) in threshold calculation.
         """
         # 1. Calculate effective threshold accounting for static content
-        static_tokens = static_chars / 4
+        # static_tokens is already in tokens from _estimate_static_content_size()
         
         # In tool mode, the absolute limit is 200k. 
         # We must ensure History + Static < 200k * threshold_percent
@@ -377,9 +388,10 @@ class BitPoliteiaContextManager:
             )
             effective_threshold = min_threshold
 
-        # 2. Estimate tokens from conversation history (rough estimate: 4 chars per token)
+        # 2. Estimate tokens from conversation history
+        # Use a more conservative ratio for Chinese/Multilingual content (1.2 chars/token)
         history_chars = sum(len(m.content) for m in history if isinstance(m.content, str))
-        approx_tokens = history_chars / 4
+        approx_tokens = history_chars / 1.2
 
         # 3. Log context breakdown for debugging
         logger.info(
@@ -388,8 +400,11 @@ class BitPoliteiaContextManager:
             f"Effective={effective_threshold:.0f}t"
         )
 
-        if approx_tokens < effective_threshold:
+        if approx_tokens < effective_threshold and not force_compact:
             return history
+        
+        if force_compact:
+            logger.warning("Force compression activated due to previous context error.")
 
         logger.warning(
             f"Context threshold hit ({approx_tokens:.0f} + {static_tokens:.0f} = {approx_tokens + static_tokens:.0f} > {self.threshold_tokens}). "

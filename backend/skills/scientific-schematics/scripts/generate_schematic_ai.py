@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-AI-powered scientific schematic generation using Nano Banana Pro.
+AI-powered scientific schematic generation using Google Gemini models.
 
 This script uses a smart iterative refinement approach:
-1. Generate initial image with Nano Banana Pro
-2. AI quality review using Gemini 3 Pro for scientific critique
+1. Generate initial image with Nano Banana Pro or Nano Banana 2 via Google API
+2. AI quality review using Gemini for scientific critique
 3. Only regenerate if quality is below threshold for document type
 4. Repeat until quality meets standards (max iterations)
 
 Requirements:
-    - OPENROUTER_API_KEY environment variable
+    - GEMINI_API_KEY environment variable (Google AI Studio API key)
     - requests library
 
 Usage:
@@ -80,7 +80,7 @@ def _load_env_file():
 class ScientificSchematicGenerator:
     """Generate scientific schematics using AI with smart iterative refinement.
 
-    Uses Gemini 3 Pro for quality review to determine if regeneration is needed.
+    Uses Google Gemini API for both image generation (Nano Banana Pro/2) and quality review.
     Multiple passes only occur if the generated schematic doesn't meet the
     quality threshold for the target document type.
     """
@@ -98,6 +98,15 @@ class ScientificSchematicGenerator:
         "preprint": 7.5,  # arXiv, etc. - good quality
         "default": 7.5,  # Default threshold
     }
+    
+    # Available image generation models via Google Gemini API
+    IMAGE_GENERATION_MODELS = {
+        "nano-banana-pro": "gemini-3-pro-image-preview",  # Nano Banana Pro (Gemini 3 Pro)
+        "nano-banana-2": "gemini-3.1-flash-image-preview",  # Nano Banana 2 (Gemini 3.1 Flash)
+    }
+    
+    # Review model for quality evaluation
+    REVIEW_MODEL = "gemini-3.1-pro-preview"  # Gemini 3.1 Pro for quality review
 
     # Scientific diagram best practices prompt template
     SCIENTIFIC_DIAGRAM_GUIDELINES = """
@@ -144,39 +153,44 @@ IMPORTANT - NO FIGURE NUMBERS:
 - The diagram should contain only the visual content itself
 """
 
-    def __init__(self, api_key: str | None = None, verbose: bool = False):
+    def __init__(self, api_key: str | None = None, verbose: bool = False, image_model: str = "nano-banana-2"):
         """
         Initialize the generator.
 
         Args:
-            api_key: OpenRouter API key (or use OPENROUTER_API_KEY env var)
+            api_key: Google Gemini API key (or use GEMINI_API_KEY env var)
             verbose: Print detailed progress information
+            image_model: Image generation model to use ("nano-banana-pro" or "nano-banana-2")
         """
         # Priority: 1) explicit api_key param, 2) environment variable, 3) .env file
-        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
 
         # If not found in environment, try loading from .env file
         if not self.api_key:
             _load_env_file()
-            self.api_key = os.getenv("OPENROUTER_API_KEY")
+            self.api_key = os.getenv("GEMINI_API_KEY")
 
         if not self.api_key:
             raise ValueError(
-                "OPENROUTER_API_KEY not found. Please either:\n"
-                "  1. Set the OPENROUTER_API_KEY environment variable\n"
-                "  2. Add OPENROUTER_API_KEY to your .env file\n"
+                "GEMINI_API_KEY not found. Please either:\n"
+                "  1. Set the GEMINI_API_KEY environment variable\n"
+                "  2. Add GEMINI_API_KEY to your .env file\n"
                 "  3. Pass api_key parameter to the constructor\n"
-                "Get your API key from: https://openrouter.ai/keys"
+                "Get your API key from: https://aistudio.google.com/app/apikey"
             )
 
         self.verbose = verbose
         self._last_error = None  # Track last error for better reporting
-        self.base_url = "https://openrouter.ai/api/v1"
-        # Nano Banana Pro - Google's advanced image generation model
-        # https://openrouter.ai/google/gemini-3-pro-image-preview
-        self.image_model = "google/gemini-3-pro-image-preview"
-        # Gemini 3 Pro for quality review - excellent vision and reasoning
-        self.review_model = "google/gemini-3-pro"
+        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        
+        # Select image generation model
+        if image_model in self.IMAGE_GENERATION_MODELS:
+            self.image_model = self.IMAGE_GENERATION_MODELS[image_model]
+        else:
+            self.image_model = self.IMAGE_GENERATION_MODELS["nano-banana-2"]
+        
+        # Gemini 2.0 Flash for quality review
+        self.review_model = self.REVIEW_MODEL
 
     def _log(self, message: str):
         """Log message if verbose mode is enabled."""
@@ -184,36 +198,38 @@ IMPORTANT - NO FIGURE NUMBERS:
             print(f"[{time.strftime('%H:%M:%S')}] {message}")
 
     def _make_request(
-        self, model: str, messages: list[dict[str, Any]], modalities: list[str] | None = None
+        self, model: str, contents: list[dict[str, Any]], generation_config: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """
-        Make a request to OpenRouter API.
+        Make a request to Google Gemini API.
 
         Args:
-            model: Model identifier
-            messages: List of message dictionaries
-            modalities: Optional list of modalities (e.g., ["image", "text"])
+            model: Model identifier (e.g., "gemini-2.0-flash-exp-image-generation")
+            contents: List of content dictionaries (Gemini format)
+            generation_config: Optional generation configuration
 
         Returns:
             API response as dictionary
         """
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/scientific-writer",
-            "X-Title": "Scientific Schematic Generator",
         }
 
-        payload = {"model": model, "messages": messages}
-
-        if modalities:
-            payload["modalities"] = modalities
+        payload = {
+            "contents": contents,
+        }
+        
+        if generation_config:
+            payload["generationConfig"] = generation_config
 
         self._log(f"Making request to {model}...")
 
         try:
+            # Google Gemini API format: POST /models/{model}:generateContent?key={api_key}
+            url = f"{self.base_url}/models/{model}:generateContent?key={self.api_key}"
+            
             response = requests.post(
-                f"{self.base_url}/chat/completions", headers=headers, json=payload, timeout=120
+                url, headers=headers, json=payload, timeout=120
             )
 
             # Try to get response body even on error
@@ -238,10 +254,10 @@ IMPORTANT - NO FIGURE NUMBERS:
 
     def _extract_image_from_response(self, response: dict[str, Any]) -> bytes | None:
         """
-        Extract base64-encoded image from API response.
+        Extract base64-encoded image from Google Gemini API response.
 
-        For Nano Banana Pro, images are returned in the 'images' field of the message,
-        not in the 'content' field.
+        For Gemini image generation models, images are returned in the 'parts' field
+        with 'inlineData' containing mimeType and data.
 
         Args:
             response: API response dictionary
@@ -250,72 +266,34 @@ IMPORTANT - NO FIGURE NUMBERS:
             Image bytes or None if not found
         """
         try:
-            choices = response.get("choices", [])
-            if not choices:
-                self._log("No choices in response")
+            # Gemini API response format: {"candidates": [{"content": {"parts": [...]}}]}
+            candidates = response.get("candidates", [])
+            if not candidates:
+                self._log("No candidates in response")
                 return None
 
-            message = choices[0].get("message", {})
+            content = candidates[0].get("content", {})
+            parts = content.get("parts", [])
+            
+            if not parts:
+                self._log("No parts in response content")
+                return None
 
-            # IMPORTANT: Nano Banana Pro returns images in the 'images' field
-            images = message.get("images", [])
-            if images and len(images) > 0:
-                self._log(f"Found {len(images)} image(s) in 'images' field")
-
-                # Get first image
-                first_image = images[0]
-                if isinstance(first_image, dict):
-                    # Extract image_url
-                    if first_image.get("type") == "image_url":
-                        url = first_image.get("image_url", {})
-                        if isinstance(url, dict):
-                            url = url.get("url", "")
-
-                        if url and url.startswith("data:image"):
-                            # Extract base64 data after comma
-                            if "," in url:
-                                base64_str = url.split(",", 1)[1]
-                                # Clean whitespace
-                                base64_str = (
-                                    base64_str.replace("\n", "").replace("\r", "").replace(" ", "")
-                                )
-                                self._log(f"Extracted base64 data (length: {len(base64_str)})")
-                                return base64.b64decode(base64_str)
-
-            # Fallback: check content field (for other models or future changes)
-            content = message.get("content", "")
-
-            if self.verbose:
-                self._log(f"Content type: {type(content)}, length: {len(str(content))}")
-
-            # Handle string content
-            if isinstance(content, str) and "data:image" in content:
-                import re
-
-                match = re.search(
-                    r"data:image/[^;]+;base64,([A-Za-z0-9+/=\n\r]+)", content, re.DOTALL
-                )
-                if match:
-                    base64_str = match.group(1).replace("\n", "").replace("\r", "").replace(" ", "")
-                    self._log(f"Found image in content field (length: {len(base64_str)})")
-                    return base64.b64decode(base64_str)
-
-            # Handle list content
-            if isinstance(content, list):
-                for i, block in enumerate(content):
-                    if isinstance(block, dict) and block.get("type") == "image_url":
-                        url = block.get("image_url", {})
-                        if isinstance(url, dict):
-                            url = url.get("url", "")
-                        if url and url.startswith("data:image") and "," in url:
-                            base64_str = (
-                                url.split(",", 1)[1]
-                                .replace("\n", "")
-                                .replace("\r", "")
-                                .replace(" ", "")
-                            )
-                            self._log(f"Found image in content block {i}")
-                            return base64.b64decode(base64_str)
+            # Look for image data in parts
+            for part in parts:
+                # Gemini returns images as inlineData
+                if "inlineData" in part:
+                    inline_data = part["inlineData"]
+                    mime_type = inline_data.get("mimeType", "image/png")
+                    base64_str = inline_data.get("data", "")
+                    
+                    if base64_str:
+                        self._log(f"Found image in inlineData (mimeType: {mime_type}, length: {len(base64_str)})")
+                        return base64.b64decode(base64_str)
+                
+                # Also check for text response (for debugging)
+                if "text" in part and self.verbose:
+                    self._log(f"Text response: {part['text'][:200]}...")
 
             self._log("No image data found in response")
             return None
@@ -356,7 +334,7 @@ IMPORTANT - NO FIGURE NUMBERS:
 
     def generate_image(self, prompt: str) -> bytes | None:
         """
-        Generate an image using Nano Banana Pro.
+        Generate an image using Google Gemini image generation model.
 
         Args:
             prompt: Description of the diagram to generate
@@ -366,11 +344,19 @@ IMPORTANT - NO FIGURE NUMBERS:
         """
         self._last_error = None  # Reset error
 
-        messages = [{"role": "user", "content": prompt}]
+        # Gemini API content format
+        contents = [{"role": "user", "parts": [{"text": prompt}]}]
+        
+        # Generation config for image generation
+        generation_config = {
+            "responseModalities": ["image", "text"],  # Request image output
+        }
 
         try:
             response = self._make_request(
-                model=self.image_model, messages=messages, modalities=["image", "text"]
+                model=self.image_model, 
+                contents=contents, 
+                generation_config=generation_config
             )
 
             # Debug: print response structure if verbose
@@ -378,19 +364,16 @@ IMPORTANT - NO FIGURE NUMBERS:
                 self._log(f"Response keys: {response.keys()}")
                 if "error" in response:
                     self._log(f"API Error: {response['error']}")
-                if response.get("choices"):
-                    msg = response["choices"][0].get("message", {})
-                    self._log(f"Message keys: {msg.keys()}")
-                    # Show content preview without printing huge base64 data
-                    content = msg.get("content", "")
-                    if isinstance(content, str):
-                        preview = content[:200] + "..." if len(content) > 200 else content
-                        self._log(f"Content preview: {preview}")
-                    elif isinstance(content, list):
-                        self._log(f"Content is list with {len(content)} items")
-                        for i, item in enumerate(content[:3]):
-                            if isinstance(item, dict):
-                                self._log(f"  Item {i}: type={item.get('type')}")
+                if response.get("candidates"):
+                    candidate = response["candidates"][0]
+                    self._log(f"Candidate keys: {candidate.keys()}")
+                    content = candidate.get("content", {})
+                    self._log(f"Content keys: {content.keys()}")
+                    parts = content.get("parts", [])
+                    self._log(f"Parts count: {len(parts)}")
+                    for i, part in enumerate(parts[:3]):
+                        if isinstance(part, dict):
+                            self._log(f"  Part {i}: keys={list(part.keys())}")
 
             # Check for API errors in response
             if "error" in response:
@@ -409,12 +392,6 @@ IMPORTANT - NO FIGURE NUMBERS:
                     "No image data in API response - model may not support image generation"
                 )
                 self._log(f"✗ {self._last_error}")
-                # Additional debug info when image extraction fails
-                if self.verbose and "choices" in response:
-                    msg = response["choices"][0].get("message", {})
-                    self._log(
-                        f"Full message structure: {json.dumps({k: type(v).__name__ for k, v in msg.items()})}"
-                    )
 
             return image_data
         except RuntimeError as e:
@@ -439,10 +416,10 @@ IMPORTANT - NO FIGURE NUMBERS:
         max_iterations: int = 2,
     ) -> tuple[str, float, bool]:
         """
-        Review generated image using Gemini 3 Pro for quality analysis.
+        Review generated image using Gemini for quality analysis.
 
-        Uses Gemini 3 Pro's superior vision and reasoning capabilities to
-        evaluate the schematic quality and determine if regeneration is needed.
+        Uses Gemini's vision capabilities to evaluate the schematic quality
+        and determine if regeneration is needed.
 
         Args:
             image_path: Path to the generated image
@@ -454,8 +431,24 @@ IMPORTANT - NO FIGURE NUMBERS:
         Returns:
             Tuple of (critique text, quality score 0-10, needs_improvement bool)
         """
-        # Use Gemini 3 Pro for review - excellent vision and analysis
+        # Convert image to base64
         image_data_url = self._image_to_base64(image_path)
+        
+        # Extract base64 data from data URL
+        if "," in image_data_url:
+            base64_data = image_data_url.split(",", 1)[1]
+        else:
+            base64_data = image_data_url
+        
+        # Determine mime type
+        ext = Path(image_path).suffix.lower()
+        mime_type = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+        }.get(ext, "image/png")
 
         # Get quality threshold for this document type
         threshold = self.QUALITY_THRESHOLDS.get(
@@ -512,54 +505,55 @@ VERDICT: [ACCEPTABLE or NEEDS_IMPROVEMENT]
 If score >= {threshold}, the diagram is ACCEPTABLE for {doc_type} publication.
 If score < {threshold}, mark as NEEDS_IMPROVEMENT with specific suggestions."""
 
-        messages = [
+        # Gemini content format with image
+        contents = [
             {
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": review_prompt},
-                    {"type": "image_url", "image_url": {"url": image_data_url}},
-                ],
+                "parts": [
+                    {"text": review_prompt},
+                    {
+                        "inlineData": {
+                            "mimeType": mime_type,
+                            "data": base64_data
+                        }
+                    }
+                ]
             }
         ]
 
         try:
-            # Use Gemini 3 Pro for high-quality review
-            response = self._make_request(model=self.review_model, messages=messages)
+            # Use Gemini for review
+            response = self._make_request(model=self.review_model, contents=contents)
 
-            # Extract text response
-            choices = response.get("choices", [])
-            if not choices:
-                return "Image generated successfully", 8.0
+            # Extract text response from Gemini format
+            candidates = response.get("candidates", [])
+            if not candidates:
+                return "Image generated successfully", 8.0, False
 
-            message = choices[0].get("message", {})
-            content = message.get("content", "")
-
-            # Check reasoning field (Nano Banana Pro puts analysis here)
-            reasoning = message.get("reasoning", "")
-            if reasoning and not content:
-                content = reasoning
-
-            if isinstance(content, list):
-                # Extract text from content blocks
-                text_parts = []
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
-                content = "\n".join(text_parts)
+            content = candidates[0].get("content", {})
+            parts = content.get("parts", [])
+            
+            # Extract text from parts
+            text_parts = []
+            for part in parts:
+                if "text" in part:
+                    text_parts.append(part["text"])
+            
+            critique_text = "\n".join(text_parts) if text_parts else "Image generated successfully"
 
             # Try to extract score
             score = 7.5  # Default score if extraction fails
             import re
 
             # Look for SCORE: X or SCORE: X/10 format
-            score_match = re.search(r"SCORE:\s*(\d+(?:\.\d+)?)", content, re.IGNORECASE)
+            score_match = re.search(r"SCORE:\s*(\d+(?:\.\d+)?)", critique_text, re.IGNORECASE)
             if score_match:
                 score = float(score_match.group(1))
             else:
                 # Fallback: look for any score pattern
                 score_match = re.search(
                     r"(?:score|rating|quality)[:\s]+(\d+(?:\.\d+)?)\s*(?:/\s*10)?",
-                    content,
+                    critique_text,
                     re.IGNORECASE,
                 )
                 if score_match:
@@ -567,14 +561,14 @@ If score < {threshold}, mark as NEEDS_IMPROVEMENT with specific suggestions."""
 
             # Determine if improvement is needed based on verdict or score
             needs_improvement = False
-            if "NEEDS_IMPROVEMENT" in content.upper() or score < threshold:
+            if "NEEDS_IMPROVEMENT" in critique_text.upper() or score < threshold:
                 needs_improvement = True
 
             self._log(f"✓ Review complete (Score: {score}/10, Threshold: {threshold}/10)")
             self._log(f"  Verdict: {'Needs improvement' if needs_improvement else 'Acceptable'}")
 
             return (
-                content if content else "Image generated successfully",
+                critique_text if critique_text else "Image generated successfully",
                 score,
                 needs_improvement,
             )
@@ -687,8 +681,8 @@ Generate a publication-quality scientific diagram that meets all the guidelines 
                 f.write(image_data)
             print(f"✓ Saved: {iter_path}")
 
-            # Review image using Gemini 3 Pro
-            print("Reviewing image with Gemini 3 Pro...")
+            # Review image using Gemini 3.1 Pro
+            print("Reviewing image with Gemini 3.1 Pro...")
             critique, score, needs_improvement = self.review_image(
                 str(iter_path), user_prompt, i, doc_type, iterations
             )
@@ -762,7 +756,7 @@ Generate a publication-quality scientific diagram that meets all the guidelines 
 def main():
     """Command-line interface."""
     parser = argparse.ArgumentParser(
-        description="Generate scientific schematics using AI with smart iterative refinement",
+        description="Generate scientific schematics using Google Gemini AI with smart iterative refinement",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -772,8 +766,8 @@ Examples:
   # Generate neural network architecture for presentation (lower threshold)
   python generate_schematic_ai.py "Transformer encoder-decoder architecture" -o transformer.png --doc-type presentation
   
-  # Generate with custom max iterations for poster
-  python generate_schematic_ai.py "Biological signaling pathway" -o pathway.png --iterations 2 --doc-type poster
+  # Generate with Nano Banana 2 model
+  python generate_schematic_ai.py "Biological signaling pathway" -o pathway.png --model nano-banana-2
   
   # Verbose output
   python generate_schematic_ai.py "Circuit diagram" -o circuit.png -v
@@ -789,11 +783,16 @@ Document Types (quality thresholds):
   presentation 6.5/10  - Slides, talks
   default      7.5/10  - General purpose
 
+Image Generation Models:
+  nano-banana-pro  - Gemini 2.0 Flash (fast, default)
+  nano-banana-2    - Gemini 2.0 Flash Preview (preview version)
+
 Note: Multiple iterations only occur if quality is BELOW the threshold.
       If the first generation meets the threshold, no extra API calls are made.
 
 Environment:
-  OPENROUTER_API_KEY    OpenRouter API key (required)
+  GEMINI_API_KEY    Google Gemini API key (required)
+                   Get from: https://aistudio.google.com/app/apikey
         """,
     )
 
@@ -823,18 +822,25 @@ Environment:
         ],
         help="Document type for quality threshold (default: default)",
     )
-    parser.add_argument("--api-key", help="OpenRouter API key (or set OPENROUTER_API_KEY)")
+    parser.add_argument(
+        "--model",
+        default="nano-banana-pro",
+        choices=["nano-banana-pro", "nano-banana-2"],
+        help="Image generation model to use (default: nano-banana-pro)",
+    )
+    parser.add_argument("--api-key", help="Google Gemini API key (or set GEMINI_API_KEY)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
 
     # Check for API key
-    api_key = args.api_key or os.getenv("OPENROUTER_API_KEY")
+    api_key = args.api_key or os.getenv("GEMINI_API_KEY")
     if not api_key:
-        print("Error: OPENROUTER_API_KEY environment variable not set")
+        print("Error: GEMINI_API_KEY environment variable not set")
         print("\nSet it with:")
-        print("  export OPENROUTER_API_KEY='your_api_key'")
+        print("  export GEMINI_API_KEY='your_api_key'")
         print("\nOr provide via --api-key flag")
+        print("\nGet your API key from: https://aistudio.google.com/app/apikey")
         sys.exit(1)
 
     # Validate iterations - enforce max of 2
@@ -843,7 +849,11 @@ Environment:
         sys.exit(1)
 
     try:
-        generator = ScientificSchematicGenerator(api_key=api_key, verbose=args.verbose)
+        generator = ScientificSchematicGenerator(
+            api_key=api_key, 
+            verbose=args.verbose, 
+            image_model=args.model
+        )
         results = generator.generate_iterative(
             user_prompt=args.prompt,
             output_path=args.output,
