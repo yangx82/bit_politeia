@@ -85,11 +85,27 @@ class CryptoService:
     def verify_signature(self, message: str, signature: str, public_key_pem: str) -> bool:
         """
         Verify a signature using the provided public key PEM string.
+        Uses a local cache to avoid redundant PEM parsing.
         """
+        if not public_key_pem:
+            return False
+
         try:
-            public_key = serialization.load_pem_public_key(
-                public_key_pem.encode("utf-8"), backend=default_backend()
-            )
+            # 1. Check cache for already parsed key object
+            if not hasattr(self, "_public_key_cache"):
+                self._public_key_cache = {}
+
+            if public_key_pem in self._public_key_cache:
+                public_key = self._public_key_cache[public_key_pem]
+            else:
+                # 2. Parse and cache
+                public_key = serialization.load_pem_public_key(
+                    public_key_pem.encode("utf-8"), backend=default_backend()
+                )
+                # Keep cache size reasonable (simple eviction)
+                if len(self._public_key_cache) > 500:
+                    self._public_key_cache.clear()
+                self._public_key_cache[public_key_pem] = public_key
 
             sig_bytes = base64.b64decode(signature)
 
@@ -101,8 +117,6 @@ class CryptoService:
             )
             return True
         except Exception:
-            # logger.error(f"Verification failed: {e}")
-            # We don't have logger here effortlessly, but returning False is enough
             return False
 
 

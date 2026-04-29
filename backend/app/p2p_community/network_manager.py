@@ -297,7 +297,12 @@ class NetworkManager:
 
             # SECURITY: Verify signature for governance-impacting messages before routing/ingesting
             if message.message_type == MessageType.GROUP_CONFIG:
-                if not self.message_protocol.verify_message(message, message.sender_id):
+                # Resolve Public Key from ID
+                public_key = message.sender_id
+                if message.sender_id in self.nodes:
+                    public_key = self.nodes[message.sender_id].public_key
+
+                if not self.message_protocol.verify_message(message, public_key):
                     logger.warning(
                         f"[Network] Security Alert: Invalid signature for GROUP_CONFIG from {message.sender_id}. Dropping."
                     )
@@ -515,7 +520,12 @@ class NetworkManager:
                         # Note: Most verification happens at the ingress point (Relay or HTTP)
                         # but we check again for group config.
                         if message.message_type == MessageType.GROUP_CONFIG:
-                            if not self.message_protocol.verify_message(message, message.sender_id):
+                            # Resolve Public Key from ID
+                            public_key = message.sender_id
+                            if message.sender_id in self.nodes:
+                                public_key = self.nodes[message.sender_id].public_key
+
+                            if not self.message_protocol.verify_message(message, public_key):
                                 logger.warning(
                                     f"[Network] Dropping unverified GROUP_CONFIG message from {message.sender_id}"
                                 )

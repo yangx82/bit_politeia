@@ -195,9 +195,15 @@ class Node:
                 )
 
                 # Verify signature
-                # Note: This assumes sender_id IS the public key or that verify_message handles resolution.
-                # In this protocol, sender_id is currently the public key PEM.
-                if not self.network_manager.message_protocol.verify_message(msg_obj, sender_id):
+                # FIX: sender_id is a hex Node ID, we need the actual PEM Public Key for verification.
+                public_key = sender_id
+                if self.network_manager and sender_id in self.network_manager.nodes:
+                    public_key = self.network_manager.nodes[sender_id].public_key
+                elif self.network_manager:
+                    # Try to sync if unknown node
+                    logger.debug(f"Unknown sender {sender_id[:8]} during verification, public key lookup failed.")
+
+                if not self.network_manager.message_protocol.verify_message(msg_obj, public_key):
                     logger.warning(
                         f"[Security] Received message {m_id} from {sender_id[:8]} with INVALID signature. Dropping."
                     )

@@ -83,17 +83,22 @@ class SignedMessage:
         )
 
     def get_signable_content(self) -> bytes:
-        """Get the content that should be signed."""
+        """
+        Get the content that should be signed.
+        Uses deterministic JSON serialization (canonical-like).
+        """
         signable = {
             "message_id": self.message_id,
             "sender_id": self.sender_id,
             "recipient_id": self.recipient_id,
             "message_type": self.message_type.value,
             "content": self.content,
-            "timestamp": self.timestamp.isoformat(),
+            # Use timespec='microseconds' to ensure consistent decimal places
+            "timestamp": self.timestamp.isoformat(timespec="microseconds"),
             "nonce": self.nonce,
         }
-        return json.dumps(signable, sort_keys=True).encode("utf-8")
+        # sort_keys and separators eliminate non-deterministic whitespace
+        return json.dumps(signable, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 @dataclass
