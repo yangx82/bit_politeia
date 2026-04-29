@@ -62,6 +62,19 @@ except ImportError as e:
     sys.exit(1)
 
 
+# Stage number to name mapping
+STAGE_MAP = {
+    1: "TOPIC_INIT", 2: "PROBLEM_DECOMPOSE", 3: "SEARCH_STRATEGY",
+    4: "LITERATURE_COLLECT", 5: "LITERATURE_SCREEN", 6: "KNOWLEDGE_EXTRACT",
+    7: "SYNTHESIS", 8: "HYPOTHESIS_GEN", 9: "EXPERIMENT_DESIGN",
+    10: "CODE_GENERATION", 11: "RESOURCE_PLANNING", 12: "EXPERIMENT_RUN",
+    13: "ITERATIVE_REFINE", 14: "RESULT_ANALYSIS", 15: "RESEARCH_DECISION",
+    16: "PAPER_OUTLINE", 17: "PAPER_DRAFT", 18: "PEER_REVIEW",
+    19: "PAPER_REVISION", 20: "QUALITY_GATE", 21: "KNOWLEDGE_ARCHIVE",
+    22: "EXPORT_PUBLISH", 23: "CITATION_VERIFY"
+}
+
+
 def get_arc_src():
     """Dynamically discover AutoResearchClaw installation path."""
     # 1. Check environment variable (set by setup_research_node.py)
@@ -142,6 +155,15 @@ def start_research(topic: str, task_id: str = None, resume: bool = False, from_s
     python_cmd = str(venv_python) if venv_python.exists() else sys.executable
 
     config_path = ARC_SRC / "config.arc.yaml"
+    
+    # Resolve stage name if numeric
+    stage_name = None
+    if from_stage:
+        if from_stage.isdigit():
+            stage_name = STAGE_MAP.get(int(from_stage))
+        else:
+            stage_name = from_stage
+
     cmd = [
         python_cmd,
         "-m",
@@ -158,11 +180,12 @@ def start_research(topic: str, task_id: str = None, resume: bool = False, from_s
 
     if resume:
         cmd.append("--resume")
-    if from_stage:
-        cmd.extend(["--from-stage", from_stage])
+    if stage_name:
+        cmd.extend(["--from-stage", stage_name])
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ARC_SRC) + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONUNBUFFERED"] = "1"
 
     log_file = run_dir / "run.log"
 
@@ -232,12 +255,28 @@ if __name__ == "__main__":
         
         result = start_research(topic, task_id=task_id, resume=resume, from_stage=from_stage)
     except json.JSONDecodeError:
-        # Fallback: Check if it looks like a CLI resume command (e.g. "--resume rc-2026...")
-        if raw_args.strip().startswith("--resume"):
-            parts = raw_args.strip().split()
-            resume_val = parts[1] if len(parts) > 1 else None
-            # If resume_val is provided, treat it as task_id
-            result = start_research("Unknown Topic", task_id=resume_val, resume=True)
+        # Fallback: Check if it looks like a CLI resume command (e.g. "--resume rc-xxxx --stage 11")
+        clean_args = raw_args.strip()
+        if clean_args.startswith("--resume"):
+            parts = clean_args.split()
+            resume_id = None
+            stage_val = None
+            
+            # Simple manual parser for common flags
+            for i, part in enumerate(parts):
+                if part == "--resume" and i + 1 < len(parts) and not parts[i+1].startswith("-"):
+                    resume_id = parts[i+1]
+                elif part in ["--stage", "--from-stage"] and i + 1 < len(parts):
+                    stage_val = parts[i+1]
+            
+            # If resume_id wasn't immediately after --resume, it might be the first non-flag
+            if not resume_id:
+                for part in parts[1:]:
+                    if not part.startswith("-"):
+                        resume_id = part
+                        break
+
+            result = start_research("Unknown Topic", task_id=resume_id, resume=True, from_stage=stage_val)
         else:
             # Fallback to simple topic string
             result = start_research(raw_args)
