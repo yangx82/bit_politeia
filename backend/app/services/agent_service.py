@@ -131,9 +131,17 @@ class AgentService:
                 self.scheduler.add_job(
                     "app.services.agent_service:trigger_scheduled_task_proxy",
                     "interval",
-                    hours=12,
+                    hours=24,
                     misfire_grace_time=60,
                     id="periodic_brief_job",
+                    replace_existing=True,
+                )
+                self.scheduler.add_job(
+                    "app.services.agent_service:run_literature_watcher_proxy",
+                    "interval",
+                    hours=24,
+                    misfire_grace_time=300,
+                    id="periodic_literature_watcher_job",
                     replace_existing=True,
                 )
                 self.scheduler.add_job(
@@ -1818,6 +1826,142 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         # Push to history/frontend AND broadcast to bridges
         await self.notify_resident(summary)
+
+    async def run_literature_watcher(self):
+        """Periodic task to watch for new literature, evaluate quality, and share with community."""
+        logger.info(f"Starting Periodic Literature Watcher for topic: {self.research_field}")
+        
+        # 1. Initialize Skill Service (Dynamic Import)
+        import sys
+        skill_path = str(self.backend_dir / "skills" / "literature-watcher" / "scripts")
+        if skill_path not in sys.path:
+            sys.path.append(skill_path)
+        
+        try:
+            from watcher_service import WatcherService
+            watcher = WatcherService()
+            
+            # 2. Search for new papers (Sync wrapper for asyncio)
+            # We look back 7 days to catch any missed updates
+            new_papers = await asyncio.to_thread(watcher.get_incremental_papers, self.research_field, interval_days=7)
+            
+            if not new_papers:
+                logger.info("No new literature found in this cycle.")
+                return
+
+            logger.info(f"Found {len(new_papers)} new candidate papers to evaluate.")
+            
+            # 3. Evaluate and Act (using LLM)
+            high_quality_count = 0
+            shared_count = 0
+
+            for paper in new_papers:
+                # Use LLM to decide quality and sharing
+                decision = await self._evaluate_and_share_paper(paper)
+                
+                # A. Internal Log & Resident Notification
+                if decision.get("is_high_quality"):
+                    high_quality_count += 1
+                    self.resident_memory.log_interaction(
+                        "literature_watcher",
+                        f"High-Quality Paper Found: {paper['title']}\nSummary: {decision.get('summary')}",
+                        "research",
+                        session_id="resident"
+                    )
+                    
+                    # Push a direct notice to UI
+                    await self.notify_resident(
+                        f"📚 [文献追踪] 发现高质量新文献：\n《{paper['title']}》\n\n💡 理由：{decision.get('summary')}"
+                    )
+                    
+                # B. P2P Community Share (Autonomous Decision)
+                if decision.get("should_share"):
+                    shared_count += 1
+                    await self._share_paper_with_community(paper, decision.get("discussion_starter"))
+                
+                # C. Save to skill history so we don't process it again in the next run
+                await asyncio.to_thread(watcher.save_to_history, [paper])
+
+            logger.info(f"Literature Watcher Cycle Complete. High Quality: {high_quality_count}, Shared: {shared_count}")
+
+        except Exception as e:
+            logger.error(f"Literature Watcher process failed: {e}")
+
+    async def _evaluate_and_share_paper(self, paper: dict) -> dict:
+        """Ask LLM to evaluate the paper and decide on sharing with the network."""
+        if not self.llm:
+            return {"is_high_quality": False, "should_share": False}
+
+        prompt = f"""
+        You are a proactive Research Agent in the Bit-Politeia network. 
+        You just found a new paper during your periodic monitoring.
+        
+        PAPER DETAILS:
+        Title: {paper.get('title')}
+        Authors: {paper.get('authors')}
+        Abstract: {paper.get('abstract', 'No abstract available.')}
+        
+        TASK:
+        1. Evaluate if this paper is high quality and highly relevant to your research field: {self.research_field}.
+        2. Decide if you should share and discuss this with other autonomous nodes in the P2P community to foster scientific collaboration.
+        3. Create a brief internal summary in {self.agent_language} explaining why it's important.
+        4. If sharing, create a "Discussion Starter" in {self.agent_language} (e.g. "I found this interesting because... What do you think about X?").
+        
+        RESPONSE FORMAT (Strict JSON):
+        {{
+            "is_high_quality": boolean,
+            "should_share": boolean,
+            "summary": "string explaining importance",
+            "discussion_starter": "string for community discussion"
+        }}
+        """
+        try:
+            from langchain_core.messages import HumanMessage
+            response = await self.llm.ainvoke([HumanMessage(content=prompt)])
+            
+            content = response.content.strip()
+            # Clean potential markdown fences
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+                
+            return json.loads(content)
+        except Exception as e:
+            logger.error(f"LLM Paper evaluation error: {e}")
+            # Fallback: Treat as low quality to be safe
+            return {"is_high_quality": False, "should_share": False}
+
+    async def _share_paper_with_community(self, paper: dict, discussion_starter: str):
+        """Broadcast the paper discussion to peers in the P2P community."""
+        share_content = (
+            f"📢 [研究分享] 我发现了一篇值得关注的文献：\n\n"
+            f"《{paper.get('title')}》\n\n"
+            f"💬 我的观点：{discussion_starter}\n\n"
+            f"🔗 链接: {paper.get('url', 'N/A')}\n"
+            f"🆔 DOI: {paper.get('doi', 'N/A')}"
+        )
+        
+        logger.info(f"Autonomous Share: Disseminating paper '{paper['title']}' to community.")
+        
+        # 1. Identify Peers (Target top reputation peers or active nodes)
+        if p2p_service.network_manager:
+            peers = list(p2p_service.network_manager.nodes.keys())
+            
+            # Exclude self
+            if p2p_service.local_node:
+                self_id = p2p_service.local_node.node_id
+                peers = [p for p in peers if p != self_id]
+            
+            # Limit sharing to a few nodes to prevent network-wide spam
+            # In the future, this could be filtered by node interests
+            target_peers = peers[:3] 
+            
+            for peer_id in target_peers:
+                try:
+                    await self.send_p2p_message(peer_id, share_content)
+                except Exception as e:
+                    logger.warning(f"Failed to share paper with peer {peer_id}: {e}")
 
     # 4. Ad-hoc Task: Periodic Participation Reward
     async def trigger_adhoc_task(self):
@@ -3702,6 +3846,12 @@ async def code_supervisor_proxy():
 
     logger.info(f"[CodeSupervisor] Detected pending update at {WATCH_FILE}")
     processing_file = WATCH_FILE.with_suffix(".json.processing")
+
+
+async def run_literature_watcher_proxy():
+    """Proxy for agent_service.run_literature_watcher"""
+    if agent_service:
+        await agent_service.run_literature_watcher()
 
 
 agent_service = AgentService()

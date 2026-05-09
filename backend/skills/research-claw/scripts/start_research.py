@@ -253,11 +253,26 @@ if __name__ == "__main__":
         resume = args_obj.get("resume", False)
         from_stage = args_obj.get("from_stage")
         
+        # UI Workaround: Sometimes the frontend passes the CLI flags inside the topic field
+        clean_topic = str(topic).strip().strip("'").strip('"')
+        if clean_topic.startswith("--resume") or clean_topic.startswith("resume="):
+            resume = True
+            topic = "Unknown Topic"  # Reset topic so it doesn't fail the pipeline
+            parts = clean_topic.split()
+            for i, part in enumerate(parts):
+                if part == "--resume" and i + 1 < len(parts) and not parts[i+1].startswith("-"):
+                    if not task_id: task_id = parts[i+1]
+                elif part in ["--stage", "--from-stage"] and i + 1 < len(parts):
+                    from_stage = parts[i+1]
+                    
         result = start_research(topic, task_id=task_id, resume=resume, from_stage=from_stage)
     except json.JSONDecodeError:
         # Fallback: Check if it looks like a CLI resume command (e.g. "--resume rc-xxxx --stage 11")
-        clean_args = raw_args.strip()
-        if clean_args.startswith("--resume"):
+        clean_args = raw_args.strip().strip("'").strip('"')
+        if clean_args.startswith("--resume") or clean_args.startswith("resume="):
+            # If it starts with resume=, it might be weirdly formatted by an agent
+            if clean_args.startswith("resume="):
+                clean_args = "--" + clean_args
             parts = clean_args.split()
             resume_id = None
             stage_val = None

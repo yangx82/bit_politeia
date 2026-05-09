@@ -445,32 +445,13 @@ class BitPoliteiaContextManager:
             status="archived",
         )
 
-        # 4.5 Autocompact Re-injection: Rescue the last explicit user request
-        last_user_request = None
-        for msg in reversed(middle):
-            content = getattr(msg, "content", "")
-            if isinstance(msg, HumanMessage) and isinstance(content, str):
-                # In Bit Politeia, pipeline prepends [sender] to HumanMessages
-                if not content.startswith("[system]") and not content.startswith("[event]"):
-                    last_user_request = content
-                    break
-
-        re_injection_block = ""
-        if last_user_request:
-            re_injection_block = (
-                f"\n\n### [AUTOCOMPACT RE-INJECTION: LAST USER REQUEST]\n"
-                f"To prevent context loss, here is the exact text of the last instruction you were given:\n"
-                f"{last_user_request[:2000]}\n"
-            )
-
         # 5. Construct Compacted History
         compaction_msg = SystemMessage(
             content=f"### [ITERATIVE CONTEXT SUMMARY - ID: {checkpoint_id}]\n"
             f"Earlier turns in this conversation have been compacted to save space. "
             f"Here is the summary of what has been discussed and achieved so far:\n\n"
-            f"{summary_text}\n"
-            f"{re_injection_block}\n"
-            f"Use this summary and the exact user request to maintain the thread and continue from where we left off."
+            f"{summary_text}\n\n"
+            f"Use this summary to maintain the thread and continue from where we left off."
         )
 
         return head + [compaction_msg] + tail

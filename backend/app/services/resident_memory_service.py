@@ -546,36 +546,56 @@ class ResidentReporter:
 
     async def generate_daily_brief(self, interests: list[str]) -> str:
         """
-        Generate a unified brief covering both research interests and community state.
+        Generate a unified brief covering research interests, community state, economy, and task progress.
         """
         if not self.agent.llm:
             return "LLM not initialized."
 
-        # 1. Generate Research Part
-        recent_research = self.agent.resident_memory.get_recent_history(limit=5, topic="research")
+        # 1. Fetch Economy Status (Ledger)
+        balance = 0.0
+        if self.agent.ledger and self.agent.governance_manager:
+            balance = self.agent.ledger.get_balance(self.agent.governance_manager.node_id)
+        
+        # 2. Fetch Task Status
+        tasks = self.agent.task_manager.get_all_tasks()
+        active_tasks = [t for t in tasks if t.status in ["running", "pending"]]
+        recent_done = [t for t in tasks if t.status == "completed"][-3:]
+        
+        task_text = ""
+        if active_tasks:
+            task_text += "Active Tasks:\n" + "\n".join([f"- {t.title} ({t.status})" for t in active_tasks])
+        if recent_done:
+            task_text += "\nRecently Completed:\n" + "\n".join([f"- {t.title}" for t in recent_done])
+
+        # 3. Generate Research Part (Increased limit)
+        recent_research = self.agent.resident_memory.get_recent_history(limit=15, topic="research")
         research_text = "\n".join([f"- {r['content']}" for r in recent_research])
 
         research_prompt = f"""
-        Context: Research Brief
+        You are a high-level research assistant. Summarize the research progress for the resident.
+        
         Interests: {", ".join(interests)}
-        Recent Research:
-        {research_text or "No specific research activity logged today."}
+        Recent Research Activity/Logs:
+        {research_text or "No specific research activity logged in this period."}
+        
+        Ongoing Tasks:
+        {task_text or "No active research tasks at the moment."}
         
         Task: 
-        Summarize research progress in {self.agent.agent_language}. (1-2 sentences)
+        Provide a substantial summary of research findings, challenges, and next steps in {self.agent.agent_language}. 
+        Do NOT be vague. Mention specific models, datasets, or metrics if found in the logs.
         """
 
-        # 2. Generate Community Part (via internal method)
+        # 4. Generate Community Part
         community_summary = await self.community_brief_content()
 
         try:
             from langchain_core.messages import HumanMessage, SystemMessage
 
-            # Combine Research + Community into a single call or sequence
-            # For best nuance, we sequence them.
+            # Generate Research Summary
             research_resp = await self.agent.llm.ainvoke(
                 [
-                    SystemMessage(content="You are a professional research reporter."),
+                    SystemMessage(content="You are a professional and insightful research lead."),
                     HumanMessage(content=research_prompt),
                 ]
             )
@@ -583,33 +603,45 @@ class ResidentReporter:
 
             # Combine into a final readable block
             final_report = (
-                f"### 📋 智能体定期汇报 (Periodic Report)\n\n"
+                f"### 📋 智能体 24 小时阶段汇报 (Periodic Report)\n\n"
+                f"#### 💰 账户状态 (Economy)\n"
+                f"- 当前余额: {balance:.2f} STATER\n"
+                f"- 节点声誉: {self.agent.status.reputation}\n\n"
                 f"#### 🔍 研究动态 (Research Focus: {', '.join(interests)})\n"
                 f"{research_summary}\n\n"
-                f"#### 🌐 社区事务 (Community Affairs)\n"
+                f"#### 🌐 社区与社交 (Community)\n"
                 f"{community_summary}"
             )
             return final_report
 
         except Exception as e:
             logger.error(f"Failed to generate unified brief: {e}")
-            return f"I'm keeping track of {', '.join(interests)} and community affairs, but the summary generation failed. Please check my raw logs."
+            return f"I'm keeping track of {', '.join(interests)}, but the summary generation failed. Balance: {balance:.2f} STATER."
 
     async def community_brief_content(self) -> str:
-        """Helper to generate the community part of the brief."""
+        """Helper to generate a substantial community part of the brief."""
         mem = self.agent.resident_memory
-        facts = mem._semantic_profile.get("facts", [])[-3:]
+        facts = mem._semantic_profile.get("facts", [])[-10:] # More facts
 
-        # Social Graph
+        # Social Graph - richer summaries
         social_summaries = []
-        for edge in list(mem._social_graph.values())[:3]:
-            social_summaries.append(f"- {edge.get('name')}: Trust {edge.get('trust_score')}")
+        for peer_id, edge in list(mem._social_graph.items())[:5]:
+            social_summaries.append(
+                f"- {edge.get('name')}: Trust {edge.get('trust_score')}, Rel: {edge.get('relationship_type')}, Interactions: {edge.get('interaction_count')}"
+            )
 
         prompt = f"""
-        Summarize community/social state briefly in {self.agent.agent_language}.
-        Recent Facts: {json.dumps(facts, ensure_ascii=False)}
-        Social Graph: {", ".join(social_summaries)}
-        Focus on the most important updates. (1-2 sentences)
+        Summarize the social and community state of the Bit-Politeia network for the resident.
+        
+        Recent Community Facts: 
+        {json.dumps(facts, ensure_ascii=False) if facts else "No new facts."}
+        
+        Key Peer Relationships: 
+        {" / ".join(social_summaries) if social_summaries else "No active peer relationships."}
+        
+        Task:
+        Provide a concise but meaningful summary of the network's "social health" in {self.agent.agent_language}. 
+        Mention any notable trust changes or key events. (2-3 sentences)
         """
         resp = await self.agent.llm.ainvoke([HumanMessage(content=prompt)])
         return resp.content.strip()

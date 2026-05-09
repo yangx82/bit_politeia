@@ -213,7 +213,8 @@ class KnowledgeBase:
         if CHROMA_AVAILABLE:
             try:
                 # Initialize Persistent Client
-                data_path = "backend/data/chroma"
+                # Use environment variable or default to relative path
+                data_path = os.getenv("CHROMA_DATA_PATH", "backend/data/chroma")
                 self.chroma_client = chromadb.PersistentClient(path=data_path)
 
                 # Initialize Embedding Model with Offline Fallback & Frequency Check
@@ -234,7 +235,7 @@ class KnowledgeBase:
                 self.chroma_client = None
 
         # SQLite FTS5 Init
-        self.fts_db_path = "backend/data/memory_fts.db"
+        self.fts_db_path = os.getenv("FTS_DB_PATH", "backend/data/memory_fts.db")
         self.fts_conn = None
         if SQLITE_AVAILABLE:
             try:
