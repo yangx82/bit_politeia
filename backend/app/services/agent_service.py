@@ -925,6 +925,11 @@ class AgentService:
         iteration = 0
         while not context.stop_execution and iteration < max_iterations:
             iteration += 1
+            
+            # --- Micro-compact context before planning to prevent context explosion ---
+            if "messages" in context.metadata and self.context_manager:
+                self.context_manager.apply_micro_compaction(context.metadata["messages"])
+
             await stages[1].run(context, self)  # Plan
             if not context.stop_execution:
                 await stages[2].run(context, self)  # Execute

@@ -75,9 +75,12 @@ class BitPoliteiaContextManager:
         else:
             static_chars = self._estimate_static_content_size()
 
+        # 3.5 Context Collapse (Remove duplicate identical adjacent messages)
+        collapsed_history = self._apply_context_collapse(lc_history)
+
         # 4. Iterative Compression Check (with dynamic threshold)
         processed_history = await self._ensure_compact_history(
-            lc_history, task_id, static_chars, force_compact=force_compact
+            collapsed_history, task_id, static_chars, force_compact=force_compact
         )
 
         # 5. Tool Integrity (Sanitize orphaned/missing tool pairs)
@@ -442,13 +445,32 @@ class BitPoliteiaContextManager:
             status="archived",
         )
 
+        # 4.5 Autocompact Re-injection: Rescue the last explicit user request
+        last_user_request = None
+        for msg in reversed(middle):
+            content = getattr(msg, "content", "")
+            if isinstance(msg, HumanMessage) and isinstance(content, str):
+                # In Bit Politeia, pipeline prepends [sender] to HumanMessages
+                if not content.startswith("[system]") and not content.startswith("[event]"):
+                    last_user_request = content
+                    break
+
+        re_injection_block = ""
+        if last_user_request:
+            re_injection_block = (
+                f"\n\n### [AUTOCOMPACT RE-INJECTION: LAST USER REQUEST]\n"
+                f"To prevent context loss, here is the exact text of the last instruction you were given:\n"
+                f"{last_user_request[:2000]}\n"
+            )
+
         # 5. Construct Compacted History
         compaction_msg = SystemMessage(
             content=f"### [ITERATIVE CONTEXT SUMMARY - ID: {checkpoint_id}]\n"
             f"Earlier turns in this conversation have been compacted to save space. "
             f"Here is the summary of what has been discussed and achieved so far:\n\n"
-            f"{summary_text}\n\n"
-            f"Use this summary to maintain the thread and continue from where we left off."
+            f"{summary_text}\n"
+            f"{re_injection_block}\n"
+            f"Use this summary and the exact user request to maintain the thread and continue from where we left off."
         )
 
         return head + [compaction_msg] + tail
@@ -563,3 +585,112 @@ Format the summary as a structured Markdown list. Keep it concise but informatio
             logger.info(f"Context Sanitizer: Added {len(missing_results)} stub tool results.")
 
         return messages
+
+    def _apply_context_collapse(self, messages: list[BaseMessage]) -> list[BaseMessage]:
+        """
+        Collapses consecutive similar messages to save tokens and reduce noise.
+        Uses Regex to strip dynamic data (timestamps, UUIDs) and fuzzy matching.
+        """
+        if not messages:
+            return messages
+            
+        import re
+        
+        def _strip_dynamic(content: str) -> str:
+            # Strip ISO8601 / standard timestamps
+            s = re.sub(r'\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\b', '', content)
+            # Strip simple time HH:MM:SS
+            s = re.sub(r'\b\d{2}:\d{2}:\d{2}\b', '', s)
+            # Strip UUIDs and long hex hashes (common in P2P logs)
+            s = re.sub(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b', '', s)
+            s = re.sub(r'\b[0-9a-fA-F]{8,}\b', '', s)
+            return s.strip()
+
+        collapsed_messages = []
+        current_msg = messages[0]
+        repeat_count = 1
+        
+        for next_msg in messages[1:]:
+            is_ai_with_tools = isinstance(current_msg, AIMessage) and getattr(current_msg, "tool_calls", None)
+            
+            content_match = False
+            if type(current_msg) == type(next_msg) and not is_ai_with_tools:
+                c1 = current_msg.content if isinstance(current_msg.content, str) else ""
+                c2 = next_msg.content if isinstance(next_msg.content, str) else ""
+                
+                s1 = _strip_dynamic(c1)
+                s2 = _strip_dynamic(c2)
+                
+                if s1 and s2 and abs(len(s1) - len(s2)) < 20:
+                    import difflib
+                    ratio = difflib.SequenceMatcher(None, s1, s2).ratio()
+                    if ratio > 0.85:
+                        content_match = True
+                elif s1 == s2:
+                    content_match = True
+                    
+            if content_match:
+                repeat_count += 1
+                continue
+                
+            # Flush current
+            if repeat_count > 1:
+                current_msg.content = f"[Collapsed {repeat_count} identical messages]\n" + str(current_msg.content)
+            
+            collapsed_messages.append(current_msg)
+            current_msg = next_msg
+            repeat_count = 1
+            
+        # Flush last
+        if repeat_count > 1:
+            current_msg.content = f"[Collapsed {repeat_count} identical messages]\n" + str(current_msg.content)
+        collapsed_messages.append(current_msg)
+        
+        if len(collapsed_messages) < len(messages):
+            logger.info(f"Context Collapse: Reduced {len(messages)} messages to {len(collapsed_messages)}.")
+            
+        return collapsed_messages
+
+    def apply_micro_compaction(self, messages: list[BaseMessage], keep_recent: int = 2) -> None:
+        """
+        Micro-compact specific high-output tool results in the message list IN-PLACE.
+        Replaces the content of older tool executions with a placeholder to save context window.
+        """
+        compactable_tools = {
+            "academic_research",
+            "execute_shell_command",
+            "read_file",
+            "list_dir",
+            "search_web"
+        }
+        
+        # 1. Map tool_call_id to tool name by finding them in AIMessages
+        call_id_to_name = {}
+        for msg in messages:
+            if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls"):
+                for tc in msg.tool_calls:
+                    tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                    tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                    if tc_id and tc_name:
+                        call_id_to_name[tc_id] = tc_name
+
+        # 2. Collect all ToolMessages that belong to compactable tools
+        compactable_msg_indices = []
+        for i, msg in enumerate(messages):
+            if isinstance(msg, ToolMessage):
+                tool_name = call_id_to_name.get(msg.tool_call_id)
+                if tool_name in compactable_tools:
+                    compactable_msg_indices.append(i)
+
+        # 3. If there are more than keep_recent, clear the older ones
+        if len(compactable_msg_indices) > keep_recent:
+            indices_to_clear = compactable_msg_indices[:-keep_recent]
+            cleared_count = 0
+            for idx in indices_to_clear:
+                old_msg = messages[idx]
+                if old_msg.content != "[Old tool result content cleared to save memory]":
+                    old_msg.content = "[Old tool result content cleared to save memory]"
+                    cleared_count += 1
+            
+            if cleared_count > 0:
+                logger.info(f"Micro-compaction triggered: Cleared {cleared_count} old tool results.")
