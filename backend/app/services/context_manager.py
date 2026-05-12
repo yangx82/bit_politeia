@@ -40,6 +40,9 @@ class BitPoliteiaContextManager:
         # Qwen/DashScope Tool-Calling Penalty: Limit is ~200k tokens
         self.tool_mode_limit = 200000
         self.is_tool_mode = True  # Agent always uses tools in this system
+        
+        # State map for incremental context summarization
+        self._previous_summary_map: dict[str, str] = {}
 
         logger.info(
             f"ContextManager initialized. Threshold: {self.threshold_tokens} tokens. "
@@ -80,7 +83,7 @@ class BitPoliteiaContextManager:
 
         # 4. Iterative Compression Check (with dynamic threshold)
         processed_history = await self._ensure_compact_history(
-            collapsed_history, task_id, static_chars, force_compact=force_compact
+            collapsed_history, task_id, session_id, static_chars, force_compact=force_compact
         )
 
         # 5. Tool Integrity (Sanitize orphaned/missing tool pairs)
@@ -362,10 +365,53 @@ class BitPoliteiaContextManager:
 
         return context
 
+    def _align_boundary_forward(self, messages: list[BaseMessage], idx: int) -> int:
+        """Push a compress-start boundary forward past any orphan tool results."""
+        while idx < len(messages) and isinstance(messages[idx], ToolMessage):
+            idx += 1
+        return idx
+
+    def _align_boundary_backward(self, messages: list[BaseMessage], idx: int) -> int:
+        """Pull a compress-end boundary backward to avoid splitting a tool_call/result group."""
+        if idx <= 0 or idx >= len(messages):
+            return idx
+        # Walk backward past consecutive tool results
+        check = idx - 1
+        while check >= 0 and isinstance(messages[check], ToolMessage):
+            check -= 1
+        # If we landed on the parent assistant with tool_calls, pull the boundary before it
+        if check >= 0 and isinstance(messages[check], AIMessage) and hasattr(messages[check], "tool_calls") and messages[check].tool_calls:
+            idx = check
+        return idx
+
+    def _pre_prune_middle_turns(self, messages: list[BaseMessage]) -> tuple[list[BaseMessage], int]:
+        """Cheap pre-pass to replace long tool results with a placeholder before summarization."""
+        if not messages:
+            return messages, 0
+            
+        result = []
+        pruned_count = 0
+        placeholder = "[Old tool output cleared to save context space]"
+        
+        for msg in messages:
+            if isinstance(msg, ToolMessage):
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                if content and content != placeholder and len(content) > 500:
+                    import copy
+                    new_msg = copy.copy(msg)
+                    new_msg.content = placeholder
+                    result.append(new_msg)
+                    pruned_count += 1
+                    continue
+            result.append(msg)
+            
+        return result, pruned_count
+
     async def _ensure_compact_history(
         self,
         history: list[BaseMessage],
         task_id: str | None,
+        session_id: str,
         static_tokens: float = 0,
         force_compact: bool = False,
     ) -> list[BaseMessage]:
@@ -415,17 +461,29 @@ class BitPoliteiaContextManager:
         )
 
         # 2. Divide History
-        # Keep first 2 (system/identity) and last 5 (recent context)
-        # Summarize the middle
         if len(history) <= 10:
             return history  # Too few messages to effectively compress
 
-        head = history[:2]
-        middle = history[2:-5]
-        tail = history[-5:]
+        compress_start = 2
+        compress_start = self._align_boundary_forward(history, compress_start)
+        
+        compress_end = len(history) - 5
+        compress_end = self._align_boundary_backward(history, compress_end)
+        
+        if compress_start >= compress_end:
+            return history
+
+        head = history[:compress_start]
+        middle = history[compress_start:compress_end]
+        tail = history[compress_end:]
+
+        # 2.5 Cheap Pre-prune
+        middle, pruned_count = self._pre_prune_middle_turns(middle)
+        if pruned_count > 0:
+            logger.info(f"Pre-compression: pruned {pruned_count} old tool result(s)")
 
         # 3. Generate Summary
-        summary_text = await self._summarize_middle_turns(middle, task_id)
+        summary_text = await self._summarize_middle_turns(middle, task_id, session_id)
         
         # 3.5 Emergency Truncation: If summarization failed or total history is still massive, 
         # perform a hard drop of older messages.
@@ -457,7 +515,7 @@ class BitPoliteiaContextManager:
         return head + [compaction_msg] + tail
 
     async def _summarize_middle_turns(
-        self, messages: list[BaseMessage], task_id: str | None
+        self, messages: list[BaseMessage], task_id: str | None, session_id: str
     ) -> str:
         """Use the auxiliary model to condense conversation turns."""
         task_goal = (
@@ -468,24 +526,28 @@ class BitPoliteiaContextManager:
 
         history_text = ""
         # Limit total characters to stay well within the summarizer's context window (e.g., 260k tokens)
-        # 100k chars is approx 25k-40k tokens, which is very safe.
         MAX_INPUT_CHARS = 100000 
         
         for m in reversed(messages): # Work backwards to keep most recent "middle" context if we hit limit
             role = "Assistant" if isinstance(m, AIMessage) else "User"
             content = m.content if isinstance(m.content, str) else str(m.content)
             
-            msg_repr = f"[{role}]: {content[:300]}"
+            msg_repr = f"[{role}]: {content[:500]}"
             
             # Include tool calls in the summary input so the LLM knows what was attempted
             if isinstance(m, AIMessage) and hasattr(m, "tool_calls") and m.tool_calls:
-                tcs = [tc.get("name", "unknown") for tc in m.tool_calls if isinstance(tc, dict)]
-                if tcs:
-                    msg_repr += f" (Calls tools: {', '.join(tcs)})"
+                tc_parts = []
+                for tc in m.tool_calls:
+                    if isinstance(tc, dict):
+                        name = tc.get("name", "unknown")
+                        args = str(tc.get("args", {}))[:200]
+                        tc_parts.append(f"{name}({args})")
+                if tc_parts:
+                    msg_repr += f"\n[Tool calls: {', '.join(tc_parts)}]"
             
             if isinstance(m, ToolMessage):
                 role = f"Tool ({m.name})"
-                msg_repr = f"[{role}]: {content[:300]}"
+                msg_repr = f"[{role}]: {content[:500]}"
 
             if len(history_text) + len(msg_repr) > MAX_INPUT_CHARS:
                 history_text = "[... Earlier turns in this segment truncated ...]\n" + history_text
@@ -493,23 +555,83 @@ class BitPoliteiaContextManager:
             
             history_text = msg_repr + "\n" + history_text
 
-        prompt = f"""
-Summarize the following conversation segment for an AI agent. 
-Focus on:
-- Work completed so far.
-- Unresolved problems or errors encountered.
-- Important decisions made.
-- The current state of Task: "{task_goal}"
+        previous_summary = self._previous_summary_map.get(session_id)
 
-Conversation Segment:
+        if previous_summary:
+            prompt = f"""You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
+
+PREVIOUS SUMMARY:
+{previous_summary}
+
+NEW TURNS TO INCORPORATE:
 {history_text}
 
-Format the summary as a structured Markdown list. Keep it concise but information-dense (max 800 words).
-"""
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new progress. Move items from "In Progress" to "Done" when completed. Remove information only if it is clearly obsolete.
+
+## Goal
+[What the user is trying to accomplish — preserve from previous summary, update if goal evolved. Current task: "{task_goal}"]
+
+## Constraints & Preferences
+[User preferences, coding style, constraints, important decisions — accumulate across compactions]
+
+## Progress
+### Done
+[Completed work — include specific file paths, commands run, results obtained]
+### In Progress
+[Work currently underway]
+### Blocked
+[Any blockers or issues encountered]
+
+## Relevant Files
+[Files read, modified, or created — with brief note on each. Accumulate across compactions.]
+
+## Next Steps
+[What needs to happen next to continue the work]
+
+## Critical Context
+[Any specific values, error messages, configuration details, or data that would be lost without explicit preservation]
+
+Be specific — include file paths, command outputs, error messages, and concrete values rather than vague descriptions.
+Write only the summary body. Do not include any preamble or prefix."""
+        else:
+            prompt = f"""Create a structured handoff summary for a later assistant that will continue this conversation after earlier turns are compacted.
+
+TURNS TO SUMMARIZE:
+{history_text}
+
+Use this exact structure:
+
+## Goal
+[What the user is trying to accomplish. Current task: "{task_goal}"]
+
+## Constraints & Preferences
+[User preferences, coding style, constraints, important decisions]
+
+## Progress
+### Done
+[Completed work — include specific file paths, commands run, results obtained]
+### In Progress
+[Work currently underway]
+### Blocked
+[Any blockers or issues encountered]
+
+## Relevant Files
+[Files read, modified, or created — with brief note on each]
+
+## Next Steps
+[What needs to happen next to continue the work]
+
+## Critical Context
+[Any specific values, error messages, configuration details, or data that would be lost without explicit preservation]
+
+Be specific — include file paths, command outputs, error messages, and concrete values rather than vague descriptions. The goal is to prevent the next assistant from repeating work or losing important details.
+Write only the summary body. Do not include any preamble or prefix."""
 
         try:
             response = await self.summarizer_llm.ainvoke([HumanMessage(content=prompt)])
-            return response.content.strip()
+            summary = response.content.strip()
+            self._previous_summary_map[session_id] = summary
+            return summary
         except Exception as e:
             logger.error(f"Summarization failed: {e}")
             return "[Error generating iterative summary. History preserved as-is.]"
