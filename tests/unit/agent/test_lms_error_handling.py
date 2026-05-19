@@ -51,3 +51,78 @@ async def test_lms_no_models_loaded_handling():
     assert context.continuation_req is False
     assert context.continuation_reason == "FATAL_NO_MODEL_LOADED"
     assert "LM Studio 未加载任何模型" in context.final_answer
+
+
+@pytest.mark.anyio
+async def test_sglang_failed_to_parse_fc_handling():
+    """
+    验证 SGLang 解析工具调用失败时的错误处理逻辑
+    """
+    session = Session(session_id="test_session", entity_id="user1", channel="resident")
+    msg = InboundMessage(channel="resident", sender_id="user1", session_id="test_session", content="测试")
+    
+    context = PipelineContext(session=session, input_message=msg)
+    context.metadata["messages"] = []
+    
+    agent = MagicMock()
+    agent.llm.ainvoke = AsyncMock(side_effect=Exception(
+        "Error code: 400 - Failed to parse fc related info to json format!"
+    ))
+    
+    stage = PlanStage()
+    await stage.run(context, agent)
+    
+    assert context.stop_execution is True
+    assert context.continuation_req is False
+    assert context.continuation_reason == "FATAL_SGLANG_FC_PARSER_ERROR"
+    assert "SGLang 部署的模型解析工具调用失败" in context.final_answer
+
+
+@pytest.mark.anyio
+async def test_sglang_parallel_tool_calls_handling():
+    """
+    验证 SGLang/兼容服务不支持并行工具调用时的错误处理逻辑
+    """
+    session = Session(session_id="test_session", entity_id="user1", channel="resident")
+    msg = InboundMessage(channel="resident", sender_id="user1", session_id="test_session", content="测试")
+    
+    context = PipelineContext(session=session, input_message=msg)
+    context.metadata["messages"] = []
+    
+    agent = MagicMock()
+    agent.llm.ainvoke = AsyncMock(side_effect=Exception(
+        "Error code: 400 - model does not support parallel_tool_calls"
+    ))
+    
+    stage = PlanStage()
+    await stage.run(context, agent)
+    
+    assert context.stop_execution is True
+    assert context.continuation_req is False
+    assert context.continuation_reason == "FATAL_PARALLEL_TOOL_CALLS_UNSUPPORTED"
+    assert "不支持并行工具调用" in context.final_answer
+
+
+@pytest.mark.anyio
+async def test_sglang_validation_400_handling():
+    """
+    验证 SGLang/兼容服务请求参数验证失败（400 Bad Request）时的错误处理逻辑
+    """
+    session = Session(session_id="test_session", entity_id="user1", channel="resident")
+    msg = InboundMessage(channel="resident", sender_id="user1", session_id="test_session", content="测试")
+    
+    context = PipelineContext(session=session, input_message=msg)
+    context.metadata["messages"] = []
+    
+    agent = MagicMock()
+    agent.llm.ainvoke = AsyncMock(side_effect=Exception(
+        "Error code: 400 - {'detail': 'validation error: extra fields not permitted'}"
+    ))
+    
+    stage = PlanStage()
+    await stage.run(context, agent)
+    
+    assert context.stop_execution is True
+    assert context.continuation_req is False
+    assert context.continuation_reason == "FATAL_LLM_REQUEST_VALIDATION_ERROR"
+    assert "请求参数验证失败（400 Bad Request）" in context.final_answer

@@ -249,6 +249,18 @@ class PlanStage(PipelineStage):
                 user_friendly_err = "LLM 服务提示：当前 LM Studio 未加载任何模型。请在 LM Studio 软件的开发者页面加载模型，或使用 'lms load' 命令加载后重试。"
                 context.continuation_req = False
                 context.continuation_reason = "FATAL_NO_MODEL_LOADED"
+            elif "failed to parse fc" in err_msg.lower() or "fc related info" in err_msg.lower():
+                user_friendly_err = "LLM 服务提示：SGLang 部署的模型解析工具调用失败（Failed to parse fc related info）。请确保启动 SGLang 服务时指定了正确的工具调用解析器参数（例如：--tool-call-parser qwen25 或 --tool-call-parser llama3）。"
+                context.continuation_req = False
+                context.continuation_reason = "FATAL_SGLANG_FC_PARSER_ERROR"
+            elif "parallel_tool_calls" in err_msg.lower() or "parallel tool calls" in err_msg.lower():
+                user_friendly_err = "LLM 服务提示：当前部署的模型/服务端不支持并行工具调用（parallel_tool_calls）。请尝试关闭并行工具调用功能或检查服务端参数配置。"
+                context.continuation_req = False
+                context.continuation_reason = "FATAL_PARALLEL_TOOL_CALLS_UNSUPPORTED"
+            elif "400" in err_msg and ("validation error" in err_msg.lower() or "bad request" in err_msg.lower()):
+                user_friendly_err = f"LLM 服务提示：请求参数验证失败（400 Bad Request）。若您使用的是 SGLang 部署的模型，请检查：1. 启动服务时是否指定了 --tool-call-parser 解析器；2. 当前模型是否支持工具调用（Function Calling）；3. 检查 SGLang 服务端的日志以获取具体参数报错信息。具体错误: {err_msg}"
+                context.continuation_req = False
+                context.continuation_reason = "FATAL_LLM_REQUEST_VALIDATION_ERROR"
             else:
                 user_friendly_err = f"Error communicating with LLM. (Triggered Ralph Wiggum auto-heal if enabled: {err_msg})"
                 context.continuation_req = True

@@ -652,7 +652,18 @@ class AgentService:
             from .context_manager import BitPoliteiaContextManager
             self.context_manager = BitPoliteiaContextManager(self)
 
-            self.llm = raw_llm.bind_tools(all_tools)
+            # Local models/engines (e.g. SGLang, vLLM, Ollama) usually work better with sequential tool calling.
+            # We disable parallel tool calls by default to maximize compatibility, unless using official OpenAI or Aliyun Bailian endpoints.
+            url_str = (base_url or "").lower()
+            enable_parallel = "api.openai.com" in url_str or "aliyuncs.com" in url_str or "dashscope" in url_str
+            if enable_parallel:
+                self.llm = raw_llm.bind_tools(all_tools)
+            else:
+                try:
+                    self.llm = raw_llm.bind_tools(all_tools, parallel_tool_calls=False)
+                except Exception as bte:
+                    logger.warning(f"Failed to bind tools with parallel_tool_calls=False, falling back to default: {bte}")
+                    self.llm = raw_llm.bind_tools(all_tools)
             self.tools_map = {t.name: t for t in all_tools}
 
             logger.info(f"Agent LLM Initialized. Active Tools: {list(self.tools_map.keys())}")
@@ -3548,12 +3559,21 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         try:
             # 1. Initialize specialized LLM for repair
-            repair_llm = ChatOpenAI(
+            raw_repair_llm = ChatOpenAI(
                 base_url=self.base_url,
                 api_key=self.api_key,
                 model=self.model,
                 temperature=0.2,  # Lower temperature for precision repair
-            ).bind_tools(REPAIR_TOOLS)
+            )
+            url_str = (self.base_url or "").lower()
+            enable_parallel = "api.openai.com" in url_str or "aliyuncs.com" in url_str or "dashscope" in url_str
+            if enable_parallel:
+                repair_llm = raw_repair_llm.bind_tools(REPAIR_TOOLS)
+            else:
+                try:
+                    repair_llm = raw_repair_llm.bind_tools(REPAIR_TOOLS, parallel_tool_calls=False)
+                except Exception:
+                    repair_llm = raw_repair_llm.bind_tools(REPAIR_TOOLS)
 
             repair_tools_map = {t.name: t for t in REPAIR_TOOLS}
 
