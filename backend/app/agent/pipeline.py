@@ -243,12 +243,18 @@ class PlanStage(PipelineStage):
             # Detect context length errors (e.g. DashScope 400 Algo.InvalidParameter)
             if "202745" in err_msg or "context_length_exceeded" in err_msg.lower() or "too many tokens" in err_msg.lower():
                 user_friendly_err = "LLM 限制提示：输入内容过长（当前模型在工具调用模式下限制约 20 万 tokens）。系统正在尝试自动压缩上下文并重试。"
+                context.continuation_req = True
+                context.continuation_reason = f"API_ERROR: {err_msg}"
+            elif "no models loaded" in err_msg.lower() or "lms load" in err_msg.lower():
+                user_friendly_err = "LLM 服务提示：当前 LM Studio 未加载任何模型。请在 LM Studio 软件的开发者页面加载模型，或使用 'lms load' 命令加载后重试。"
+                context.continuation_req = False
+                context.continuation_reason = "FATAL_NO_MODEL_LOADED"
             else:
                 user_friendly_err = f"Error communicating with LLM. (Triggered Ralph Wiggum auto-heal if enabled: {err_msg})"
+                context.continuation_req = True
+                context.continuation_reason = f"API_ERROR: {err_msg}"
 
             context.final_answer = user_friendly_err
-            context.continuation_req = True
-            context.continuation_reason = f"API_ERROR: {err_msg}"
             context.stop_execution = True
             return
 
