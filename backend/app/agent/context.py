@@ -135,6 +135,8 @@ Reference these rules for all governance decisions, election proposals, and grou
         """
         Build the complete message list for an LLM call.
         """
+        messages: list[BaseMessage] = []
+        
         # 1. Gather all System Prompt segments
         system_blocks = []
 
