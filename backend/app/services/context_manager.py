@@ -491,7 +491,7 @@ class BitPoliteiaContextManager:
             logger.error(f"Context compression failed or insufficient. Performing hard truncation. (approx_tokens={approx_tokens:.0f})")
             # Keep only the last 10 messages
             if len(history) > 10:
-                truncated_history = history[:2] + [SystemMessage(content="[Earlier conversation dropped due to context limits]")] + history[-8:]
+                truncated_history = history[:2] + [HumanMessage(content="[System Note: Earlier conversation dropped due to context limits]")] + history[-8:]
                 return truncated_history
 
         # 4. Log to System Archive (Hash Integrity)
@@ -504,9 +504,9 @@ class BitPoliteiaContextManager:
         )
 
         # 5. Construct Compacted History
-        compaction_msg = SystemMessage(
-            content=f"### [ITERATIVE CONTEXT SUMMARY - ID: {checkpoint_id}]\n"
-            f"Earlier turns in this conversation have been compacted to save space. "
+        compaction_msg = HumanMessage(
+            content=f"[System Note: Earlier turns in this conversation have been compacted to save space]\n\n"
+            f"### [ITERATIVE CONTEXT SUMMARY - ID: {checkpoint_id}]\n"
             f"Here is the summary of what has been discussed and achieved so far:\n\n"
             f"{summary_text}\n\n"
             f"Use this summary to maintain the thread and continue from where we left off."

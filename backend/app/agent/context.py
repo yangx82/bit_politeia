@@ -135,9 +135,9 @@ Reference these rules for all governance decisions, election proposals, and grou
         """
         Build the complete message list for an LLM call.
         """
-        messages: list[BaseMessage] = []
+        # 1. Gather all System Prompt segments
+        system_blocks = []
 
-        # 1. System Prompt
         system_content = self.build_system_prompt(
             name=name,
             personality=personality,
@@ -146,51 +146,54 @@ Reference these rules for all governance decisions, election proposals, and grou
             session_id=session_id,
             chat_name=chat_name,
         )
-
-        # Inject dynamic context (RAG + Network Identity) into System Prompt or as separate SystemMessages
-        # To keep it clean, we add them as separate SystemMessages immediately after the main prompt
-        messages.append(SystemMessage(content=system_content))
+        system_blocks.append(system_content)
 
         # Add Language Instruction overrides
-        messages.append(
-            SystemMessage(
-                content=f"IMPORTANT DIRECTIVE: You MUST generate all responses and communicate exclusively in the following language: {agent_language}. (Unless strictly quoting a source in another language)."
-            )
+        system_blocks.append(
+            f"IMPORTANT DIRECTIVE: You MUST generate all responses and communicate exclusively in the following language: {agent_language}. (Unless strictly quoting a source in another language)."
         )
 
         if resident_memory_context:
-            messages.append(
-                SystemMessage(
-                    content=f"Your Internal Memory (Semantic & Working):\n{resident_memory_context[:10000]}"
-                )
+            system_blocks.append(
+                f"Your Internal Memory (Semantic & Working):\n{resident_memory_context[:10000]}"
             )
 
         if network_identity:
-            messages.append(SystemMessage(content=f"Your Network Identity:\n{network_identity}"))
+            system_blocks.append(f"Your Network Identity:\n{network_identity}")
 
         if recent_global_events:
-            messages.append(
-                SystemMessage(
-                    content=f"Recent Global Events (Background Context outside this session):\n{recent_global_events}"
-                )
+            system_blocks.append(
+                f"Recent Global Events (Background Context outside this session):\n{recent_global_events}"
             )
 
         if rag_context:
-            messages.append(SystemMessage(content=f"Relevant Knowledge Context:\n{rag_context}"))
+            system_blocks.append(f"Relevant Knowledge Context:\n{rag_context}")
 
         if governance_context:
-            messages.append(
-                SystemMessage(
-                    content=f"LIVE GOVERNANCE STATE (Active Elections/Proposals):\n{governance_context[:10000]}"
-                )
+            system_blocks.append(
+                f"LIVE GOVERNANCE STATE (Active Elections/Proposals):\n{governance_context[:10000]}"
             )
 
         if pending_reply:
-            messages.append(
-                SystemMessage(
-                    content=f"# [PENDING REPLY INHIBITION]\nYou generated a reply within the last 5 minutes that has NOT been sent yet due to network rate-limiting policy:\n\n\"{pending_reply}\"\n\nYou are now being prompted by a NEW message. You can choose to update your pending reply (overwriting it) or ignore it. If you use 'send_p2p_message' again, the NEW content will be buffered and sent once the 5-minute cooldown expires."
-                )
+            system_blocks.append(
+                f"# [PENDING REPLY INHIBITION]\nYou generated a reply within the last 5 minutes that has NOT been sent yet due to network rate-limiting policy:\n\n\"{pending_reply}\"\n\nYou are now being prompted by a NEW message. You can choose to update your pending reply (overwriting it) or ignore it. If you use 'send_p2p_message' again, the NEW content will be buffered and sent once the 5-minute cooldown expires."
             )
+
+        # Self-Improvement Activator Hook
+        activator_prompt = """<self-improvement-reminder>
+After completing this task, evaluate if extractable knowledge emerged:
+- Non-obvious solution discovered through investigation?
+- Workaround for unexpected behavior?
+- Project-specific pattern learned?
+- Error required debugging to resolve?
+
+If yes: Log to .learnings/ using the self-improvement skill format.
+If high-value (recurring, broadly applicable): Consider skill extraction.
+</self-improvement-reminder>"""
+        system_blocks.append(activator_prompt)
+
+        # Combine all system blocks into a single SystemMessage at the very beginning of the message list
+        messages.append(SystemMessage(content="\n\n---\n\n".join(system_blocks)))
 
         # 2. History (Existing conversation)
         # Assuming history is already a list of LangChain BaseMessage objects
@@ -210,18 +213,5 @@ Reference these rules for all governance decisions, election proposals, and grou
 
         # 3. Current User Message
         messages.append(HumanMessage(content=f"Message from {source}: {current_message}"))
-
-        # 4. Self-Improvement Activator Hook
-        activator_prompt = """<self-improvement-reminder>
-After completing this task, evaluate if extractable knowledge emerged:
-- Non-obvious solution discovered through investigation?
-- Workaround for unexpected behavior?
-- Project-specific pattern learned?
-- Error required debugging to resolve?
-
-If yes: Log to .learnings/ using the self-improvement skill format.
-If high-value (recurring, broadly applicable): Consider skill extraction.
-</self-improvement-reminder>"""
-        messages.append(SystemMessage(content=activator_prompt))
 
         return messages
