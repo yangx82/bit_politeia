@@ -610,8 +610,9 @@ class AgentService:
                     )
                     del os.environ[proxy_var]
 
-            # Common fix: Ensure base_url for OpenAI-compatible proxies ends with /v1
-            logger.info(f"Initializing ChatOpenAI with base_url: {base_url}")
+            # Allow configuring max_tokens via env, default to 4000 to prevent premature truncation of analysis/replies
+            max_tokens = int(os.getenv("AGENT_MAX_TOKENS", "4000"))
+            logger.info(f"Initializing ChatOpenAI with base_url: {base_url}, max_tokens: {max_tokens}")
 
             raw_llm = ChatOpenAI(
                 base_url=base_url,
@@ -619,7 +620,7 @@ class AgentService:
                 model=model,
                 temperature=0.7,  # Default to 1 for generic providers,
                 request_timeout=llm_timeout,
-                max_tokens=1000,
+                max_tokens=max_tokens,
             )
             # Load custom skills (Run in thread to avoid blocking loop)
             # Load custom skills (Run in thread to avoid blocking loop)
