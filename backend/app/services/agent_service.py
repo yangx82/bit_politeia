@@ -176,6 +176,14 @@ class AgentService:
                     replace_existing=True,
                 )
                 self.scheduler.add_job(
+                    "app.services.agent_service:compress_history_proxy",
+                    "cron",
+                    hour=2,
+                    minute=30,
+                    id="nightly_history_compression_job",
+                    replace_existing=True,
+                )
+                self.scheduler.add_job(
                     "app.services.agent_service:check_tasks_monitor_proxy",
                     "interval",
                     minutes=5,
@@ -1392,6 +1400,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             "agent", response_text, msg_type="chat", session_id=target_session, status=target_status
         )
 
+        # Periodic trim: prevent in-memory history from growing unbounded
+        self._trim_in_memory_history()
+
     async def notify_resident(
         self,
         content: str,
@@ -2038,10 +2049,54 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         return self.status
 
     def _hydrate_history(self):
-        """Load history from resident_memory.json into Agent history."""
-        disk_history = self.resident_memory.get_all_history()
+        """Load recent history from persistent storage into Agent in-memory history.
+
+        Loading strategy:
+        1. If memory/history_summary.md exists (compressed archive), inject it as
+           a synthetic 'system' message at the front of the history. This gives
+           the LLM context about older conversations.
+        2. Load the most recent MAX_IN_MEMORY_HISTORY raw messages from JSONL.
+
+        Full history remains safely persisted in JSONL files on disk and is
+        accessible via search_history/get_all_history APIs.
+        """
+        from .memory_store import memory_store
+
+        MAX_IN_MEMORY_HISTORY = 500
+
         self.history = []
-        for entry in disk_history:
+
+        # Step 1: Load compressed history summary (if available)
+        compressed_summary = memory_store.read_history_summary()
+        if compressed_summary and len(compressed_summary) > 100:
+            # Inject as a synthetic system message so pipeline can use it for context
+            # Truncate to reasonable size (max 15k chars) to avoid overloading context
+            summary_content = compressed_summary[:15000]
+            if len(compressed_summary) > 15000:
+                summary_content += "\n\n[... 摘要过长，已截断 ...]"
+
+            self.history.append(
+                Message(
+                    id="compressed-history-summary",
+                    content=f"[COMPRESSED HISTORY SUMMARY]\n{summary_content}",
+                    sender="system",
+                    timestamp=datetime.now(UTC),
+                    session_id="system",
+                    msg_type="system",
+                )
+            )
+            logger.info(
+                f"AgentService: Loaded compressed history summary ({len(compressed_summary)} chars) "
+                f"from history_summary.md"
+            )
+
+        # Step 2: Load recent raw messages
+        disk_history = self.resident_memory.get_all_history()
+        total_on_disk = len(disk_history)
+
+        recent_entries = disk_history[-MAX_IN_MEMORY_HISTORY:] if total_on_disk > MAX_IN_MEMORY_HISTORY else disk_history
+
+        for entry in recent_entries:
             self.history.append(
                 Message(
                     id=entry.get("id", str(uuid.uuid4())),
@@ -2055,7 +2110,33 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     msg_type=entry.get("type", "chat"),
                 )
             )
-        logger.info(f"AgentService: Loaded {len(self.history)} messages from persistent storage.")
+
+        has_summary = "with compressed summary" if compressed_summary else "no compressed summary"
+        if total_on_disk > MAX_IN_MEMORY_HISTORY:
+            logger.info(
+                f"AgentService: Loaded {len(self.history)}/{total_on_disk} messages "
+                f"({has_summary}, older {total_on_disk - MAX_IN_MEMORY_HISTORY} messages archived on disk)."
+            )
+        else:
+            logger.info(
+                f"AgentService: Loaded {len(self.history)} messages from persistent storage ({has_summary})."
+            )
+
+    def _trim_in_memory_history(self):
+        """Trim in-memory history to prevent unbounded growth during long sessions.
+
+        Called periodically (e.g., from cron jobs or after processing messages).
+        Original messages are already persisted to JSONL on disk, so trimming
+        the in-memory list is safe.
+        """
+        MAX_IN_MEMORY_HISTORY = 500
+        if len(self.history) > MAX_IN_MEMORY_HISTORY:
+            trimmed_count = len(self.history) - MAX_IN_MEMORY_HISTORY
+            self.history = self.history[-MAX_IN_MEMORY_HISTORY:]
+            logger.info(
+                f"Trimmed in-memory history: removed {trimmed_count} oldest messages, "
+                f"keeping {MAX_IN_MEMORY_HISTORY} most recent."
+            )
 
     def _save_system_state(self):
         """Save deduplication IDs and other internal states to disk."""
@@ -3872,6 +3953,20 @@ async def run_literature_watcher_proxy():
     """Proxy for agent_service.run_literature_watcher"""
     if agent_service:
         await agent_service.run_literature_watcher()
+
+
+async def compress_history_proxy():
+    """Proxy for periodic history compression."""
+    if agent_service and agent_service.context_manager:
+        try:
+            result = await agent_service.context_manager.compress_archived_history()
+            if result["compressed_count"] > 0:
+                logger.info(
+                    f"History compression job complete: {result['compressed_count']} messages → "
+                    f"{result['summary_chars']} chars summary."
+                )
+        except Exception as e:
+            logger.error(f"History compression job failed: {e}")
 
 
 agent_service = AgentService()

@@ -40,6 +40,7 @@ class MemoryStore:
         self.memory_dir = ensure_dir(self.workspace / "memory")
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.summary_file = self.memory_dir / "daily_notes_summary.md"
+        self.history_summary_file = self.memory_dir / "history_summary.md"
         self.archive_dir = ensure_dir(self.memory_dir / "archive")
 
         logger.info(f"MemoryStore initialized at {self.memory_dir}")
@@ -184,6 +185,42 @@ class MemoryStore:
         archive_path = self.archive_dir / file_path.name
         file_path.rename(archive_path)
         logger.info(f"Archived daily note: {file_path.name} -> archive/")
+
+    # ============================================================
+    # Compressed History Summary
+    # ============================================================
+
+    def read_history_summary(self) -> str:
+        """Read the compressed summary of archived conversation history."""
+        if self.history_summary_file.exists():
+            return self.history_summary_file.read_text(encoding="utf-8")
+        return ""
+
+    def write_history_summary(self, content: str) -> None:
+        """Overwrite the compressed history summary."""
+        self.history_summary_file.write_text(content, encoding="utf-8")
+        logger.info(f"Updated history summary: {len(content)} chars")
+
+    def append_history_summary(self, content: str) -> None:
+        """Append a new compression section to the history summary."""
+        existing = self.read_history_summary()
+        date_marker = f"\n\n---\n### 压缩批次: {today_date()}\n\n"
+
+        if existing:
+            self.history_summary_file.write_text(
+                existing + date_marker + content, encoding="utf-8"
+            )
+        else:
+            header = (
+                "# 对话历史压缩摘要\n\n"
+                "此文件包含已压缩的历史对话摘要。\n"
+                "原始记录保留在 JSONL 文件中，此摘要用于启动时快速加载历史上下文。\n\n"
+            )
+            self.history_summary_file.write_text(
+                header + date_marker + content, encoding="utf-8"
+            )
+
+        logger.info(f"Appended to history summary: +{len(content)} chars")
 
 
 # Global instance

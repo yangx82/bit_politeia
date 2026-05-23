@@ -124,6 +124,26 @@ class SenseStage(PipelineStage):
             else:
                 raw_lc_history.append(HumanMessage(content=f"[{msg.sender}] {msg.content}"))
 
+        # Inject compressed history summary if available (it has session_id='system'
+        # so it won't be in session_history, but we want it as leading context)
+        for msg in effective_history:
+            if msg.id == "compressed-history-summary" and msg.content:
+                raw_lc_history.insert(0, HumanMessage(content=msg.content))
+                break
+
+        # Hard window limit: prevent sending thousands of messages into context compression.
+        # Older messages are preserved on disk (JSONL) and in compressed summaries.
+        MAX_HISTORY_WINDOW = 200
+        if len(raw_lc_history) > MAX_HISTORY_WINDOW:
+            logger.info(
+                f"Trimming session history from {len(raw_lc_history)} to last {MAX_HISTORY_WINDOW} messages for context pipeline."
+            )
+            # Keep first message (might be compressed summary) + recent window
+            if raw_lc_history and "[COMPRESSED HISTORY SUMMARY]" in getattr(raw_lc_history[0], 'content', ''):
+                raw_lc_history = [raw_lc_history[0]] + raw_lc_history[-(MAX_HISTORY_WINDOW - 1):]
+            else:
+                raw_lc_history = raw_lc_history[-MAX_HISTORY_WINDOW:]
+
         # b) Call the Universal ContextManager
         (
             optimized_history,

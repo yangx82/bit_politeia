@@ -23,7 +23,7 @@ class BitPoliteiaContextManager:
         self.aux_url = os.getenv("AUX_MODEL_URL", agent_service.base_url)
         self.aux_name = os.getenv("AUX_MODEL_NAME", agent_service.model)
         self.aux_key = os.getenv("AUX_MODEL_KEY", agent_service.api_key)
-        self.aux_context_len = int(os.getenv("AUX_CONTEXT_WINDOW", "128000"))
+        self.aux_context_len = int(os.getenv("AUX_CONTEXT_WINDOW", "200000"))
         self.threshold_percent = float(os.getenv("CONTEXT_THRESHOLD_PERCENT", "0.7"))
 
         # Internal LLM client for summarization tasks
@@ -43,6 +43,9 @@ class BitPoliteiaContextManager:
         
         # State map for incremental context summarization
         self._previous_summary_map: dict[str, str] = {}
+
+        # Cache for static content size estimation (prevents AttributeError on first error path)
+        self._static_content_chars: int = 0
 
         logger.info(
             f"ContextManager initialized. Threshold: {self.threshold_tokens} tokens. "
@@ -460,7 +463,22 @@ class BitPoliteiaContextManager:
             f"Compressing history..."
         )
 
-        # 2. Divide History
+        # 2. Progressive Truncation: If history is massive, hard-truncate before
+        # attempting expensive LLM summarization. This prevents the 3700+ message
+        # summarization loop that causes Pipeline timeouts.
+        MAX_MESSAGES_FOR_COMPRESSION = 200
+        if len(history) > MAX_MESSAGES_FOR_COMPRESSION:
+            logger.warning(
+                f"History too large ({len(history)} msgs). Hard-truncating to last {MAX_MESSAGES_FOR_COMPRESSION} before compression."
+            )
+            # Keep first 2 (anchors) + truncation notice + last N messages
+            history = (
+                history[:2]
+                + [HumanMessage(content=f"[System Note: {len(history) - MAX_MESSAGES_FOR_COMPRESSION - 2} older messages dropped to fit context window]")]
+                + history[-MAX_MESSAGES_FOR_COMPRESSION:]
+            )
+
+        # 2b. Divide History
         if len(history) <= 10:
             return history  # Too few messages to effectively compress
 
@@ -797,3 +815,158 @@ Write only the summary body. Do not include any preamble or prefix."""
             
             if cleared_count > 0:
                 logger.info(f"Micro-compaction triggered: Cleared {cleared_count} old tool results.")
+
+    async def compress_archived_history(self, keep_recent: int = 500) -> dict:
+        """Compress archived history (messages older than the most recent `keep_recent`).
+
+        Reads all JSONL history from disk, identifies old messages beyond the
+        retention window, groups them by session, and generates a structured
+        LLM summary. The summary is saved to memory/history_summary.md.
+
+        Original JSONL records are preserved; this only creates/updates the summary.
+
+        Returns:
+            dict with keys: compressed_count, summary_chars, sessions_covered
+        """
+        import json
+
+        from .memory_store import memory_store
+
+        result = {"compressed_count": 0, "summary_chars": 0, "sessions_covered": 0}
+
+        try:
+            # 1. Read all history from JSONL files
+            all_history = self.resident_memory.get_all_history()
+            total = len(all_history)
+
+            if total <= keep_recent:
+                logger.info(
+                    f"History compression: Only {total} messages on disk "
+                    f"(threshold: {keep_recent}). Nothing to compress."
+                )
+                return result
+
+            # 2. Identify old messages to compress
+            old_messages = all_history[:-keep_recent]
+            logger.info(
+                f"History compression: {len(old_messages)} old messages to compress "
+                f"(keeping {keep_recent} recent)."
+            )
+
+            # 3. Group by session_id for structured summarization
+            session_groups: dict[str, list[dict]] = {}
+            for msg in old_messages:
+                sid = msg.get("session_id", "unknown") or "unknown"
+                if sid not in session_groups:
+                    session_groups[sid] = []
+                session_groups[sid].append(msg)
+
+            # 4. Build input text for summarization (with per-session structure)
+            input_text = ""
+            MAX_INPUT_CHARS = 80000  # Stay within summarizer context window
+
+            for sid, msgs in sorted(
+                session_groups.items(),
+                key=lambda x: len(x[1]),
+                reverse=True,
+            ):
+                section = f"\n### Session: {sid} ({len(msgs)} messages)\n"
+                # Sample messages: first 3 + last 3 to capture scope
+                sample = msgs[:3] + msgs[-3:] if len(msgs) > 6 else msgs
+                for m in sample:
+                    sender = m.get("sender", "?")
+                    content = str(m.get("content", ""))[:300]
+                    ts = m.get("timestamp", "")[:19]  # Trim to seconds
+                    section += f"[{ts}] {sender}: {content}\n"
+
+                if len(msgs) > 6:
+                    section += f"... ({len(msgs) - 6} messages omitted) ...\n"
+
+                if len(input_text) + len(section) > MAX_INPUT_CHARS:
+                    input_text += f"\n[... {len(session_groups) - len([s for s in session_groups if s in input_text])} more sessions truncated ...]\n"
+                    break
+                input_text += section
+
+            # 5. Generate summary using LLM
+            existing_summary = memory_store.read_history_summary()
+            if existing_summary and len(existing_summary) > 200:
+                prompt = f"""你正在更新一份对话历史压缩摘要。以下是之前的摘要和新增的历史消息。
+
+之前的摘要:
+{existing_summary[-5000:]}
+
+新增需要压缩的历史消息 ({len(old_messages)} 条，涵盖 {len(session_groups)} 个会话):
+{input_text}
+
+请更新摘要，使用以下结构：
+
+## 会话概览
+[列出主要会话及其主题，按重要性排序]
+
+## 关键事件与决策
+[重要的决策、交互、成果]
+
+## 人际/节点关系
+[与各节点/用户的互动历史要点]
+
+## 技术上下文
+[重要的配置、错误、解决方案]
+
+## 未完成事项
+[尚未解决的问题或正在进行的任务]
+
+要求：保留具体细节（节点ID、错误信息、时间点），去除重复和低价值的日常问候。"""
+            else:
+                prompt = f"""请将以下历史对话记录压缩为结构化摘要。
+
+历史消息 ({len(old_messages)} 条，涵盖 {len(session_groups)} 个会话):
+{input_text}
+
+请使用以下结构生成摘要：
+
+## 会话概览
+[列出主要会话及其主题，按重要性排序]
+
+## 关键事件与决策
+[重要的决策、交互、成果]
+
+## 人际/节点关系
+[与各节点/用户的互动历史要点]
+
+## 技术上下文
+[重要的配置、错误、解决方案]
+
+## 未完成事项
+[尚未解决的问题或正在进行的任务]
+
+要求：保留具体细节（节点ID、错误信息、时间点），去除重复和低价值的日常问候。只输出摘要正文，不要前言。"""
+
+            response = await self.summarizer_llm.ainvoke([HumanMessage(content=prompt)])
+            summary = response.content.strip()
+
+            if not summary or len(summary) < 50:
+                logger.warning("History compression: LLM returned insufficient summary, skipping.")
+                return result
+
+            # 6. Save compressed summary
+            metadata_header = (
+                f"<!-- compressed: {len(old_messages)} msgs, "
+                f"{len(session_groups)} sessions, "
+                f"date_range: {old_messages[0].get('timestamp', '?')[:10]} ~ "
+                f"{old_messages[-1].get('timestamp', '?')[:10]} -->\n\n"
+            )
+            memory_store.append_history_summary(metadata_header + summary)
+
+            result["compressed_count"] = len(old_messages)
+            result["summary_chars"] = len(summary)
+            result["sessions_covered"] = len(session_groups)
+
+            logger.info(
+                f"History compression complete: {len(old_messages)} messages → "
+                f"{len(summary)} chars summary, {len(session_groups)} sessions covered."
+            )
+
+        except Exception as e:
+            logger.error(f"History compression failed: {e}")
+
+        return result

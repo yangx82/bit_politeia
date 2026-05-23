@@ -38,7 +38,8 @@ class ConsolidationService:
         log_text = "\n".join([f"[{l['timestamp']}] {l['sender']}: {l['content']}" for l in logs])
 
         # 3. Aggregate Manual Notes (Markdown)
-        notes_text = memory_store.get_memories_since(last_run)
+        days_diff = max(1, (now - last_run).days)
+        notes_text = memory_store.get_recent_memories(days=days_diff)
 
         combined_content = (
             f"--- INTERACTION LOGS ---\n{log_text}\n\n--- MANUAL NOTES ---\n{notes_text}"
