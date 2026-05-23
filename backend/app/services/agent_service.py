@@ -773,7 +773,7 @@ class AgentService:
         p2p_reply_delay = int(json_config.get("p2p_reply_delay", os.getenv("AGENT_P2P_REPLY_DELAY", "5")))
         agent_language = json_config.get("agent_language", os.getenv("AGENT_LANGUAGE", "中文"))
         ralph_wiggum_mode = json_config.get("ralph_wiggum_mode", os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true")
-        llm_timeout = float(json_config.get("llm_timeout", os.getenv("AGENT_LLM_TIMEOUT", "60.0")))
+        llm_timeout = float(json_config.get("llm_timeout", os.getenv("AGENT_LLM_TIMEOUT", "180.0")))
         verbose_llm = json_config.get("verbose_llm", os.getenv("AGENT_VERBOSE_LLM", "true").lower() == "true")
         bootstrap_verify = json_config.get("bootstrap_verify", os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true")
         self.enable_welcome = os.getenv("AGENT_ENABLE_WELCOME", "true").lower() == "true"
