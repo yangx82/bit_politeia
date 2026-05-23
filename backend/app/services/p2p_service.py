@@ -205,7 +205,15 @@ class P2PService:
 
             try:
                 msg_obj = SignedMessage.from_dict(message)
-                if not self.message_protocol.verify_message(msg_obj, sender_id):
+                
+                # Resolve Public Key from sender_id (which is a Hex Node ID)
+                public_key = sender_id
+                if self.network_manager and sender_id in self.network_manager.nodes:
+                    public_key = self.network_manager.nodes[sender_id].public_key
+                elif self.local_node and sender_id == self.local_node.node_id:
+                    public_key = self.local_node.public_key
+
+                if not self.message_protocol.verify_message(msg_obj, public_key):
                     logger.warning(
                         f"[Security] Rejected unverified {msg_type} from {sender_id[:8]}..."
                     )
