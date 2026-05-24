@@ -727,9 +727,18 @@ class NetworkManager:
         # Broadcast sync request to all group members
         await self.route_message(sync_msg, gossip_forward=True)
 
-    async def handle_state_sync_request(self, message: SignedMessage):
+    async def handle_state_sync_request(self, message: SignedMessage | dict):
         """Handle incoming state sync request by sharing known proposals/elections."""
-        content = message.content
+        if isinstance(message, dict):
+            try:
+                msg_obj = SignedMessage.from_dict(message)
+            except Exception as e:
+                logger.error(f"[StateSync] Failed to parse message dict to SignedMessage: {e}")
+                return
+        else:
+            msg_obj = message
+
+        content = msg_obj.content
         if content.get("sync_type") != "state_request":
             return
 
@@ -747,7 +756,7 @@ class NetworkManager:
 
         # Share active proposals and elections
         gm = agent_service.governance_manager
-        group_id = message.recipient_id
+        group_id = msg_obj.recipient_id
 
         # Get proposals for this group
         for proposal in gm.proposals.values():
