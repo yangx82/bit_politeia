@@ -768,7 +768,8 @@ class NetworkManager:
                     if proposal.proposal_id in gm.active_elections
                     else None,
                 }
-                await self.broadcast_governance_event(group_id, "proposal", proposal_data)
+                from ..services.p2p_service import p2p_service
+                await p2p_service.broadcast_governance_event(group_id, "proposal", proposal_data)
                 logger.info(
                     f"[StateSync] Re-shared proposal {proposal.proposal_id[:8]}... to {requester_id[:8]}..."
                 )
