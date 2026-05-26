@@ -442,6 +442,109 @@ class AgentService:
                     return node_id
         return sid
 
+    def is_pure_acknowledgment(self, content: str) -> bool:
+        """Detect if a P2P message is a pure acknowledgment or status confirmation.
+        
+        If it is, we should not pass it to the agent pipeline to prevent infinite response loops,
+        though it should still be recorded in history so the context is complete.
+        """
+        if not content:
+            return False
+            
+        text = content.strip().lower()
+        
+        # 0. Check explicit bypass flags
+        if "[no_response_needed]" in text or "[no response needed]" in text:
+            return True
+            
+        import re
+        
+        # Strip common local agent-generated prefixes/metadata if present
+        text = text.replace("[agent completed p2p task]:", "")
+        
+        # 1. First-pass: Strip signatures and timestamps
+        # Remove lines matching signature separator and names, e.g. "— Bit Plato (5a40d9e6)"
+        text = re.sub(r'—\s*[^\n]+', '', text)
+        text = re.sub(r'--\s*[^\n]+', '', text)
+        
+        # Remove timestamps like "2026-05-25 21:19" or "2026-05-25t21:19:00"
+        text = re.sub(r'\d{4}-\d{2}-\d{2}(?:\s+|\s*t\s*)\d{2}:\d{2}(?::\d{2})?', '', text)
+        
+        # 2. Check for question/instruction/request indicators on the cleaned text.
+        # If any of these are present, it is likely NOT a pure acknowledgment and requires processing.
+        indicators = [
+            "?", "？", "为什么", "how", "why", "what", "who", "where", "which",
+            "如何", "怎么", "谁", "什么", "哪", "是否", "吗", "请问", "please",
+            "request", "question", "help", "请", "需要", "要求", "error", "错误",
+            "bug", "fail", "失败", "except", "warn", "alert", "警报", "更新", "update",
+            "check", "检查", "verify", "验证", "test", "测试"
+        ]
+        for ind in indicators:
+            if ind in text:
+                return False
+                
+        # Normalize: strip all non-alphanumeric/non-chinese characters
+        clean_text = re.sub(r'[^\w\u4e00-\u9fff]', '', text)
+        
+        # 3. Strip all known node names (names of other agents/users in the P2P system)
+        if p2p_service._initialized and p2p_service.network_manager:
+            for node in p2p_service.network_manager.nodes.values():
+                if node.name:
+                    name_clean = re.sub(r'[^\w\u4e00-\u9fff]', '', node.name.lower())
+                    if name_clean:
+                        clean_text = clean_text.replace(name_clean, "")
+                        
+        # Also strip self name if configured
+        if hasattr(self, "name") and self.name:
+            self_name_clean = re.sub(r'[^\w\u4e00-\u9fff]', '', self.name.lower())
+            if self_name_clean:
+                clean_text = clean_text.replace(self_name_clean, "")
+                
+        if not clean_text:
+            return True # Only names, signature, and punctuation
+            
+        # 4. Pure acknowledgment phrases (exact match after cleaning)
+        pure_ack_phrases = {
+            "收到", "收悉", "已收到", "已收悉", "好的", "知道了", "已阅", "明白",
+            "了解", "同意", "遵命", "ok", "okay", "ack", "acknowledged", "gotit",
+            "noted", "received", "copied", "roger", "confirmed", "agreed", "copythat",
+            "收到啦", "收到哈", "知道了好的", "同步确认", "已确认"
+        }
+        if clean_text in pure_ack_phrases:
+            return True
+            
+        # 5. Combination of acknowledgment + status confirmation components
+        ack_components = [
+            "收到", "收悉", "已收到", "已收悉", "好的", "知道了", "已阅", "明白",
+            "了解", "同意", "ok", "okay", "ack", "acknowledged", "gotit", "noted",
+            "received", "copied", "roger", "confirmed", "agreed", "copythat",
+            "同步", "确认", "同步确认", "已确认", "confirm", "sync", "synced",
+            "acknowledgment", "acknowledgement", "acknowledging"
+        ]
+        status_components = [
+            "维持", "保持", "处于", "维持在", "状态", "standby", "active", "normal",
+            "运行", "运行中", "已切换", "继续", "保持在", "保持现状", "继续保持",
+            "维持现状", "继续维持", "继续处于", "状态不变",
+            "maintain", "maintaining", "keep", "keeping", "state", "status", "running"
+        ]
+        
+        # Sort both lists by length in descending order to avoid partial matches (e.g. "main" before "maintain")
+        ack_components = sorted(ack_components, key=len, reverse=True)
+        status_components = sorted(status_components, key=len, reverse=True)
+        
+        has_ack = any(ack in clean_text for ack in ack_components)
+        if has_ack:
+            temp = clean_text
+            for ack in ack_components:
+                temp = temp.replace(ack, "")
+            for stat in status_components:
+                temp = temp.replace(stat, "")
+            # If what's left is extremely short, it's a pure ack
+            if len(temp) <= 2:
+                return True
+                
+        return False
+
     async def configure_agent(
         self,
         base_url: str,
@@ -804,18 +907,33 @@ class AgentService:
         details: str,
         category: str = "TRANSFER",
         context_id: str = None,
+        payer_id: str = None,
     ) -> str:
         if not self.ledger:
             return "Ledger not initialized"
 
-        payer_id = self.governance_manager.node_id if self.governance_manager else "unknown"
+        if not payer_id:
+            payer_id = self.governance_manager.node_id if self.governance_manager else "unknown"
+
         tx = self.ledger.create_transaction(
             payer_id, payee_id, amount, details, category=category, context_id=context_id
         )
 
         if tx:
+            # If this is a reward or governance payout linked to a finalized election, update its status
+            if self.governance_manager and context_id:
+                if context_id in self.governance_manager.finished_elections:
+                    election = self.governance_manager.finished_elections[context_id]
+                    election.payout_status = "paid"
+                    self.governance_manager.save_state()
+                    logger.info(f"Financial: Marked election {context_id} payout as paid.")
             return f"Transfer successful. TX ID: {tx.transaction_id}"
         else:
+            if self.governance_manager and context_id:
+                if context_id in self.governance_manager.finished_elections:
+                    election = self.governance_manager.finished_elections[context_id]
+                    election.payout_status = "failed"
+                    self.governance_manager.save_state()
             return "Transfer failed. Insufficient funds or invalid amount."
 
     def _load_config(self) -> dict:
@@ -1696,6 +1814,22 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                             timestamp=msg_ts,
                         )
                     )
+
+                    # 2.5 Loop Prevention: Check for pure acknowledgment/status confirmations
+                    if self.is_pure_acknowledgment(text_content):
+                        logger.info(
+                            f"Loop prevention: message from {sender_id} is a pure acknowledgment/status confirmation. Storing in history without triggering LLM pipeline."
+                        )
+                        s_id_short = sender_id[:8] if sender_id else "unknown"
+                        await self.message_bus.publish_outbound(
+                            OutboundMessage(
+                                channel="gateway",
+                                session_id=effective_session_id,
+                                content=f"Loop prevention: received pure acknowledgment/status confirmation from {s_id_short}. Stored in history without auto-processing.",
+                                type="thought",
+                            )
+                        )
+                        continue
 
                     # 3. Check for lapsed messages (30 mins = 1800 seconds)
                     now = datetime.now(UTC)
@@ -3307,8 +3441,14 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 msg_ts = msg_ts.replace(tzinfo=UTC)
 
             if msg_ts > last_ts:
-                if msg.channel == "p2p" and msg.sender != "system":
-                    new_messages.append(msg.dict())
+                is_p2p = False
+                if msg.metadata and isinstance(msg.metadata, dict):
+                    is_p2p = msg.metadata.get("is_p2p", False) or msg.metadata.get("channel") == "p2p"
+                elif msg.session_id and msg.session_id != "resident":
+                    is_p2p = True
+
+                if is_p2p and msg.sender != "system":
+                    new_messages.append(msg.model_dump() if hasattr(msg, "model_dump") else msg.dict())
 
         # 2.3 Gather Transactions since last block
         new_txs = []
@@ -3320,7 +3460,15 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 if tx_ts > last_ts:
                     new_txs.append(tx.to_dict())
 
+        # 2.4 Gather Proposals / Research since last block
         new_research = []
+        if self.governance_manager:
+            for proposal in self.governance_manager.proposals.values():
+                p_ts = proposal.timestamp
+                if p_ts.tzinfo is None:
+                    p_ts = p_ts.replace(tzinfo=UTC)
+                if p_ts > last_ts:
+                    new_research.append(proposal)
 
         # 3. Decision: Should we generate a block?
         has_activity = (
@@ -3333,7 +3481,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         # 4. Create Block
         logger.info(
-            f"Generating archive block with {len(new_votes)} votes, {len(new_messages)} messages and {len(new_txs)} transactions..."
+            f"Generating archive block with {len(new_votes)} votes, {len(new_messages)} messages, {len(new_txs)} transactions and {len(new_research)} proposals..."
         )
         block = self.archive_manager.create_daily_archive(
             votes=[str(v) for v in new_votes],
@@ -3436,8 +3584,10 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         if not self.governance_manager or not self.llm:
             return
 
+        # PROACTIVE SYNC: Finalize any elections that just expired
+        self.governance_manager.finalize_expired_elections()
+
         active_elections = self.governance_manager.active_elections
-        # Find elections we haven't voted in AND haven't been notified about locally
         my_id = p2p_service.local_node.node_id if p2p_service.local_node else None
         if not my_id:
             return
@@ -3445,20 +3595,17 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         logger.debug(f"Governance Monitor: Checking {len(active_elections)} active elections...")
         found_new = False
 
+        # 1. Check active elections for agent votes
         for eid, election in active_elections.items():
-            # Focus on proposal votes
             if election.election_type != ElectionType.PROPOSAL_VOTE:
                 continue
 
-            # Skip if we already voted
             if my_id in election.votes:
                 continue
 
-            # Skip if we were already notified (Check both instance state and persistence)
             if eid in self.notified_governance_ids:
                 continue
 
-            # Found a new proposal!
             proposal_id = election.proposal_id
             proposal = self.governance_manager.proposals.get(proposal_id)
             if not proposal:
@@ -3471,7 +3618,6 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 f"Governance Monitor: New unhandled proposal detected: {proposal_id}. Awakening agent..."
             )
 
-            # Create internal probe message
             poke_msg = InboundMessage(
                 channel="internal",
                 sender_id="system",
@@ -3486,12 +3632,92 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 ),
             )
 
-            # Fire and forget pipeline execution
             asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
-
-            # Mark as notified and mark for persistence
             self.notified_governance_ids.add(eid)
             found_new = True
+
+        # 2. Check finished elections for pending payouts
+        finished_elections = self.governance_manager.finished_elections
+        for eid, election in list(finished_elections.items()):
+            if election.payout_status != "pending":
+                continue
+
+            notify_key = f"payout_{eid}"
+            if notify_key in self.notified_governance_ids:
+                continue
+
+            tally = election.tally()
+            payout_needed = False
+            payout_amount = 0.0
+            payout_recipient = election.initiator_id
+            category = "REWARD"
+            details = ""
+
+            if election.election_type == ElectionType.RESEARCH_EVALUATION:
+                payout_amount = tally.get("average_amount", 0.0)
+                if payout_amount > 0:
+                    payout_needed = True
+                    category = "REWARD"
+                    details = f"Research evaluation reward for proposal {(election.proposal_id or '')[:8]}"
+                else:
+                    election.payout_status = "no_reward"
+                    self.governance_manager.save_state()
+                    continue
+
+            elif election.election_type == ElectionType.PROPOSAL_VOTE:
+                if tally.get("passed", False):
+                    proposal = self.governance_manager.proposals.get(election.proposal_id)
+                    if proposal:
+                        import re
+                        match = re.search(r'(?:budget|funding|reward|金额|金額|预算):\s*(\d+(?:\.\d+)?)', proposal.content, re.IGNORECASE)
+                        if match:
+                            payout_amount = float(match.group(1))
+                            payout_needed = True
+                            category = "GOVERNANCE"
+                            details = f"Passed proposal funding for proposal {(election.proposal_id or '')[:8]}"
+                        else:
+                            election.payout_status = "no_reward"
+                            self.governance_manager.save_state()
+                            continue
+                    else:
+                        election.payout_status = "no_reward"
+                        self.governance_manager.save_state()
+                        continue
+                else:
+                    election.payout_status = "no_reward"
+                    self.governance_manager.save_state()
+                    continue
+            else:
+                election.payout_status = "no_reward"
+                self.governance_manager.save_state()
+                continue
+
+            if payout_needed:
+                logger.info(
+                    f"Governance Monitor: Pending payout detected for election {eid} ({election.election_type.value}): "
+                    f"Recipient={payout_recipient[:8]}, Amount={payout_amount}"
+                )
+
+                payout_poke_msg = InboundMessage(
+                    channel="internal",
+                    sender_id="system",
+                    session_id="resident",
+                    content=(
+                        f"[治理与资金监控]: 检测到提案/评估投票 (ID: {election.proposal_id}) 已经投票结束并通过。\n"
+                        f"类型: {election.election_type.value}\n"
+                        f"发起人/受益人: {payout_recipient[:8]} (Node ID: {payout_recipient})\n"
+                        f"计算结算金额: {payout_amount}\n"
+                        f"关联选举ID: {eid}\n\n"
+                        f"[自治指令]: 请执行以下结算与发布步骤：\n"
+                        f"1. 联系最高等级的小组（Core Nodes）确认该项奖励的发放金额。\n"
+                        f"2. 向全社区公布这一最终治理与财务结算结果（可使用 GROUP 或 GOSSIP 广播形式）。\n"
+                        f"3. 确认后，调用 `pay_resident` 工具发放奖励，参数必须指定 `payer_id='system'` 且传入 `context_id='{eid}'` 以完成结算核销。"
+                    ),
+                )
+
+                asyncio.create_task(self._run_ralph_wiggum_loop(payout_poke_msg))
+                self.notified_governance_ids.add(notify_key)
+                found_new = True
 
         if found_new:
             self._save_system_state()

@@ -112,6 +112,7 @@ class Election:
     status: str = "active"
     target_positions: int = 1
     excluded_voters: set[str] = field(default_factory=set)  # e.g. Proposal author
+    payout_status: str = "pending"  # "pending", "paid", "failed", "no_reward"
 
     @property
     def total_votes(self) -> int:
@@ -250,6 +251,7 @@ class Election:
             "target_positions": self.target_positions,
             "excluded_voters": list(self.excluded_voters),
             "participation_rate": self.participation_rate,
+            "payout_status": self.payout_status,
         }
 
     @classmethod
@@ -282,6 +284,7 @@ class Election:
             status=data.get("status", "active"),
             target_positions=data.get("target_positions", 1),
             excluded_voters=set(data.get("excluded_voters", [])),
+            payout_status=data.get("payout_status", "pending"),
         )
         if "votes" in data:
             e.votes = {k: [Vote.from_dict(v) for v in val] for k, val in data["votes"].items()}
@@ -425,7 +428,7 @@ class GovernanceManager:
         self.save_state()
         return proposal, election
 
-    def finalize_expired_elections(self):
+    def finalize_expired_elections(self) -> list[str]:
         """Move elections from active to finished if they have passed their end_time."""
         now = datetime.now(UTC)
         expired_ids = []
@@ -438,7 +441,7 @@ class GovernanceManager:
                 expired_ids.append(eid)
 
         if not expired_ids:
-            return
+            return []
 
         for eid in expired_ids:
             election = self.active_elections.pop(eid)
@@ -447,6 +450,7 @@ class GovernanceManager:
             logger.info(f"Governance: Finalized expired election {eid}")
 
         self.save_state()
+        return expired_ids
 
     def receive_ballot(self, election_id: str, votes: list[Vote]) -> bool:
         # First, sync state to ensure we're not voting in something that just expired

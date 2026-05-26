@@ -428,6 +428,7 @@ async def pay_resident(
     details: str = "Payment",
     category: str = "TRANSFER",
     context_id: str = None,
+    payer_id: str = None,
 ) -> str:
     """
     Transfer funds to another resident (node).
@@ -436,13 +437,14 @@ async def pay_resident(
         amount: Amount to transfer (must be positive).
         details: Reason or description for the payment.
         category: Optional category (e.g., TRANSFER, REWARD, GOVERNANCE).
-        context_id: Optional related ID (e.g., Proposal ID).
+        context_id: Optional related ID (e.g., Proposal ID / Election ID).
+        payer_id: Optional payer ID (defaults to own node ID, set to 'system' for community rewards/payouts).
     """
     import app.services.agent_service
 
     try:
         result = await app.services.agent_service.agent_service.transfer_funds(
-            payee_id, amount, details, category=category, context_id=context_id
+            payee_id, amount, details, category=category, context_id=context_id, payer_id=payer_id
         )
         return result
     except Exception as e:

@@ -57,6 +57,10 @@ class Ledger:
             logger.warning(f"Invalid transaction amount: {tx.amount}")
             return False
 
+        if tx.payer_id == "system":
+            # System account represents the mint/treasury and is allowed to issue infinite funds
+            return True
+
         payer_balance = self.get_balance(tx.payer_id)
         if payer_balance < tx.amount:
             logger.warning(
@@ -71,7 +75,8 @@ class Ledger:
             return False
 
         # Execute Transfer
-        self.balances[tx.payer_id] -= tx.amount
+        if tx.payer_id != "system":
+            self.balances[tx.payer_id] = self.balances.get(tx.payer_id, 0.0) - tx.amount
         self.balances[tx.payee_id] = self.balances.get(tx.payee_id, 0.0) + tx.amount
 
         self.transactions.append(tx)
