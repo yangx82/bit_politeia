@@ -704,17 +704,36 @@ class NetworkManager:
         """
         Request state synchronization from group members.
         Used for periodic consistency checks and catching missed messages.
+        Includes a digest of local known proposals to support incremental (delta) sync.
         """
         if not self.local_node_id or group_id not in self.groups:
             return
 
         logger.info(f"[StateSync] Requesting state sync for group {group_id}")
 
-        # Create sync request message
+        # Gather local known proposals and their status/vote counts to support delta sync
+        known_proposals = {}
+        try:
+            from ..services.agent_service import agent_service
+            if agent_service and agent_service.governance_manager:
+                gm = agent_service.governance_manager
+                for pid, prop in gm.proposals.items():
+                    if prop.group_id == group_id:
+                        election = gm.active_elections.get(pid)
+                        vote_count = len(election.votes) if election else 0
+                        known_proposals[pid] = {
+                            "status": prop.status,
+                            "vote_count": vote_count,
+                        }
+        except Exception as e:
+            logger.debug(f"[StateSync] Failed to gather local proposals for sync request: {e}")
+
+        # Create sync request message with known_proposals metadata
         sync_content = {
             "sync_type": "state_request",
             "requester_id": self.local_node_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "known_proposals": known_proposals,
         }
 
         sync_msg = self.message_protocol.create_message(
@@ -728,7 +747,7 @@ class NetworkManager:
         await self.route_message(sync_msg, gossip_forward=True)
 
     async def handle_state_sync_request(self, message: SignedMessage | dict):
-        """Handle incoming state sync request by sharing known proposals/elections."""
+        """Handle incoming state sync request by sharing known proposals/elections dynamically (delta sync)."""
         if isinstance(message, dict):
             try:
                 msg_obj = SignedMessage.from_dict(message)
@@ -757,20 +776,41 @@ class NetworkManager:
         # Share active proposals and elections
         gm = agent_service.governance_manager
         group_id = msg_obj.recipient_id
+        requester_known = content.get("known_proposals", {})
 
         # Get proposals for this group
         for proposal in gm.proposals.values():
             if proposal.group_id == group_id:
-                # Re-broadcast this proposal
+                pid = proposal.proposal_id
+                election = gm.active_elections.get(pid)
+                local_vote_count = len(election.votes) if election else 0
+
+                # Check if requester already has this proposal up to date
+                if pid in requester_known:
+                    req_state = requester_known[pid]
+                    if (
+                        req_state.get("status") == proposal.status
+                        and req_state.get("vote_count") == local_vote_count
+                    ):
+                        # State is identical, skip sending to reduce network overhead
+                        continue
+
+                # Prepare proposal data
                 proposal_data = {
                     "proposal": proposal.to_dict(),
-                    "election": gm.active_elections.get(proposal.proposal_id, {}).to_dict()
-                    if proposal.proposal_id in gm.active_elections
-                    else None,
+                    "election": election.to_dict() if election else None,
                 }
-                from ..services.p2p_service import p2p_service
-                await p2p_service.broadcast_governance_event(group_id, "proposal", proposal_data)
+                
+                # Create a direct message to the requester instead of broadcasting
+                sync_msg = self.message_protocol.create_message(
+                    sender_id=self.local_node_id,
+                    recipient_id=requester_id,
+                    message_type=MessageType.PROPOSAL,
+                    content=proposal_data,
+                )
+                await self.route_message(sync_msg, gossip_forward=False)
+                
                 logger.info(
-                    f"[StateSync] Re-shared proposal {proposal.proposal_id[:8]}... to {requester_id[:8]}..."
+                    f"[StateSync] Synced proposal {proposal.proposal_id[:8]}... to {requester_id[:8]}..."
                 )
                 await asyncio.sleep(0.1)  # Rate limit to avoid flooding
