@@ -462,6 +462,19 @@ class NetworkManager:
             f"[Network] Routing {message.message_type.value} message to {message.recipient_id} (From Relay: {from_relay}, Gossip: {gossip_forward})",
         )
 
+        # Prevent duplicate routing (Broadcast Storm Prevention)
+        if not hasattr(self, "_route_cache"):
+            self._route_cache = set()
+        
+        route_key = f"{message.message_id}:{self.local_node_id}"
+        if route_key in self._route_cache:
+            return True
+        self._route_cache.add(route_key)
+        
+        # Keep cache from growing indefinitely
+        if len(self._route_cache) > 10000:
+            self._route_cache = set(list(self._route_cache)[-5000:])
+
         # Helper to route to single node with fallback
         async def send_to_node(node_id: str, msg: SignedMessage) -> bool:
             if node_id == self.local_node_id:
