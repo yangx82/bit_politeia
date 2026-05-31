@@ -525,7 +525,9 @@ class AgentService:
             "维持", "保持", "处于", "维持在", "状态", "standby", "active", "normal",
             "运行", "运行中", "已切换", "继续", "保持在", "保持现状", "继续保持",
             "维持现状", "继续维持", "继续处于", "状态不变",
-            "maintain", "maintaining", "keep", "keeping", "state", "status", "running"
+            "议题结束", "议题已结束", "讨论结束", "讨论已结束", "流程结束", "会话结束", "交互结束", "任务结束", "任务已结束", "结束",
+            "maintain", "maintaining", "keep", "keeping", "state", "status", "running",
+            "topic ended", "discussion ended", "session ended", "interaction ended", "task completed", "task ended", "completed", "finished"
         ]
         
         # Sort both lists by length in descending order to avoid partial matches (e.g. "main" before "maintain")
@@ -1462,6 +1464,29 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     type="chat",
                 )
             )
+
+        # 1.7 Loop Prevention: Check for pure acknowledgment/status confirmations
+        if msg.channel == "p2p":
+            text_content = msg.content
+            if isinstance(text_content, dict) and "text" in text_content:
+                text_content = text_content["text"]
+            elif not isinstance(text_content, str):
+                text_content = str(text_content)
+
+            if self.is_pure_acknowledgment(text_content):
+                logger.info(
+                    f"Loop prevention (Bus): message from {msg.sender_id} is a pure acknowledgment/status confirmation. Storing in history without triggering LLM pipeline."
+                )
+                s_id_short = msg.sender_id[:8] if msg.sender_id else "unknown"
+                await self.message_bus.publish_outbound(
+                    OutboundMessage(
+                        channel="gateway",
+                        session_id=history_session_id,
+                        content=f"Loop prevention: received pure acknowledgment/status confirmation from {s_id_short}. Stored in history without auto-processing.",
+                        type="thought",
+                    )
+                )
+                return
 
         # 2. Pipeline Execution
         # p2p_logger.info(f"DEBUG: process_bus_message calling run_pipeline. Channel={msg.channel}, Sender={msg.sender_id}")

@@ -188,6 +188,13 @@ class NetworkManager:
             logger.info(f"[Network] Removing stale node {nid} from local topology cache")
             del self.nodes[nid]
 
+        # 4. Rebuild node.group_ids based on synced groups and members
+        for node_id, node in self.nodes.items():
+            node.group_ids = set()
+            for gid, group in self.groups.items():
+                if node_id in group.members:
+                    node.group_ids.add(gid)
+
     def get_group(self, group_id: str) -> Group | None:
         return self.groups.get(group_id)
 
@@ -513,12 +520,22 @@ class NetworkManager:
         # Handle routing: Detect if recipient is a group to trigger broadcast logic
         is_group_id = message.recipient_id in self.groups
 
+        # Determine if the recipient is actually a node ID to prevent misrouting broadcast types
+        is_recipient_node = (
+            message.recipient_id in self.nodes
+            or (isinstance(message.recipient_id, str) and len(message.recipient_id) == 64)
+        )
+
         # FIX: Also broadcast PROPOSAL, VOTE, and GROUP_CONFIG messages to group members
-        is_group_broadcast_type = message.message_type in (
-            MessageType.GROUP,
-            MessageType.PROPOSAL,
-            MessageType.VOTE,
-            MessageType.GROUP_CONFIG,
+        # ONLY if the recipient is not a specific node (i.e. this is not a unicast sync message)
+        is_group_broadcast_type = (
+            message.message_type in (
+                MessageType.GROUP,
+                MessageType.PROPOSAL,
+                MessageType.VOTE,
+                MessageType.GROUP_CONFIG,
+            )
+            and not is_recipient_node
         )
 
         if is_group_broadcast_type or is_group_id:

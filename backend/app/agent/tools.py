@@ -374,6 +374,12 @@ async def search_chat_history(peer_name_or_id: str, limit: int = 10) -> str:
                     resolved_id = node_id
                     break
 
+        if not resolved_id and network_status and "groups" in network_status:
+            for group_id, group_data in network_status["groups"].items():
+                if group_data.get("name", "").lower() == target_id.lower():
+                    resolved_id = group_id
+                    break
+
         if resolved_id:
             target_id = resolved_id
 

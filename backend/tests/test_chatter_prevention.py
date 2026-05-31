@@ -42,6 +42,8 @@ def test_is_pure_acknowledgment_base_cases():
         assert agent_service.is_pure_acknowledgment("收悉，维持standby状态") is True
         assert agent_service.is_pure_acknowledgment("好的，继续保持") is True
         assert agent_service.is_pure_acknowledgment("OK, maintaining standby") is True
+        assert agent_service.is_pure_acknowledgment("同步确认。议题结束，维持 Standby。") is True
+        assert agent_service.is_pure_acknowledgment("收悉，讨论已结束，保持standby状态") is True
         
         # 3. User message example with signature block (Should return True)
         user_msg = (
@@ -139,6 +141,89 @@ async def test_process_network_inbox_loop_prevention():
         # 2. Check LLM pipeline runs: only the normal message should have triggered the LLM
         assert len(pipeline_runs) == 1
         assert pipeline_runs[0].content == "我们今天下午需要更新提案吗？"
+        
+    finally:
+        p2p_service._initialized = original_initialized
+        p2p_service.local_node = original_local_node
+        p2p_service.network_manager = original_network_manager
+        agent_service.history = original_history
+        agent_service._run_ralph_wiggum_loop = original_run_loop
+
+
+@pytest.mark.asyncio
+async def test_process_bus_message_loop_prevention():
+    """Verify that process_bus_message filters pure acknowledgements and does not trigger LLM pipeline."""
+    # Setup mocks
+    original_initialized = p2p_service._initialized
+    original_local_node = p2p_service.local_node
+    original_network_manager = p2p_service.network_manager
+    original_history = list(agent_service.history)
+    original_run_loop = agent_service._run_ralph_wiggum_loop
+    
+    p2p_service._initialized = True
+    
+    class MockNetworkManager:
+        def __init__(self):
+            self.nodes = {
+                "node_aarron": Node("node_aarron", self, "pk1", "Aarron"),
+                "node_plato": Node("node_plato", self, "pk2", "Bit Plato")
+            }
+            
+    p2p_service.network_manager = MockNetworkManager()
+    
+    class MockLocalNode:
+        def __init__(self):
+            self.node_id = "agent_node"
+            self.group_ids = set()
+            
+    p2p_service.local_node = MockLocalNode()
+    
+    pipeline_runs = []
+    async def mock_run_loop(msg_obj):
+        pipeline_runs.append(msg_obj)
+        return "No response generated.", None, None
+        
+    agent_service._run_ralph_wiggum_loop = mock_run_loop
+    agent_service.history.clear()
+    
+    try:
+        # Message 1: Normal P2P message (should trigger pipeline)
+        msg_normal = InboundMessage(
+            channel="p2p",
+            sender_id="node_plato",
+            session_id="node_plato",
+            content="如何评估这个去中心化身份提案？",
+            metadata={
+                "message_id": "msg_normal_2",
+                "timestamp": datetime.now(UTC).isoformat()
+            }
+        )
+        
+        # Message 2: Pure acknowledgment (should be skipped by pipeline, but recorded in history)
+        msg_ack = InboundMessage(
+            channel="p2p",
+            sender_id="node_plato",
+            session_id="node_plato",
+            content="同步确认。维持 Standby。",
+            metadata={
+                "message_id": "msg_ack_2",
+                "timestamp": datetime.now(UTC).isoformat()
+            }
+        )
+        
+        # Process normal message
+        await agent_service.process_bus_message(msg_normal)
+        # Process acknowledgment message
+        await agent_service.process_bus_message(msg_ack)
+        
+        # 1. Check history: both messages should be saved
+        history_contents = [msg.content for msg in agent_service.history]
+        assert any("如何评估这个去中心化身份提案？" in content for content in history_contents)
+        assert any("同步确认。维持 Standby。" in content for content in history_contents)
+        
+        # 2. Check LLM pipeline runs: only the normal message should have triggered the LLM
+        assert len(pipeline_runs) == 1
+        assert pipeline_runs[0].content == "如何评估这个去中心化身份提案？"
         
     finally:
         p2p_service._initialized = original_initialized
