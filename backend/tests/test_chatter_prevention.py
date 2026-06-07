@@ -10,7 +10,8 @@ from app.services.p2p_service import p2p_service
 from app.bus.events import InboundMessage
 
 
-def test_is_pure_acknowledgment_base_cases():
+@pytest.mark.asyncio
+async def test_is_pure_acknowledgment_base_cases():
     """Verify that basic acknowledgment phrases are correctly classified."""
     # Setup node names in p2p_service for mock node name stripping
     original_initialized = p2p_service._initialized
@@ -30,20 +31,20 @@ def test_is_pure_acknowledgment_base_cases():
 
     try:
         # 1. Pure ack cases (Should return True)
-        assert agent_service.is_pure_acknowledgment("好的，收到") is True
-        assert agent_service.is_pure_acknowledgment("OK, got it") is True
-        assert agent_service.is_pure_acknowledgment("收悉") is True
-        assert agent_service.is_pure_acknowledgment("roger") is True
-        assert agent_service.is_pure_acknowledgment("copy that") is True
-        assert agent_service.is_pure_acknowledgment("同步确认") is True
-        assert agent_service.is_pure_acknowledgment("[no_response_needed]") is True
+        assert await agent_service.is_pure_acknowledgment("好的，收到") is True
+        assert await agent_service.is_pure_acknowledgment("OK, got it") is True
+        assert await agent_service.is_pure_acknowledgment("收悉") is True
+        assert await agent_service.is_pure_acknowledgment("roger") is True
+        assert await agent_service.is_pure_acknowledgment("copy that") is True
+        assert await agent_service.is_pure_acknowledgment("同步确认") is True
+        assert await agent_service.is_pure_acknowledgment("[no_response_needed]") is True
         
         # 2. Combined status + ack cases (Should return True)
-        assert agent_service.is_pure_acknowledgment("收悉，维持standby状态") is True
-        assert agent_service.is_pure_acknowledgment("好的，继续保持") is True
-        assert agent_service.is_pure_acknowledgment("OK, maintaining standby") is True
-        assert agent_service.is_pure_acknowledgment("同步确认。议题结束，维持 Standby。") is True
-        assert agent_service.is_pure_acknowledgment("收悉，讨论已结束，保持standby状态") is True
+        assert await agent_service.is_pure_acknowledgment("收悉，维持standby状态") is True
+        assert await agent_service.is_pure_acknowledgment("好的，继续保持") is True
+        assert await agent_service.is_pure_acknowledgment("OK, maintaining standby") is True
+        assert await agent_service.is_pure_acknowledgment("同步确认。议题结束，维持 Standby。") is True
+        assert await agent_service.is_pure_acknowledgment("收悉，讨论已结束，保持standby状态") is True
         
         # 3. User message example with signature block (Should return True)
         user_msg = (
@@ -52,20 +53,69 @@ def test_is_pure_acknowledgment_base_cases():
             "— Bit Plato (5a40d9e6)\n"
             "2026-05-25 21:19"
         )
-        assert agent_service.is_pure_acknowledgment(user_msg) is True
+        assert await agent_service.is_pure_acknowledgment(user_msg) is True
         
         # 4. Action/Instruction/Questions (Should return False)
-        assert agent_service.is_pure_acknowledgment("维持standby状态") is False
-        assert agent_service.is_pure_acknowledgment("请维持standby状态") is False
-        assert agent_service.is_pure_acknowledgment("我需要你维持standby状态") is False
-        assert agent_service.is_pure_acknowledgment("我们切换到active状态吗？") is False
-        assert agent_service.is_pure_acknowledgment("我发现了代码中的一处错误：...") is False
-        assert agent_service.is_pure_acknowledgment("好的，但请更新你的状态") is False
-        assert agent_service.is_pure_acknowledgment("请执行测试") is False
+        assert await agent_service.is_pure_acknowledgment("维持standby状态") is False
+        assert await agent_service.is_pure_acknowledgment("请维持standby状态") is False
+        assert await agent_service.is_pure_acknowledgment("我需要你维持standby状态") is False
+        assert await agent_service.is_pure_acknowledgment("我们切换到active状态吗？") is False
+        assert await agent_service.is_pure_acknowledgment("我发现了代码中的一处错误：...") is False
+        assert await agent_service.is_pure_acknowledgment("好的，但请更新你的状态") is False
+        assert await agent_service.is_pure_acknowledgment("请执行测试") is False
 
     finally:
         p2p_service._initialized = original_initialized
         p2p_service.network_manager = original_network_manager
+
+
+@pytest.mark.asyncio
+async def test_is_pure_acknowledgment_with_mocked_llm(monkeypatch):
+    """Verify that is_pure_acknowledgment calls the LLM and processes responses correctly."""
+    from unittest.mock import AsyncMock
+    
+    # Mock ChatOpenAI ainvoke
+    mock_llm_response = AsyncMock()
+    
+    class MockAIMessage:
+        def __init__(self, content):
+            self.content = content
+            
+    mock_llm_response.return_value = MockAIMessage("YES")
+    
+    # Inject mocked LLM client into a dummy context manager
+    class MockContextManager:
+        def __init__(self):
+            self.summarizer_llm = AsyncMock()
+            self.summarizer_llm.ainvoke = mock_llm_response
+
+    original_context_manager = agent_service.context_manager
+    agent_service.context_manager = MockContextManager()
+    
+    try:
+        # LLM returns YES -> should return True
+        res_yes = await agent_service.is_pure_acknowledgment("some acknowledgment message")
+        assert res_yes is True
+        mock_llm_response.assert_called_once()
+        
+        # LLM returns NO -> should return False
+        mock_llm_response.reset_mock()
+        mock_llm_response.return_value = MockAIMessage("NO")
+        res_no = await agent_service.is_pure_acknowledgment("some question message?")
+        assert res_no is False
+        mock_llm_response.assert_called_once()
+        
+        # LLM raises exception -> should fall back to rule-based checking
+        mock_llm_response.reset_mock()
+        mock_llm_response.side_effect = Exception("API connection error")
+        
+        # Let's verify fallback works: "好的，收到" is true by rules
+        res_fallback = await agent_service.is_pure_acknowledgment("好的，收到")
+        assert res_fallback is True
+        
+    finally:
+        agent_service.context_manager = original_context_manager
+
 
 
 @pytest.mark.asyncio

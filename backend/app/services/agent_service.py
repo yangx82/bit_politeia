@@ -442,18 +442,14 @@ class AgentService:
                     return node_id
         return sid
 
-    def is_pure_acknowledgment(self, content: str) -> bool:
-        """Detect if a P2P message is a pure acknowledgment or status confirmation.
-        
-        If it is, we should not pass it to the agent pipeline to prevent infinite response loops,
-        though it should still be recorded in history so the context is complete.
-        """
+    def _is_pure_acknowledgment_rules(self, content: str) -> bool:
+        """Detect if a P2P message is a pure acknowledgment or status confirmation using rules."""
         if not content:
             return False
             
         text = content.strip().lower()
         
-        # 0. Check explicit bypass flags
+        # Check explicit bypass flags
         if "[no_response_needed]" in text or "[no response needed]" in text:
             return True
             
@@ -463,15 +459,11 @@ class AgentService:
         text = text.replace("[agent completed p2p task]:", "")
         
         # 1. First-pass: Strip signatures and timestamps
-        # Remove lines matching signature separator and names, e.g. "— Bit Plato (5a40d9e6)"
         text = re.sub(r'—\s*[^\n]+', '', text)
         text = re.sub(r'--\s*[^\n]+', '', text)
-        
-        # Remove timestamps like "2026-05-25 21:19" or "2026-05-25t21:19:00"
         text = re.sub(r'\d{4}-\d{2}-\d{2}(?:\s+|\s*t\s*)\d{2}:\d{2}(?::\d{2})?', '', text)
         
         # 2. Check for question/instruction/request indicators on the cleaned text.
-        # If any of these are present, it is likely NOT a pure acknowledgment and requires processing.
         indicators = [
             "?", "？", "为什么", "how", "why", "what", "who", "where", "which",
             "如何", "怎么", "谁", "什么", "哪", "是否", "吗", "请问", "please",
@@ -486,7 +478,7 @@ class AgentService:
         # Normalize: strip all non-alphanumeric/non-chinese characters
         clean_text = re.sub(r'[^\w\u4e00-\u9fff]', '', text)
         
-        # 3. Strip all known node names (names of other agents/users in the P2P system)
+        # 3. Strip all known node names
         if p2p_service._initialized and p2p_service.network_manager:
             for node in p2p_service.network_manager.nodes.values():
                 if node.name:
@@ -501,9 +493,9 @@ class AgentService:
                 clean_text = clean_text.replace(self_name_clean, "")
                 
         if not clean_text:
-            return True # Only names, signature, and punctuation
+            return True
             
-        # 4. Pure acknowledgment phrases (exact match after cleaning)
+        # 4. Pure acknowledgment phrases
         pure_ack_phrases = {
             "收到", "收悉", "已收到", "已收悉", "好的", "知道了", "已阅", "明白",
             "了解", "同意", "遵命", "ok", "okay", "ack", "acknowledged", "gotit",
@@ -530,7 +522,6 @@ class AgentService:
             "topic ended", "discussion ended", "session ended", "interaction ended", "task completed", "task ended", "completed", "finished"
         ]
         
-        # Sort both lists by length in descending order to avoid partial matches (e.g. "main" before "maintain")
         ack_components = sorted(ack_components, key=len, reverse=True)
         status_components = sorted(status_components, key=len, reverse=True)
         
@@ -541,11 +532,71 @@ class AgentService:
                 temp = temp.replace(ack, "")
             for stat in status_components:
                 temp = temp.replace(stat, "")
-            # If what's left is extremely short, it's a pure ack
             if len(temp) <= 2:
                 return True
                 
         return False
+
+    async def is_pure_acknowledgment(self, content: str) -> bool:
+        """Detect if a P2P message is a pure acknowledgment or status confirmation.
+        
+        Calls the auxiliary model to make a classification decision, with graceful fallback to
+        rules if model configurations or network resources are unavailable.
+        """
+        if not content:
+            return False
+            
+        text = content.strip().lower()
+        
+        # 0. Fast-path check for explicit bypass flags
+        if "[no_response_needed]" in text or "[no response needed]" in text:
+            return True
+
+        # Try utilizing the auxiliary LLM
+        try:
+            llm = None
+            if self.context_manager and getattr(self.context_manager, "summarizer_llm", None):
+                llm = self.context_manager.summarizer_llm
+            else:
+                aux_url = os.getenv("AUX_MODEL_URL", getattr(self, "base_url", None))
+                aux_name = os.getenv("AUX_MODEL_NAME", getattr(self, "model", "gpt-4o"))
+                aux_key = os.getenv("AUX_MODEL_KEY", getattr(self, "api_key", None))
+                if aux_url and aux_key:
+                    llm = ChatOpenAI(
+                        base_url=aux_url,
+                        api_key=aux_key,
+                        model=aux_name,
+                        temperature=0.0,
+                        max_tokens=10,
+                    )
+            
+            if llm:
+                system_prompt = (
+                    "You are a P2P message filter assistant. Your task is to analyze the user message "
+                    "and determine if it is a pure acknowledgment or standby status confirmation message "
+                    "(e.g., '收到', '收悉', 'OK', 'got it', 'agreed', '维持 standby 状态', '同步确认。议题结束，维持 Standby。', "
+                    "'roger', 'copy that', etc.) which requires NO further response from the receiver.\n\n"
+                    "Follow these rules:\n"
+                    "1. If the message only serves as an acknowledgment, agreement, sign-off, or standby confirmation, "
+                    "respond with exactly 'YES'.\n"
+                    "2. If the message contains actual content, questions, instructions, or requires a response/action "
+                    "from the receiver, respond with exactly 'NO'.\n"
+                    "Respond ONLY with 'YES' or 'NO' (no punctuation, no explanation)."
+                )
+                response = await llm.ainvoke([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=content)
+                ])
+                res_text = response.content.strip().upper()
+                if "YES" in res_text:
+                    return True
+                elif "NO" in res_text:
+                    return False
+        except Exception as e:
+            logger.warning(f"Auxiliary model acknowledgment check failed, falling back to rules: {e}")
+
+        # Fallback to rule-based checker
+        return self._is_pure_acknowledgment_rules(content)
 
     async def configure_agent(
         self,
@@ -1473,7 +1524,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             elif not isinstance(text_content, str):
                 text_content = str(text_content)
 
-            if self.is_pure_acknowledgment(text_content):
+            if await self.is_pure_acknowledgment(text_content):
                 logger.info(
                     f"Loop prevention (Bus): message from {msg.sender_id} is a pure acknowledgment/status confirmation. Storing in history without triggering LLM pipeline."
                 )
@@ -1841,7 +1892,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     )
 
                     # 2.5 Loop Prevention: Check for pure acknowledgment/status confirmations
-                    if self.is_pure_acknowledgment(text_content):
+                    if await self.is_pure_acknowledgment(text_content):
                         logger.info(
                             f"Loop prevention: message from {sender_id} is a pure acknowledgment/status confirmation. Storing in history without triggering LLM pipeline."
                         )
