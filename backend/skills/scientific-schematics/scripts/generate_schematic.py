@@ -132,9 +132,20 @@ Examples:
   python generate_schematic.py "Circuit diagram" -o circuit.png -v
 
 Environment Variables:
-  GEMINI_API_KEY    Google Gemini API key (required)
-  Get your key at: https://aistudio.google.com/app/apikey
+  GEMINI_API_KEY                    Google Gemini API key (for AI Studio)
+  GOOGLE_CLOUD_PROJECT              GCP Project ID (for Vertex AI)
+  GOOGLE_CLOUD_LOCATION             GCP Location, default: global (for Vertex AI)
+  GOOGLE_GENAI_USE_ENTERPRISE       Set to "true" to use Vertex AI (Gemini Enterprise Agent Platform)
+  
+  Get AI Studio key at: https://aistudio.google.com/app/apikey
+  For Vertex AI, see: https://docs.cloud.google.com/gemini-enterprise-agent-platform
         """,
+    parser.add_argument(
+        "--provider",
+        default="vertex",
+        choices=["vertex", "ai-studio"],
+        help="Image generation provider (default: vertex)",
+    ),
     )
 
     parser.add_argument("prompt", help="Description of the diagram to generate")
@@ -171,23 +182,46 @@ Environment Variables:
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
-
-    # Check for API key
-    api_key = args.api_key or os.getenv("GEMINI_API_KEY")
     
-    # If not found in environment, try loading from .env file
-    if not api_key:
-        _load_env_file()
-        api_key = os.getenv("GEMINI_API_KEY")
+    # Set provider via environment variable
+    if args.provider == "vertex":
+        os.environ["GOOGLE_GENAI_USE_ENTERPRISE"] = "true"
+    else:
+        os.environ["GOOGLE_GENAI_USE_ENTERPRISE"] = "false"
+
+    # Check for API key (only needed for AI Studio)
+    if args.provider == "ai-studio":
+        api_key = args.api_key or os.getenv("GEMINI_API_KEY")
         
-    if not api_key:
-        print("Error: GEMINI_API_KEY environment variable not set")
-        print("\nFor AI generation, you need a Google Gemini API key.")
-        print("Get one at: https://aistudio.google.com/app/apikey")
-        print("\nSet it with:")
-        print("  export GEMINI_API_KEY='your_api_key'")
-        print("\nOr use --api-key flag")
-        sys.exit(1)
+        # If not found in environment, try loading from .env file
+        if not api_key:
+            _load_env_file()
+            api_key = os.getenv("GEMINI_API_KEY")
+            
+        if not api_key:
+            print("Error: GEMINI_API_KEY environment variable not set")
+            print("\nFor AI Studio, you need a Google Gemini API key.")
+            print("Get one at: https://aistudio.google.com/app/apikey")
+            print("\nSet it with:")
+            print("  export GEMINI_API_KEY='your_api_key'")
+            print("\nOr use --api-key flag")
+            print("\nTo use Vertex AI (Gemini Enterprise Agent Platform) instead:")
+            print("  python generate_schematic.py \"your prompt\" -o output.png --provider vertex")
+            print("  (requires GOOGLE_CLOUD_PROJECT to be set)")
+            sys.exit(1)
+    else:
+        # Vertex AI mode - check for project ID
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("VERTEX_PROJECT_ID")
+        if not project_id:
+            print("Error: Vertex AI requires GOOGLE_CLOUD_PROJECT environment variable")
+            print("\nSet it with:")
+            print("  export GOOGLE_CLOUD_PROJECT=your-project-id")
+            print("  export GOOGLE_CLOUD_LOCATION=global")
+            print("\nOr use AI Studio instead:")
+            print("  python generate_schematic.py \"your prompt\" -o output.png --provider ai-studio")
+            print("  (requires GEMINI_API_KEY to be set)")
+            sys.exit(1)
+        api_key = None  # Not needed for Vertex AI
 
     # Find AI generation script
     script_dir = Path(__file__).parent

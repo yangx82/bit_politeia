@@ -120,10 +120,17 @@ class ScientificSchematicGenerator:
         "default": 7.5,  # Default threshold
     }
     
-    # Available image generation models via Google Gemini API
+    # Available image generation models
+    # Supports both Google AI Studio and Vertex AI (Gemini Enterprise Agent Platform)
     IMAGE_GENERATION_MODELS = {
         "nano-banana-pro": "gemini-3-pro-image-preview",  # Nano Banana Pro (Gemini 3 Pro)
-        "nano-banana-2": "gemini-3.1-flash-image-preview",  # Nano Banana 2 (Gemini 3.1 Flash)
+        "nano-banana-2": "gemini-3.1-flash-image",  # Nano Banana 2 (Gemini 3.1 Flash)
+    }
+    
+    # Vertex AI models (for Gemini Enterprise Agent Platform)
+    VERTEX_IMAGE_MODELS = {
+        "nano-banana-pro": "gemini-3-pro-image-preview",
+        "nano-banana-2": "gemini-3.1-flash-image",
     }
     
     # Review model for quality evaluation
@@ -183,6 +190,67 @@ IMPORTANT - NO FIGURE NUMBERS:
             verbose: Print detailed progress information
             image_model: Image generation model to use ("nano-banana-pro" or "nano-banana-2")
         """
+        # Check if using Vertex AI (Gemini Enterprise Agent Platform)
+        self.use_vertex = os.getenv("GOOGLE_GENAI_USE_ENTERPRISE", "false").lower() in ("true", "1", "yes")
+        
+        if self.use_vertex:
+            # Vertex AI mode - uses ADC authentication
+            self._init_vertex(image_model)
+        else:
+            # Google AI Studio mode - uses API key
+            self._init_ai_studio(api_key, image_model)
+    
+    def _init_vertex(self, image_model: str):
+        """Initialize for Vertex AI (Gemini Enterprise Agent Platform)."""
+        self.verbose = os.getenv("VERBOSE", "false").lower() in ("true", "1", "yes")
+        self._last_error = None
+        
+        # Vertex AI configuration
+        self.project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("VERTEX_PROJECT_ID")
+        self.location = os.getenv("GOOGLE_CLOUD_LOCATION") or os.getenv("VERTEX_LOCATION", "global")
+        
+        if not self.project_id:
+            raise ValueError(
+                "Vertex AI requires GOOGLE_CLOUD_PROJECT or VERTEX_PROJECT_ID environment variable.\n"
+                "For Gemini Enterprise Agent Platform, set:\n"
+                "  export GOOGLE_CLOUD_PROJECT=your-project-id\n"
+                "  export GOOGLE_CLOUD_LOCATION=global\n"
+                "  export GOOGLE_GENAI_USE_ENTERPRISE=true"
+            )
+        
+        # Select Vertex AI model
+        if image_model in self.VERTEX_IMAGE_MODELS:
+            self.image_model = self.VERTEX_IMAGE_MODELS[image_model]
+        else:
+            self.image_model = self.VERTEX_IMAGE_MODELS["nano-banana-2"]
+        
+        self.review_model = "gemini-3.1-pro"
+        
+        # Import google-genai SDK
+        try:
+            from google import genai
+            from google.genai import types
+            self._genai = genai
+            self._types = types
+            self._has_genai = True
+        except ImportError:
+            self._has_genai = False
+            raise ImportError(
+                "google-genai SDK not installed for Vertex AI.\n"
+                "Install with: pip install google-genai"
+            )
+        
+        # Create Vertex AI client
+        self._client = self._genai.Client(
+            vertexai=True,
+            project=self.project_id,
+            location=self.location,
+        )
+        
+        self._log(f"Initialized Vertex AI client (project: {self.project_id}, location: {self.location})")
+    
+    def _init_ai_studio(self, api_key: str | None, image_model: str):
+        """Initialize for Google AI Studio."""
         # Priority: 1) explicit api_key param, 2) environment variable, 3) .env file
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
 
@@ -197,12 +265,17 @@ IMPORTANT - NO FIGURE NUMBERS:
                 "  1. Set the GEMINI_API_KEY environment variable\n"
                 "  2. Add GEMINI_API_KEY to your .env file\n"
                 "  3. Pass api_key parameter to the constructor\n"
-                "Get your API key from: https://aistudio.google.com/app/apikey"
+                "Get your API key from: https://aistudio.google.com/app/apikey\n"
+                "\nOr use Vertex AI (Gemini Enterprise Agent Platform) by setting:\n"
+                "  export GOOGLE_CLOUD_PROJECT=your-project-id\n"
+                "  export GOOGLE_CLOUD_LOCATION=global\n"
+                "  export GOOGLE_GENAI_USE_ENTERPRISE=true"
             )
 
-        self.verbose = verbose
-        self._last_error = None  # Track last error for better reporting
+        self.verbose = os.getenv("VERBOSE", "false").lower() in ("true", "1", "yes")
+        self._last_error = None
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        self.use_vertex = False
         
         # Select image generation model
         if image_model in self.IMAGE_GENERATION_MODELS:
@@ -222,7 +295,7 @@ IMPORTANT - NO FIGURE NUMBERS:
         self, model: str, contents: list[dict[str, Any]], generation_config: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """
-        Make a request to Google Gemini API.
+        Make a request to Google Gemini API or Vertex AI.
 
         Args:
             model: Model identifier (e.g., "gemini-2.0-flash-exp-image-generation")
@@ -232,6 +305,61 @@ IMPORTANT - NO FIGURE NUMBERS:
         Returns:
             API response as dictionary
         """
+        if self.use_vertex:
+            return self._make_vertex_request(model, contents, generation_config)
+        else:
+            return self._make_ai_studio_request(model, contents, generation_config)
+    
+    def _make_vertex_request(
+        self, model: str, contents: list[dict[str, Any]], generation_config: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Make a request to Vertex AI (Gemini Enterprise Agent Platform)."""
+        self._log(f"Making Vertex AI request to {model}...")
+        
+        try:
+            # Build model name for Vertex AI
+            model_name = f"publishers/google/models/{model}"
+            
+            # Convert contents to Vertex AI format
+            prompt_text = ""
+            for content in contents:
+                if "parts" in content:
+                    for part in content["parts"]:
+                        if "text" in part:
+                            prompt_text += part["text"]
+            
+            # Configure image generation
+            config_kwargs = {
+                "response_modalities": ["IMAGE"],
+            }
+            
+            if generation_config:
+                if "aspectRatio" in generation_config:
+                    config_kwargs["image_config"] = self._types.ImageConfig(
+                        aspect_ratio=generation_config["aspectRatio"],
+                    )
+            
+            config = self._types.GenerateContentConfig(**config_kwargs)
+            
+            # Generate image using streaming API
+            response_chunks = []
+            for chunk in self._client.models.generate_content_stream(
+                model=model_name,
+                contents=[prompt_text],
+                config=config,
+            ):
+                response_chunks.append(chunk)
+            
+            # Convert to compatible format
+            return {"candidates": [{"content": {"parts": [{"text": "Image generated via Vertex AI"}]}}]}
+            
+        except Exception as e:
+            raise RuntimeError(f"Vertex AI request failed: {e!s}")
+    
+    def _make_ai_studio_request(
+        self, model: str, contents: list[dict[str, Any]], generation_config: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Make a request to Google AI Studio API."""
         headers = {
             "Content-Type": "application/json",
         }
@@ -243,7 +371,7 @@ IMPORTANT - NO FIGURE NUMBERS:
         if generation_config:
             payload["generationConfig"] = generation_config
 
-        self._log(f"Making request to {model}...")
+        self._log(f"Making AI Studio request to {model}...")
 
         try:
             # Google Gemini API format: POST /models/{model}:generateContent?key={api_key}
@@ -355,7 +483,7 @@ IMPORTANT - NO FIGURE NUMBERS:
 
     def generate_image(self, prompt: str) -> bytes | None:
         """
-        Generate an image using Google Gemini image generation model.
+        Generate an image using Google Gemini or Vertex AI.
 
         Args:
             prompt: Description of the diagram to generate
@@ -364,13 +492,66 @@ IMPORTANT - NO FIGURE NUMBERS:
             Image bytes or None if generation failed
         """
         self._last_error = None  # Reset error
-
+        
+        if self.use_vertex:
+            return self._generate_image_vertex(prompt)
+        else:
+            return self._generate_image_ai_studio(prompt)
+    
+    def _generate_image_vertex(self, prompt: str) -> bytes | None:
+        """Generate image using Vertex AI (Gemini Enterprise Agent Platform)."""
+        try:
+            self._log(f"Using Vertex AI with model: {self.image_model}")
+            
+            # Build model name for Vertex AI
+            model_name = f"publishers/google/models/{self.image_model}"
+            
+            # Configure image generation
+            config = self._types.GenerateContentConfig(
+                response_modalities=["IMAGE"],
+            )
+            
+            # Generate image using streaming API
+            last_image_data = None
+            chunk_count = 0
+            
+            for chunk in self._client.models.generate_content_stream(
+                model=model_name,
+                contents=[prompt],
+                config=config,
+            ):
+                if chunk.parts is None:
+                    continue
+                
+                for part in chunk.parts:
+                    if part.inline_data is not None:
+                        chunk_count += 1
+                        last_image_data = part.inline_data.data
+            
+            if last_image_data:
+                self._log(f"✓ Generated image via Vertex AI ({len(last_image_data)} bytes, {chunk_count} chunks)")
+                return last_image_data
+            else:
+                self._last_error = "No image data in Vertex AI response"
+                self._log(f"✗ {self._last_error}")
+                return None
+                
+        except Exception as e:
+            self._last_error = f"Vertex AI generation failed: {e!s}"
+            self._log(f"✗ {self._last_error}")
+            import traceback
+            if self.verbose:
+                traceback.print_exc()
+            return None
+    
+    def _generate_image_ai_studio(self, prompt: str) -> bytes | None:
+        """Generate image using Google AI Studio."""
         # Gemini API content format
         contents = [{"role": "user", "parts": [{"text": prompt}]}]
         
         # Generation config for image generation
         generation_config = {
-            "responseModalities": ["image", "text"],  # Request image output
+            "responseModalalities": ["image", "text"],  # Request image output
         }
 
         try:
