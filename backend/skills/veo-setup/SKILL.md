@@ -1,9 +1,13 @@
 ---
 name: veo-setup
-description: Configure Google Cloud project and authentication for Veo video generation. Creates or configures GCP project, enables APIs, sets up service account, and configures environment variables.
+description: Configure Google Cloud project and authentication for Veo video generation via Gemini Enterprise Agent Platform (Vertex AI). Creates or configures GCP project, enables Vertex AI API, sets up service account, and configures environment variables. Uses GCP Vertex AI, NOT Google AI Studio.
 ---
 
-This skill configures Google Cloud Platform for Veo video generation. Handles project creation, API enablement, service account setup, and environment variable configuration.
+This skill configures **Google Cloud Vertex AI** (Gemini Enterprise Agent Platform) for Veo video generation.
+
+⚠️ **Important**: This configures **Vertex AI** (`aiplatform.googleapis.com`), NOT Google AI Studio (`generativelanguage.googleapis.com`).
+
+Handles project creation, Vertex AI API enablement, service account setup, and environment variable configuration.
 
 ## Prerequisites Check
 

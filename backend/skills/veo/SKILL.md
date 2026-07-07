@@ -1,9 +1,13 @@
 ---
 name: veo
-description: AI video generation using Google Veo 3 via Vertex AI. Creates short-form video content optimized for landing pages, marketing materials, and UI backgrounds. Supports text-to-video generation with automatic prompt engineering for seamless loops, hero sections, and ambient motion.
+description: AI video generation using Google Veo 3 via Gemini Enterprise Agent Platform (Vertex AI). Creates short-form video content optimized for landing pages, marketing materials, and UI backgrounds. Supports text-to-video generation with automatic prompt engineering for seamless loops, hero sections, and ambient motion. Uses GCP Vertex AI, NOT Google AI Studio.
 ---
 
-This skill transforms user intent into cinematic video using Google Veo 3.1. Every frame deliberate. Every movement purposeful. Generate videos that burn into memory—not generic stock footage that fades into noise.
+This skill transforms user intent into cinematic video using Google Veo 3.1 via **Gemini Enterprise Agent Platform** (Google Cloud Vertex AI). 
+
+⚠️ **Important**: This skill uses **Google Cloud Vertex AI** (`aiplatform.googleapis.com`), NOT Google AI Studio (`generativelanguage.googleapis.com`). Billing goes through your GCP project.
+
+Every frame deliberate. Every movement purposeful. Generate videos that burn into memory—not generic stock footage that fades into noise.
 
 ---
 
@@ -338,12 +342,60 @@ Static wide shot of minimalist interior, single beam of light slowly traveling a
 
 ## Implementation
 
+### Platform: Gemini Enterprise Agent Platform (Vertex AI)
+
+This skill uses **Google Cloud Vertex AI** (Gemini Enterprise Agent Platform), NOT Google AI Studio:
+- **API Endpoint**: `aiplatform.googleapis.com` (Vertex AI)
+- **NOT**: `generativelanguage.googleapis.com` (AI Studio)
+- **Billing**: Goes through your GCP project billing
+- **Authentication**: Uses GCP Application Default Credentials or Service Account
+
 ### Environment Setup
+
 Required environment variables:
 ```bash
+# GCP Project Configuration
 GOOGLE_CLOUD_PROJECT=your-project-id
 GOOGLE_CLOUD_LOCATION=us-central1
-GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+
+# Authentication (choose one method):
+
+# Method 1: Application Default Credentials (ADC) - Recommended
+# Run: gcloud auth application-default login
+GOOGLE_APPLICATION_CREDENTIALS=$HOME/.config/gcloud/application_default_credentials.json
+
+# Method 2: Service Account Key
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+```
+
+### Authentication Setup
+
+**Option 1: Application Default Credentials (Recommended)**
+```bash
+# Login with your Google account
+gcloud auth application-default login
+
+# Verify it works
+gcloud auth application-default print-access-token
+```
+
+**Option 2: Service Account Key**
+```bash
+# Create service account (if not exists)
+gcloud iam service-accounts create veo-generator \
+  --display-name="Veo Video Generator"
+
+# Grant Vertex AI User role
+gcloud projects add-iam-policy-binding $GOOGLE_CLOUD_PROJECT \
+  --member="serviceAccount:veo-generator@$GOOGLE_CLOUD_PROJECT.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+
+# Create and download key
+gcloud iam service-accounts keys create ~/veo-service-account.json \
+  --iam-account=veo-generator@$GOOGLE_CLOUD_PROJECT.iam.gserviceaccount.com
+
+# Set environment variable
+export GOOGLE_APPLICATION_CREDENTIALS="$HOME/veo-service-account.json"
 ```
 
 ### Generation Script
@@ -410,6 +462,27 @@ Video generation takes 2-4 minutes. The script:
 3. Polls for completion
 4. Downloads video to output path
 5. Reports success with file path
+
+### Reference Image Support (New!)
+Veo 3.1 supports reference images for style consistency across multiple clips:
+
+```bash
+# Extract a frame from existing video
+ffmpeg -i clip1.mp4 -ss 00:00:04 -vframes 1 reference.jpg
+
+# Generate next clip with reference image
+npx ts-node scripts/veo-generate.ts \
+  --prompt "Continue scene with same character and style" \
+  --image ./reference.jpg \
+  --output ./clip2.mp4
+```
+
+**Best practices for reference images:**
+- Use frames from previously generated videos
+- Extract mid-scene frames (not transitions)
+- Ensure reference shows the main character/subject clearly
+- Match aspect ratio between reference and output
+- Use same model for all clips (veo-3.1-generate-001)
 
 ### Error Handling
 - **Safety filter**: Prompt modification suggestions provided

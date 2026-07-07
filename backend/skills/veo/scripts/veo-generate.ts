@@ -25,6 +25,7 @@ import { execFileSync } from 'child_process'
 
 interface VeoConfig {
   prompt: string
+  imagePath?: string  // Path to reference image for style consistency
   aspectRatio?: '16:9' | '9:16'
   durationSeconds?: 4 | 6 | 8
   resolution?: '720p' | '1080p'
@@ -75,11 +76,29 @@ interface OperationStatus {
 // Configuration
 // ============================================================================
 
+// ============================================================================
+// Gemini Enterprise Agent Platform Configuration
+// ============================================================================
+// This script uses Google Cloud Vertex AI (Gemini Enterprise Agent Platform)
+// NOT Google AI Studio (generativelanguage.googleapis.com)
+//
+// Required environment variables:
+//   GOOGLE_CLOUD_PROJECT - Your GCP project ID
+//   GOOGLE_CLOUD_LOCATION - Region (default: us-central1)
+//   GOOGLE_APPLICATION_CREDENTIALS - Path to service account JSON or ADC
+//
+// Authentication methods:
+//   1. Application Default Credentials (ADC): gcloud auth application-default login
+//   2. Service Account Key: GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
+//
+// Billing: Vertex AI charges go through your GCP project billing
+// ============================================================================
+
 const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT_ID
 const LOCATION = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1'
 const CREDENTIALS_PATH = process.env.GOOGLE_APPLICATION_CREDENTIALS
 
-const DEFAULT_CONFIG: Required<Omit<VeoConfig, 'prompt' | 'seed'>> = {
+const DEFAULT_CONFIG: Required<Omit<VeoConfig, 'prompt' | 'seed' | 'imagePath'>> = {
   aspectRatio: '16:9',
   durationSeconds: 8,
   resolution: '720p',
@@ -243,10 +262,27 @@ async function submitGeneration(config: VeoConfig, token: string): Promise<strin
   const model = config.model || DEFAULT_CONFIG.model
   const endpoint = `https://${LOCATION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${model}:predictLongRunning`
 
+  // Build instance with optional reference image
+  const instance: any = {
+    prompt: config.prompt,
+  }
+
+  // Add reference image if provided (base64 encoded)
+  if (config.imagePath && fs.existsSync(config.imagePath)) {
+    const imageBuffer = fs.readFileSync(config.imagePath)
+    const base64Image = imageBuffer.toString('base64')
+    // Determine mime type from file extension
+    const ext = path.extname(config.imagePath).toLowerCase()
+    const mimeType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg'
+    instance.image = {
+      bytesBase64Encoded: base64Image,
+      mimeType: mimeType,
+    }
+    console.log(`   Reference image: ${config.imagePath} (${mimeType})`)
+  }
+
   const requestBody = {
-    instances: [{
-      prompt: config.prompt,
-    }],
+    instances: [instance],
     parameters: {
       aspectRatio: config.aspectRatio || DEFAULT_CONFIG.aspectRatio,
       durationSeconds: config.durationSeconds || DEFAULT_CONFIG.durationSeconds,
@@ -442,6 +478,7 @@ Options:
   --duration          4, 6, or 8 seconds (default: 8)
   --resolution        720p or 1080p (default: 720p)
   --audio             Enable audio generation (default: false)
+  --image             Path to reference image for style consistency (optional)
   --model             veo-3.1-generate-001 or veo-3.1-fast-generate-001
   --seed              Seed for reproducibility
   --samples           Number of videos to generate (1-4, default: 1)
@@ -465,12 +502,19 @@ Examples:
     --resolution 1080p \\
     --audio \\
     --output ./product.mp4
+
+  # With reference image for style consistency
+  npx ts-node veo-generate.ts \\
+    --prompt "Continue the scene with the same character" \\
+    --image ./reference-frame.jpg \\
+    --output ./continued.mp4
 `)
 }
 
 function parseArgs(args: string[]): { config: VeoConfig; output: string } | null {
   const config: VeoConfig = { prompt: '' }
   let output = './veo-output.mp4'
+  let imagePath: string | undefined
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
@@ -539,7 +583,21 @@ function parseArgs(args: string[]): { config: VeoConfig; output: string } | null
         }
         i++
         break
+
+      case '--image':
+        imagePath = next
+        i++
+        break
     }
+  }
+
+  // Validate image path if provided
+  if (imagePath) {
+    if (!fs.existsSync(imagePath)) {
+      console.error(`Error: Image file not found: ${imagePath}`)
+      return null
+    }
+    config.imagePath = imagePath
   }
 
   if (!config.prompt) {
