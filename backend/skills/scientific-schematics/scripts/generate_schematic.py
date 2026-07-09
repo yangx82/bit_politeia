@@ -51,16 +51,24 @@ def _load_env_file():
         has_dotenv = False
 
     # Potential locations to check
-    search_dirs = [Path.cwd()]
+    # Priority: skill directory > CWD > parent directories
+    search_dirs = []
     
-    # Add parent directories of CWD
+    # 1. Skill directory (highest priority - where .env is stored)
+    skill_dir = Path(__file__).resolve().parent.parent  # scripts/ -> scientific-schematics/
+    search_dirs.append(skill_dir)
+    
+    # 2. Current working directory
+    search_dirs.append(Path.cwd())
+    
+    # 3. Parent directories of CWD
     cwd = Path.cwd()
     for _ in range(5):
         cwd = cwd.parent
         search_dirs.append(cwd)
         if cwd == cwd.parent: break
 
-    # Add parent directories of the script itself
+    # 4. Parent directories of the script itself
     script_dir = Path(__file__).resolve().parent
     for _ in range(5):
         search_dirs.append(script_dir)
@@ -139,13 +147,13 @@ Environment Variables:
   
   Get AI Studio key at: https://aistudio.google.com/app/apikey
   For Vertex AI, see: https://docs.cloud.google.com/gemini-enterprise-agent-platform
-        """,
+        """
+    )
     parser.add_argument(
         "--provider",
         default="vertex",
         choices=["vertex", "ai-studio"],
         help="Image generation provider (default: vertex)",
-    ),
     )
 
     parser.add_argument("prompt", help="Description of the diagram to generate")
@@ -211,6 +219,9 @@ Environment Variables:
             sys.exit(1)
     else:
         # Vertex AI mode - check for project ID
+        # Load .env file first
+        _load_env_file()
+        
         project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("VERTEX_PROJECT_ID")
         if not project_id:
             print("Error: Vertex AI requires GOOGLE_CLOUD_PROJECT environment variable")

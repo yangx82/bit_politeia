@@ -47,35 +47,87 @@ except ImportError:
 
 
 def _load_env_file():
-    """Load .env file from current directory, parent directories, or package directory."""
+    """Load .env file from skill directory, current directory, parent directories, or package directory.
+    
+    Priority: skill directory > current working directory > parent directories > package directory
+    """
     try:
         from dotenv import load_dotenv
+        has_dotenv = True
     except ImportError:
-        return False
+        has_dotenv = False
     
-    # Try current working directory first
+    def parse_env_content(content):
+        """Simple manual parser for .env files."""
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip("'").strip('"')
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    
+    # Priority 1: Skill directory (highest priority)
+    skill_dir = Path(__file__).resolve().parent.parent  # scripts/ -> scientific-slides/
+    env_path = skill_dir / ".env"
+    if env_path.exists():
+        if has_dotenv:
+            load_dotenv(dotenv_path=env_path, override=False)
+        else:
+            try:
+                with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                    parse_env_content(f.read())
+            except Exception:
+                pass
+        return True
+    
+    # Priority 2: Current working directory
     env_path = Path.cwd() / ".env"
     if env_path.exists():
-        load_dotenv(dotenv_path=env_path, override=False)
+        if has_dotenv:
+            load_dotenv(dotenv_path=env_path, override=False)
+        else:
+            try:
+                with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                    parse_env_content(f.read())
+            except Exception:
+                pass
         return True
         
-    # Try parent directories (up to 5 levels)
+    # Priority 3: Parent directories (up to 5 levels)
     cwd = Path.cwd()
     for _ in range(5):
+        cwd = cwd.parent
         env_path = cwd / ".env"
         if env_path.exists():
-            load_dotenv(dotenv_path=env_path, override=False)
+            if has_dotenv:
+                load_dotenv(dotenv_path=env_path, override=False)
+            else:
+                try:
+                    with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                        parse_env_content(f.read())
+                except Exception:
+                    pass
             return True
-        cwd = cwd.parent
         if cwd == cwd.parent:
             break
     
-    # Try the package's parent directory
+    # Priority 4: Package parent directory
     script_dir = Path(__file__).resolve().parent
     for _ in range(5):
         env_path = script_dir / ".env"
         if env_path.exists():
-            load_dotenv(dotenv_path=env_path, override=False)
+            if has_dotenv:
+                load_dotenv(dotenv_path=env_path, override=False)
+            else:
+                try:
+                    with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                        parse_env_content(f.read())
+                except Exception:
+                    pass
             return True
         script_dir = script_dir.parent
         if script_dir == script_dir.parent:

@@ -59,16 +59,24 @@ def _load_env_file():
         has_dotenv = False
 
     # Potential locations to check
-    search_dirs = [Path.cwd()]
+    # Priority: skill directory > CWD > parent directories
+    search_dirs = []
     
-    # Add parent directories of CWD
+    # 1. Skill directory (highest priority - where .env is stored)
+    skill_dir = Path(__file__).resolve().parent.parent  # scripts/ -> scientific-schematics/
+    search_dirs.append(skill_dir)
+    
+    # 2. Current working directory
+    search_dirs.append(Path.cwd())
+    
+    # 3. Parent directories of CWD
     cwd = Path.cwd()
     for _ in range(5):
         cwd = cwd.parent
         search_dirs.append(cwd)
         if cwd == cwd.parent: break
 
-    # Add parent directories of the script itself
+    # 4. Parent directories of the script itself
     script_dir = Path(__file__).resolve().parent
     for _ in range(5):
         search_dirs.append(script_dir)
@@ -1034,15 +1042,25 @@ Environment:
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
+    
+    # Load .env file first
+    _load_env_file()
 
-    # Check for API key
+    # Check if using Vertex AI (Gemini Enterprise Agent Platform)
+    use_vertex = os.getenv("GOOGLE_GENAI_USE_ENTERPRISE", "false").lower() in ("true", "1", "yes")
+    
+    # Check for API key (only needed for AI Studio, not Vertex AI)
     api_key = args.api_key or os.getenv("GEMINI_API_KEY")
-    if not api_key:
+    if not api_key and not use_vertex:
         print("Error: GEMINI_API_KEY environment variable not set")
         print("\nSet it with:")
         print("  export GEMINI_API_KEY='your_api_key'")
         print("\nOr provide via --api-key flag")
         print("\nGet your API key from: https://aistudio.google.com/app/apikey")
+        print("\nOr use Vertex AI (Gemini Enterprise Agent Platform) instead:")
+        print("  export GOOGLE_CLOUD_PROJECT=your-project-id")
+        print("  export GOOGLE_CLOUD_LOCATION=global")
+        print("  export GOOGLE_GENAI_USE_ENTERPRISE=true")
         sys.exit(1)
 
     # Validate iterations - enforce max of 2
