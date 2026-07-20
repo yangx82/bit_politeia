@@ -40,7 +40,9 @@ def _load_env_file():
     Supports manual parsing if python-dotenv is not installed.
     """
     def parse_env_content(content):
-        """Simple manual parser for .env files."""
+        """Simple manual parser for .env files.
+        Overrides empty environment variables with .env values.
+        """
         for line in content.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
@@ -49,7 +51,8 @@ def _load_env_file():
                 key, value = line.split("=", 1)
                 key = key.strip()
                 value = value.strip().strip("'").strip('"')
-                if key and key not in os.environ:
+                # Override if key not in env OR if current env value is empty
+                if key and (key not in os.environ or not os.environ.get(key)):
                     os.environ[key] = value
 
     try:

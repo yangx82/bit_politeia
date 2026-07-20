@@ -23,8 +23,8 @@ class BitPoliteiaContextManager:
         self.aux_url = os.getenv("AUX_MODEL_URL", agent_service.base_url)
         self.aux_name = os.getenv("AUX_MODEL_NAME", agent_service.model)
         self.aux_key = os.getenv("AUX_MODEL_KEY", agent_service.api_key)
-        self.aux_context_len = int(os.getenv("AUX_CONTEXT_WINDOW", "200000"))
-        self.threshold_percent = float(os.getenv("CONTEXT_THRESHOLD_PERCENT", "0.7"))
+        self.aux_context_len = int(os.getenv("AUX_CONTEXT_WINDOW", "1000000"))
+        self.threshold_percent = float(os.getenv("CONTEXT_THRESHOLD_PERCENT", "0.75"))
 
         # Internal LLM client for summarization tasks
         self.summarizer_llm = ChatOpenAI(
@@ -37,8 +37,8 @@ class BitPoliteiaContextManager:
 
         self.threshold_tokens = int(self.aux_context_len * self.threshold_percent)
 
-        # Qwen/DashScope Tool-Calling Penalty: Limit is ~200k tokens
-        self.tool_mode_limit = 200000
+        # Dynamic tool mode limit (defaults to AUX_CONTEXT_WINDOW, e.g. 1,000,000 for Bailian qwen3.7-plus)
+        self.tool_mode_limit = int(os.getenv("TOOL_MODE_LIMIT", str(self.aux_context_len)))
         self.is_tool_mode = True  # Agent always uses tools in this system
         
         # State map for incremental context summarization
@@ -410,6 +410,77 @@ class BitPoliteiaContextManager:
             
         return result, pruned_count
 
+    def _get_message_char_length(self, msg: BaseMessage) -> int:
+        """Estimate total character length of a message, including content, tool_calls, and kwargs."""
+        length = 0
+        if isinstance(msg.content, str):
+            length += len(msg.content)
+        elif isinstance(msg.content, list):
+            import json
+            try:
+                length += len(json.dumps(msg.content))
+            except Exception:
+                length += sum(len(str(item)) for item in msg.content)
+
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            import json
+            try:
+                length += len(json.dumps(msg.tool_calls))
+            except Exception:
+                length += len(str(msg.tool_calls))
+
+        if hasattr(msg, "additional_kwargs") and msg.additional_kwargs:
+            import json
+            try:
+                length += len(json.dumps(msg.additional_kwargs))
+            except Exception:
+                length += len(str(msg.additional_kwargs))
+
+        return length
+
+    def _prune_large_tool_payloads(self, messages: list[BaseMessage], max_payload_len: int = 1500) -> list[BaseMessage]:
+        """
+        Prune huge tool call arguments (e.g. write_to_file CodeContent) and huge tool responses
+        in older turns to prevent context explosion during programming tasks.
+        """
+        if len(messages) <= 2:
+            return messages
+
+        import copy
+        pruned_messages = []
+        # Keep the last 2 messages (active turn) un-pruned so active context is intact
+        cutoff_index = len(messages) - 2
+
+        for idx, msg in enumerate(messages):
+            if idx >= cutoff_index:
+                pruned_messages.append(msg)
+                continue
+
+            if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
+                msg_copy = copy.deepcopy(msg)
+                modified = False
+                for tc in msg_copy.tool_calls:
+                    args = tc.get("args", {})
+                    if isinstance(args, dict):
+                        for key in ["CodeContent", "ReplacementContent", "TargetContent", "code", "content"]:
+                            if key in args and isinstance(args[key], str) and len(args[key]) > max_payload_len:
+                                old_len = len(args[key])
+                                args[key] = args[key][:max_payload_len] + f"\n... [Truncated {old_len - max_payload_len} chars of code payload]"
+                                modified = True
+                pruned_messages.append(msg_copy if modified else msg)
+            elif isinstance(msg, ToolMessage):
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                if content and len(content) > max_payload_len:
+                    msg_copy = copy.copy(msg)
+                    msg_copy.content = content[:max_payload_len] + f"\n... [Truncated {len(content) - max_payload_len} chars of tool output]"
+                    pruned_messages.append(msg_copy)
+                else:
+                    pruned_messages.append(msg)
+            else:
+                pruned_messages.append(msg)
+
+        return pruned_messages
+
     async def _ensure_compact_history(
         self,
         history: list[BaseMessage],
@@ -440,9 +511,12 @@ class BitPoliteiaContextManager:
             )
             effective_threshold = min_threshold
 
-        # 2. Estimate tokens from conversation history
+        # 1.5 Pre-pass: Prune massive code/tool payloads in older turns
+        history = self._prune_large_tool_payloads(history)
+
+        # 2. Estimate tokens from conversation history (including tool_calls and kwargs)
         # Use a more conservative ratio for Chinese/Multilingual content (1.2 chars/token)
-        history_chars = sum(len(m.content) for m in history if isinstance(m.content, str))
+        history_chars = sum(self._get_message_char_length(m) for m in history)
         approx_tokens = history_chars / 1.2
 
         # 3. Log context breakdown for debugging
@@ -521,16 +595,20 @@ class BitPoliteiaContextManager:
             status="archived",
         )
 
-        # 5. Construct Compacted History
-        compaction_msg = HumanMessage(
-            content=f"[System Note: Earlier turns in this conversation have been compacted to save space]\n\n"
-            f"### [ITERATIVE CONTEXT SUMMARY - ID: {checkpoint_id}]\n"
-            f"Here is the summary of what has been discussed and achieved so far:\n\n"
-            f"{summary_text}\n\n"
-            f"Use this summary to maintain the thread and continue from where we left off."
-        )
+        result_messages = head + [compaction_msg] + tail
 
-        return head + [compaction_msg] + tail
+        # 6. Post-Compression Safety Net: Verify total tokens do not exceed hard limit
+        post_chars = sum(self._get_message_char_length(m) for m in result_messages)
+        post_tokens = post_chars / 1.2
+        if post_tokens + static_tokens > (absolute_limit * 0.85):
+            logger.warning(
+                f"Post-compression history ({post_tokens:.0f}t + {static_tokens:.0f}t = {post_tokens + static_tokens:.0f}t) "
+                f"still exceeds safety threshold ({absolute_limit * 0.85:.0f}t). Applying final hard truncation."
+            )
+            if len(result_messages) > 8:
+                result_messages = result_messages[:2] + [HumanMessage(content="[System Note: Older conversation turns hard-dropped to fit model context limit]")] + result_messages[-6:]
+
+        return result_messages
 
     async def _summarize_middle_turns(
         self, messages: list[BaseMessage], task_id: str | None, session_id: str

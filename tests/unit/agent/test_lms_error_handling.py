@@ -126,3 +126,29 @@ async def test_sglang_validation_400_handling():
     assert context.continuation_req is False
     assert context.continuation_reason == "FATAL_LLM_REQUEST_VALIDATION_ERROR"
     assert "请求参数验证失败（400 Bad Request）" in context.final_answer
+
+
+@pytest.mark.anyio
+async def test_dashscope_260096_context_length_handling():
+    """
+    验证 DashScope/Qwen 抛出 260096 token 长度限制异常时的错误处理与自动修复重试逻辑
+    """
+    session = Session(session_id="test_session", entity_id="user1", channel="resident")
+    msg = InboundMessage(channel="resident", sender_id="user1", session_id="test_session", content="编写代码")
+    
+    context = PipelineContext(session=session, input_message=msg)
+    context.metadata["messages"] = []
+    
+    agent = MagicMock()
+    agent.llm.ainvoke = AsyncMock(side_effect=Exception(
+        "<400> InternalError.Algo.InvalidParameter: Range of input length should be [1, 260096]"
+    ))
+    
+    stage = PlanStage()
+    await stage.run(context, agent)
+    
+    assert context.stop_execution is True
+    assert context.continuation_req is True
+    assert "TOKEN_LENGTH_EXCEEDED" in context.continuation_reason
+    assert "LLM 限制提示：输入内容过长" in context.final_answer
+

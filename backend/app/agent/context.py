@@ -95,7 +95,9 @@ Reference these rules for all governance decisions, election proposals, and grou
         else:
             role_block = """# CURRENT DOMAIN: Private User Interface
 [ROLE AWARENESS] You are communicating directly with your human Resident/Owner.
-- Explain your thoughts naturally and confirm actions."""
+- **ACTION MANDATE**: If you inform the resident that you are going to perform an action (e.g. sending a P2P message, creating a group, querying network topology, searching literature, writing code, reading files), you MUST invoke the corresponding tool (e.g., `read_file`, `write_file`, `execute_shell_command`, `send_p2p_message`) in the exact same turn.
+- **CODING & FILE TASKS**: When tasked with writing Python programs or analyzing data files (such as CSV/metabolic data), use `list_dir`, `read_file`, `write_file`, `edit_file`, or `execute_shell_command` IMMEDIATELY to inspect files, write Python scripts, and run analysis. Do NOT just say "让我查看" or "现在为您编写" without attaching the tool call.
+- **NO PLACEHOLDER PROMISES**: NEVER output text like "现在我来发送..." or "让我使用Python读取..." without actually attaching the tool call in the response."""
             parts.append(role_block)
 
         # 7. Conversation Context Awareness (Group vs Direct)

@@ -612,7 +612,7 @@ class AgentService:
         p2p_reply_delay: int = 5,
         agent_language: str = "中文",
         ralph_wiggum_mode: bool = False,
-        llm_timeout: float = 60.0,
+        llm_timeout: float = 300.0,
     ):
         try:
             self.scheduler.start()
@@ -929,7 +929,7 @@ class AgentService:
         p2p_reply_delay = int(json_config.get("p2p_reply_delay", os.getenv("AGENT_P2P_REPLY_DELAY", "5")))
         agent_language = json_config.get("agent_language", os.getenv("AGENT_LANGUAGE", "中文"))
         ralph_wiggum_mode = json_config.get("ralph_wiggum_mode", os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true")
-        llm_timeout = float(json_config.get("llm_timeout", os.getenv("AGENT_LLM_TIMEOUT", "180.0")))
+        llm_timeout = float(json_config.get("llm_timeout", os.getenv("AGENT_LLM_TIMEOUT", "300.0")))
         verbose_llm = json_config.get("verbose_llm", os.getenv("AGENT_VERBOSE_LLM", "true").lower() == "true")
         bootstrap_verify = json_config.get("bootstrap_verify", os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true")
         self.enable_welcome = os.getenv("AGENT_ENABLE_WELCOME", "true").lower() == "true"
@@ -1198,7 +1198,7 @@ class AgentService:
                 meta = {"epoch": epoch}
             else:
                 # Detect token/length errors to trigger force compression
-                is_token_error = any(kw in cont_reason.lower() for kw in ["token", "length", "202745", "context_length_exceeded", "algo.invalidparameter"])
+                is_token_error = any(kw in cont_reason.lower() for kw in ["token", "length", "202745", "260096", "context_length_exceeded", "algo.invalidparameter", "token_length_exceeded"])
                 meta = {"epoch": epoch, "force_compact": is_token_error}
                 prompt = f"System Control: Execution interrupted by API Error: {cont_reason}. Diagnose the issue, drop redundant context if it was a token length error, and adjust your strategy before continuing."
 
@@ -2233,6 +2233,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         # Ensure status object is up to date with instance attributes
         self.status.name = self.name
         self.status.personality = self.personality
+        self.status.model = self.model
+        self.status.base_url = self.base_url
 
         if p2p_service.local_node:
             node_id = p2p_service.local_node.node_id

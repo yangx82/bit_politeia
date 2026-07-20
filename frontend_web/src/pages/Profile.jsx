@@ -56,6 +56,17 @@ const Profile = () => {
                 nodeId: statusData.node_id,
                 agentPubKey: statusData.public_key
             }))
+            if (statusData.model) {
+                setAgentConfig(prev => ({
+                    ...prev,
+                    model: statusData.model,
+                    llmBaseUrl: statusData.base_url || prev.llmBaseUrl
+                }))
+                localStorage.setItem('bp_model', statusData.model)
+                if (statusData.base_url) {
+                    localStorage.setItem('bp_llm_base_url', statusData.base_url)
+                }
+            }
         } catch (err) {
             console.error('Failed to fetch balance:', err)
         }

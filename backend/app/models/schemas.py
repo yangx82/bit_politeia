@@ -44,6 +44,8 @@ class AgentStatus(BaseModel):
     node_id: str | None = None
     relay_connected: bool = False
     ralph_wiggum_mode: bool = False
+    model: str | None = None
+    base_url: str | None = None
 
 
 class P2PMessage(BaseModel):

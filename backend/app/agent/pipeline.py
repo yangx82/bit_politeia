@@ -260,11 +260,20 @@ class PlanStage(PipelineStage):
             err_msg = str(e)
             logger.error(f"LLM API Error during pipeline plan stage: {err_msg}")
             
-            # Detect context length errors (e.g. DashScope 400 Algo.InvalidParameter)
-            if "202745" in err_msg or "context_length_exceeded" in err_msg.lower() or "too many tokens" in err_msg.lower():
-                user_friendly_err = "LLM 限制提示：输入内容过长（当前模型在工具调用模式下限制约 20 万 tokens）。系统正在尝试自动压缩上下文并重试。"
+            # Detect context length errors (e.g. DashScope/Qwen 400 Algo.InvalidParameter 260096 / 202745)
+            is_context_limit_err = (
+                "202745" in err_msg
+                or "260096" in err_msg
+                or "range of input length" in err_msg.lower()
+                or "context_length_exceeded" in err_msg.lower()
+                or "too many tokens" in err_msg.lower()
+                or "maximum context length" in err_msg.lower()
+                or ("invalidparameter" in err_msg.lower() and "length" in err_msg.lower())
+            )
+            if is_context_limit_err:
+                user_friendly_err = "LLM 限制提示：输入内容过长（超出了模型单次请求 token 限制）。系统正在尝试自动压缩上下文与代码负载并重试。"
                 context.continuation_req = True
-                context.continuation_reason = f"API_ERROR: {err_msg}"
+                context.continuation_reason = f"TOKEN_LENGTH_EXCEEDED: {err_msg}"
             elif "no models loaded" in err_msg.lower() or "lms load" in err_msg.lower():
                 user_friendly_err = "LLM 服务提示：当前 LM Studio 未加载任何模型。请在 LM Studio 软件的开发者页面加载模型，或使用 'lms load' 命令加载后重试。"
                 context.continuation_req = False
@@ -362,7 +371,7 @@ class PlanStage(PipelineStage):
             # 2. ALSO send to current channel if it's not the resident (e.g. Feishu)
             # This ensures cross-channel users see the 'Agent is thinking' bubbles.
             if context.input_message.channel != "resident":
-                 await agent.message_bus.publish_outbound(OutboundMessage(
+                await agent.message_bus.publish_outbound(OutboundMessage(
                     channel=context.input_message.channel,
                     session_id=context.input_message.session_id,
                     content=content_to_publish,
@@ -373,6 +382,32 @@ class PlanStage(PipelineStage):
             context.tool_calls = response.tool_calls
             messages.append(response)  # Add to dialog for next turn
         else:
+            # Check for promised action without tool call (false completion)
+            content_str = str(response.content or "")
+            action_promise_keywords = [
+                "现在我来向", "现在我来", "马上向", "我来发送", "准备发送",
+                "我来向它发送", "正在为您发送", "正在为您创建", "现在为您", "马上为您",
+                "我来为您", "正在执行", "现在启动", "让我使用python", "让我读取",
+                "让我查看", "让我先查看", "使用python读取", "编写完整的分析程序",
+                "查看csv文件", "读取csv文件", "编写python程序"
+            ]
+            has_promised_action = any(kw in content_str.lower() for kw in action_promise_keywords) or (content_str.strip().endswith("：") or content_str.strip().endswith(":"))
+            retry_count = context.metadata.get("missing_tool_retry_count", 0)
+
+            if has_promised_action and retry_count < 1 and context.input_message.channel == "resident":
+                logger.warning(f"Detected promised action in LLM response without tool_calls: '{content_str[:60]}'. Re-prompting for tool invocation.")
+                context.metadata["missing_tool_retry_count"] = retry_count + 1
+                messages.append(response)
+                messages.append(HumanMessage(content="[System Directive: You stated in your text response that you would perform an action/read files/write code, but you did not issue any tool_call (e.g. read_file, write_file, execute_shell_command, send_p2p_message). Please invoke the required tool now.]"))
+                try:
+                    retry_response = await agent.llm.ainvoke(messages)
+                    if retry_response.tool_calls:
+                        context.tool_calls = retry_response.tool_calls
+                        messages.append(retry_response)
+                        return
+                except Exception as retry_err:
+                    logger.error(f"Error during missing tool re-prompting: {retry_err}")
+
             context.final_answer = response.content
             context.stop_execution = True
 
