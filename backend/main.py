@@ -152,11 +152,28 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
+    import os
+
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    app_dir = os.path.join(backend_dir, "app")
 
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8100,
         reload=True,
-        reload_dirs=["app", "main.py"],
+        reload_dirs=[app_dir],
+        reload_excludes=[
+            "data",
+            "data/*",
+            "data/**",
+            "backend/data",
+            "backend/data/*",
+            "backend/data/**",
+            "*.csv",
+            "*.json",
+            "*.png",
+            "*.jpg",
+            "*.fig",
+        ],
     )

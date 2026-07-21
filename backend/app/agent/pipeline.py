@@ -394,19 +394,45 @@ class PlanStage(PipelineStage):
             has_promised_action = any(kw in content_str.lower() for kw in action_promise_keywords) or (content_str.strip().endswith("：") or content_str.strip().endswith(":"))
             retry_count = context.metadata.get("missing_tool_retry_count", 0)
 
-            if has_promised_action and retry_count < 1 and context.input_message.channel == "resident":
+            if has_promised_action and retry_count < 2 and context.input_message.channel == "resident":
                 logger.warning(f"Detected promised action in LLM response without tool_calls: '{content_str[:60]}'. Re-prompting for tool invocation.")
                 context.metadata["missing_tool_retry_count"] = retry_count + 1
-                messages.append(response)
-                messages.append(HumanMessage(content="[System Directive: You stated in your text response that you would perform an action/read files/write code, but you did not issue any tool_call (e.g. read_file, write_file, execute_shell_command, send_p2p_message). Please invoke the required tool now.]"))
+
+                from langchain_core.messages import AIMessage
+                clean_response = AIMessage(
+                    content=response.content,
+                    additional_kwargs={k: v for k, v in response.additional_kwargs.items() if k != "tool_calls"},
+                )
+                reprompt_msg = HumanMessage(content="[System Directive: You stated in your text response that you would write code/perform an action (e.g. '让我编写...'), but you did not output any tool_call (e.g. write_file, execute_shell_command, read_file). Please invoke the required tool now immediately. Save any resident files under 'data/resident/'.]")
+
+                clean_messages = list(messages)
+                clean_messages.append(clean_response)
+                clean_messages.append(reprompt_msg)
+
                 try:
-                    retry_response = await agent.llm.ainvoke(messages)
+                    retry_response = await agent.llm.ainvoke(clean_messages)
                     if retry_response.tool_calls:
                         context.tool_calls = retry_response.tool_calls
-                        messages.append(retry_response)
+                        context.metadata["messages"].append(clean_response)
+                        context.metadata["messages"].append(reprompt_msg)
+                        context.metadata["messages"].append(retry_response)
                         return
                 except Exception as retry_err:
                     logger.error(f"Error during missing tool re-prompting: {retry_err}")
+                    if "JSON format" in str(retry_err) or "400" in str(retry_err):
+                        try:
+                            logger.info("Attempting fallback tool call prompt with stripped context...")
+                            fallback_messages = [
+                                clean_messages[0],  # System message
+                                HumanMessage(content=f"The user wants you to fulfill their request. You previously said: '{content_str}'. Please invoke the required tool (write_file, execute_shell_command, read_file, etc.) now to execute this action. Save resident files under data/resident/.")
+                            ]
+                            fallback_resp = await agent.llm.ainvoke(fallback_messages)
+                            if fallback_resp.tool_calls:
+                                context.tool_calls = fallback_resp.tool_calls
+                                context.metadata["messages"].append(fallback_resp)
+                                return
+                        except Exception as fb_err:
+                            logger.error(f"Fallback missing tool prompt also failed: {fb_err}")
 
             context.final_answer = response.content
             context.stop_execution = True

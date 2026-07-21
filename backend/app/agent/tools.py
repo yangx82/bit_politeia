@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 
 from langchain_core.tools import tool
 
@@ -166,6 +168,94 @@ async def repair_code(issue_description: str) -> str:
         return f"Task delegated to System Repair Specialist: {issue_description}. Monitor 'system_health' thought stream for progress."
     except Exception as e:
         return f"Error delegating repair task: {e!s}"
+
+
+@tool
+async def check_python_syntax(file_path: str) -> str:
+    """
+    Check a Python file for AST and compilation syntax errors.
+    Use this tool after writing or editing a Python script to verify its validity.
+
+    Args:
+        file_path: Relative or absolute path to the Python file (e.g. data/resident/script.py).
+    """
+    try:
+        abs_path = os.path.abspath(file_path)
+        if not os.path.exists(abs_path):
+            return f"Error: File '{file_path}' does not exist."
+
+        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+            code_content = f.read()
+
+        import ast
+        import py_compile
+
+        # 1. AST Parse Check
+        try:
+            ast.parse(code_content, filename=abs_path)
+        except SyntaxError as syn_err:
+            return f"SYNTAX_ERROR: Line {syn_err.lineno}: {syn_err.msg}\nCode context: '{syn_err.text}'"
+
+        # 2. PyCompile Check
+        try:
+            py_compile.compile(abs_path, doraise=True)
+        except Exception as compile_err:
+            return f"COMPILE_ERROR: {compile_err}"
+
+        return f"PASSED: File '{file_path}' passed AST parsing and py_compile checks cleanly."
+    except Exception as e:
+        return f"Error checking python syntax: {e!s}"
+
+
+@tool
+async def verify_file_exists(file_path: str) -> str:
+    """
+    Verify that a file physically exists on disk and is non-empty.
+
+    Args:
+        file_path: Path to the target file.
+    """
+    try:
+        abs_path = os.path.abspath(file_path)
+        if not os.path.exists(abs_path):
+            return f"VERIFICATION_FAILED: File '{file_path}' does not exist."
+
+        size = os.path.getsize(abs_path)
+        if size == 0:
+            return f"VERIFICATION_FAILED: File '{file_path}' exists but is 0 bytes (empty)."
+
+        return f"VERIFICATION_PASSED: File '{file_path}' exists on disk ({size} bytes)."
+    except Exception as e:
+        return f"Error verifying file: {e!s}"
+
+
+@tool
+async def delegate_coding_task(
+    task_description: str, target_filename: str, context_notes: str | None = None
+) -> str:
+    """
+    Delegate a programming/coding task to the dedicated Coding Sub-Agent.
+    The sub-agent will write the Python code, perform AST syntax checks, save it under data/resident/, and return an automated QA report.
+
+    Args:
+        task_description: Detailed requirements for the code/script to be created or modified.
+        target_filename: Desired target file name under data/resident/ (e.g. metabolic_cage_analysis.py).
+        context_notes: Optional background context, data schema details, or initial directory paths.
+    """
+    try:
+        from app.services.agent_service import agent_service
+
+        clean_filename = os.path.basename(target_filename)
+        rel_target_path = os.path.join("data", "resident", clean_filename)
+
+        result = await agent_service.run_coding_subagent(
+            task_description=task_description,
+            target_path=rel_target_path,
+            context_notes=context_notes or "",
+        )
+        return result
+    except Exception as e:
+        return f"Error delegating coding task: {e!s}"
 
 
 @tool
@@ -855,6 +945,9 @@ AGENT_TOOLS = [
     get_scheduler_status,
     delegate_task,
     repair_code,
+    delegate_coding_task,
+    check_python_syntax,
+    verify_file_exists,
     restart_node,
     get_account_pairing_code,
     bind_account_by_code,
@@ -868,4 +961,14 @@ REPAIR_TOOLS = [
     write_file,
     edit_file,  # Exploration & Basic Edit
     submit_code_fix,  # The actual repair submission
+]
+
+# Specialized toolset for the Coding Sub-Agent
+CODING_TOOLS = [
+    read_file,
+    write_file,
+    edit_file,
+    list_dir,
+    check_python_syntax,
+    verify_file_exists,
 ]
