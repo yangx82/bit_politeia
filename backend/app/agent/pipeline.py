@@ -48,7 +48,7 @@ class PipelineStage:
         raise NotImplementedError()
 
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from ..bus.events import OutboundMessage
 from ..services.knowledge_base import knowledge_base
@@ -239,6 +239,44 @@ class SenseStage(PipelineStage):
         )
 
 
+def _compact_messages_in_flight(messages: list[BaseMessage], aggressiveness: int = 1) -> list[BaseMessage]:
+    """
+    Emergency in-flight context compression when an LLM context token limit error is caught.
+    - aggressiveness=1: Truncate large tool/human payloads (>1500 chars) and drop middle turns if history > 8 msgs.
+    - aggressiveness=2: Ultra-aggressive truncation (>500 chars) and keep only SystemMessage + last 4 msgs.
+    """
+    if not messages:
+        return messages
+
+    sys_msg = messages[0] if isinstance(messages[0], SystemMessage) else None
+    rest = messages[1:] if sys_msg else messages[:]
+
+    char_limit = 1500 if aggressiveness == 1 else 500
+    keep_recent = 8 if aggressiveness == 1 else 4
+
+    pruned_rest = []
+    for m in rest:
+        content_str = str(getattr(m, "content", ""))
+        if len(content_str) > char_limit:
+            half = char_limit // 2
+            truncated = (
+                content_str[:half]
+                + f"\n... [Payload truncated ({len(content_str)} chars -> {char_limit} chars) to fit token limit] ...\n"
+                + content_str[-half:]
+            )
+            m_copy = m.model_copy() if hasattr(m, "model_copy") else m
+            m_copy.content = truncated
+            pruned_rest.append(m_copy)
+        else:
+            pruned_rest.append(m)
+
+    if len(pruned_rest) > keep_recent:
+        pruned_rest = [pruned_rest[0]] + pruned_rest[-(keep_recent - 1):]
+
+    final_msgs = [sys_msg] + pruned_rest if sys_msg else pruned_rest
+    return final_msgs
+
+
 class PlanStage(PipelineStage):
     """Stage 2: Reasoning & Planning (LLM)."""
 
@@ -250,54 +288,64 @@ class PlanStage(PipelineStage):
             return
 
         messages = context.metadata["messages"]
-        # from ..services.agent_service import p2p_logger
-        # p2p_logger.info(f"\n[PIPELINE] Sense Messages:\n{messages}\n" + "-"*50)
-        # One turn of the ReAct loop
-        try:
-            response = await agent.llm.ainvoke(messages)
-            context.metadata["last_response"] = response
-        except Exception as e:
-            err_msg = str(e)
-            logger.error(f"LLM API Error during pipeline plan stage: {err_msg}")
-            
-            # Detect context length errors (e.g. DashScope/Qwen 400 Algo.InvalidParameter 260096 / 202745)
-            is_context_limit_err = (
-                "202745" in err_msg
-                or "260096" in err_msg
-                or "range of input length" in err_msg.lower()
-                or "context_length_exceeded" in err_msg.lower()
-                or "too many tokens" in err_msg.lower()
-                or "maximum context length" in err_msg.lower()
-                or ("invalidparameter" in err_msg.lower() and "length" in err_msg.lower())
-            )
-            if is_context_limit_err:
-                user_friendly_err = "LLM 限制提示：输入内容过长（超出了模型单次请求 token 限制）。系统正在尝试自动压缩上下文与代码负载并重试。"
-                context.continuation_req = True
-                context.continuation_reason = f"TOKEN_LENGTH_EXCEEDED: {err_msg}"
-            elif "no models loaded" in err_msg.lower() or "lms load" in err_msg.lower():
-                user_friendly_err = "LLM 服务提示：当前 LM Studio 未加载任何模型。请在 LM Studio 软件的开发者页面加载模型，或使用 'lms load' 命令加载后重试。"
-                context.continuation_req = False
-                context.continuation_reason = "FATAL_NO_MODEL_LOADED"
-            elif "failed to parse fc" in err_msg.lower() or "fc related info" in err_msg.lower():
-                user_friendly_err = "LLM 服务提示：SGLang 部署的模型解析工具调用失败（Failed to parse fc related info）。请确保启动 SGLang 服务时指定了正确的工具调用解析器参数（例如：--tool-call-parser qwen25 或 --tool-call-parser llama3）。"
-                context.continuation_req = False
-                context.continuation_reason = "FATAL_SGLANG_FC_PARSER_ERROR"
-            elif "parallel_tool_calls" in err_msg.lower() or "parallel tool calls" in err_msg.lower():
-                user_friendly_err = "LLM 服务提示：当前部署的模型/服务端不支持并行工具调用（parallel_tool_calls）。请尝试关闭并行工具调用功能或检查服务端参数配置。"
-                context.continuation_req = False
-                context.continuation_reason = "FATAL_PARALLEL_TOOL_CALLS_UNSUPPORTED"
-            elif "400" in err_msg and ("validation error" in err_msg.lower() or "bad request" in err_msg.lower()):
-                user_friendly_err = f"LLM 服务提示：请求参数验证失败（400 Bad Request）。若您使用的是 SGLang 部署的模型，请检查：1. 启动服务时是否指定了 --tool-call-parser 解析器；2. 当前模型是否支持工具调用（Function Calling）；3. 检查 SGLang 服务端的日志以获取具体参数报错信息。具体错误: {err_msg}"
-                context.continuation_req = False
-                context.continuation_reason = "FATAL_LLM_REQUEST_VALIDATION_ERROR"
-            else:
-                user_friendly_err = f"Error communicating with LLM. (Triggered Ralph Wiggum auto-heal if enabled: {err_msg})"
-                context.continuation_req = True
-                context.continuation_reason = f"API_ERROR: {err_msg}"
 
-            context.final_answer = user_friendly_err
-            context.stop_execution = True
-            return
+        response = None
+        for attempt in range(3):
+            try:
+                response = await agent.llm.ainvoke(messages)
+                context.metadata["last_response"] = response
+                context.metadata["messages"] = messages
+                break
+            except Exception as e:
+                err_msg = str(e)
+                logger.error(f"LLM API Error during pipeline plan stage (attempt {attempt+1}/3): {err_msg}")
+
+                is_context_limit_err = (
+                    "202745" in err_msg
+                    or "260096" in err_msg
+                    or "range of input length" in err_msg.lower()
+                    or "context_length_exceeded" in err_msg.lower()
+                    or "too many tokens" in err_msg.lower()
+                    or "maximum context length" in err_msg.lower()
+                    or ("invalidparameter" in err_msg.lower() and "length" in err_msg.lower())
+                )
+
+                if is_context_limit_err and attempt < 2:
+                    logger.warning(
+                        f"[{context.session.session_id}] Context limit hit. "
+                        f"Performing in-flight emergency compression (pass {attempt+1})..."
+                    )
+                    messages = _compact_messages_in_flight(messages, aggressiveness=attempt + 1)
+                    continue
+
+                if is_context_limit_err:
+                    user_friendly_err = "LLM 限制提示：单次请求输入内容过长，超出模型 token 上限。系统已自动进行紧急压缩但仍超限，建议清理会话历史或分割长文本请求。"
+                    context.continuation_req = False
+                    context.continuation_reason = f"TOKEN_LENGTH_EXCEEDED: {err_msg}"
+                elif "no models loaded" in err_msg.lower() or "lms load" in err_msg.lower():
+                    user_friendly_err = "LLM 服务提示：当前 LM Studio 未加载任何模型。请在 LM Studio 软件的开发者页面加载模型，或使用 'lms load' 命令加载后重试。"
+                    context.continuation_req = False
+                    context.continuation_reason = "FATAL_NO_MODEL_LOADED"
+                elif "failed to parse fc" in err_msg.lower() or "fc related info" in err_msg.lower():
+                    user_friendly_err = "LLM 服务提示：SGLang 部署的模型解析工具调用失败（Failed to parse fc related info）。请确保启动 SGLang 服务时指定了正确的工具调用解析器参数（例如：--tool-call-parser qwen25 或 --tool-call-parser llama3）。"
+                    context.continuation_req = False
+                    context.continuation_reason = "FATAL_SGLANG_FC_PARSER_ERROR"
+                elif "parallel_tool_calls" in err_msg.lower() or "parallel tool calls" in err_msg.lower():
+                    user_friendly_err = "LLM 服务提示：当前部署的模型/服务端不支持并行工具调用（parallel_tool_calls）。请尝试关闭并行工具调用功能或检查服务端参数配置。"
+                    context.continuation_req = False
+                    context.continuation_reason = "FATAL_PARALLEL_TOOL_CALLS_UNSUPPORTED"
+                elif "400" in err_msg and ("validation error" in err_msg.lower() or "bad request" in err_msg.lower()):
+                    user_friendly_err = f"LLM 服务提示：请求参数验证失败（400 Bad Request）。若您使用的是 SGLang 部署的模型，请检查：1. 启动服务时是否指定了 --tool-call-parser 解析器；2. 当前模型是否支持工具调用（Function Calling）；3. 检查 SGLang 服务端的日志以获取具体参数报错信息。具体错误: {err_msg}"
+                    context.continuation_req = False
+                    context.continuation_reason = "FATAL_LLM_REQUEST_VALIDATION_ERROR"
+                else:
+                    user_friendly_err = f"Error communicating with LLM. (Triggered Ralph Wiggum auto-heal if enabled: {err_msg})"
+                    context.continuation_req = True
+                    context.continuation_reason = f"API_ERROR: {err_msg}"
+
+                context.final_answer = user_friendly_err
+                context.stop_execution = True
+                return
 
         # Extract Reasoning/Thought Content
         thought_content = ""
