@@ -431,27 +431,31 @@ class PlanStage(PipelineStage):
             messages.append(response)  # Add to dialog for next turn
         else:
             # Check for promised action without tool call (false completion)
-            content_str = str(response.content or "")
+            content_str = str(response.content or "").strip()
             action_promise_keywords = [
                 "现在我来向", "现在我来", "马上向", "我来发送", "准备发送",
                 "我来向它发送", "正在为您发送", "正在为您创建", "现在为您", "马上为您",
                 "我来为您", "正在执行", "现在启动", "让我使用python", "让我读取",
                 "让我查看", "让我先查看", "使用python读取", "编写完整的分析程序",
-                "查看csv文件", "读取csv文件", "编写python程序"
+                "查看csv文件", "读取csv文件", "编写python程序", "我将使用", "准备为您编写",
+                "下面开始", "让我们查看", "我将编写", "为您生成", "为您编写", "接下来我",
+                "看我来", "写一个", "写一套", "代码如下", "程序如下", "现在开始"
             ]
-            has_promised_action = any(kw in content_str.lower() for kw in action_promise_keywords) or (content_str.strip().endswith("：") or content_str.strip().endswith(":"))
+            
+            has_colon_end = content_str.endswith("：") or content_str.endswith(":")
+            has_promised_action = any(kw in content_str.lower() for kw in action_promise_keywords) or has_colon_end
             retry_count = context.metadata.get("missing_tool_retry_count", 0)
 
-            if has_promised_action and retry_count < 2 and context.input_message.channel == "resident":
-                logger.warning(f"Detected promised action in LLM response without tool_calls: '{content_str[:60]}'. Re-prompting for tool invocation.")
+            # Universal channel interception: Apply to ALL channels (Feishu, Resident, P2P, etc.)
+            if has_promised_action and retry_count < 3:
+                logger.warning(f"[{context.input_message.channel}] Detected promised action in LLM response without tool_calls: '{content_str[:60]}'. Re-prompting for tool invocation (attempt {retry_count+1}/3).")
                 context.metadata["missing_tool_retry_count"] = retry_count + 1
 
-                from langchain_core.messages import AIMessage
                 clean_response = AIMessage(
                     content=response.content,
                     additional_kwargs={k: v for k, v in response.additional_kwargs.items() if k != "tool_calls"},
                 )
-                reprompt_msg = HumanMessage(content="[System Directive: You stated in your text response that you would write code/perform an action (e.g. '让我编写...'), but you did not output any tool_call (e.g. write_file, execute_shell_command, read_file). Please invoke the required tool now immediately. Save any resident files under 'data/resident/'.]")
+                reprompt_msg = HumanMessage(content="[System Directive: You stated in your text response that you would write code/perform an action (e.g. '现在我来编写...'), but you did not output any tool_call (e.g. delegate_coding_task, write_file, execute_shell_command, read_file). Please invoke the required tool or delegate_coding_task now immediately. Save any resident files under 'data/resident/'.]")
 
                 clean_messages = list(messages)
                 clean_messages.append(clean_response)
@@ -472,7 +476,7 @@ class PlanStage(PipelineStage):
                             logger.info("Attempting fallback tool call prompt with stripped context...")
                             fallback_messages = [
                                 clean_messages[0],  # System message
-                                HumanMessage(content=f"The user wants you to fulfill their request. You previously said: '{content_str}'. Please invoke the required tool (write_file, execute_shell_command, read_file, etc.) now to execute this action. Save resident files under data/resident/.")
+                                HumanMessage(content=f"The user wants you to fulfill their request. You previously stated an intention to act: '{content_str[:100]}'. Please invoke the required tool (delegate_coding_task, write_file, execute_shell_command, read_file, etc.) now to execute this action. Save resident files under data/resident/.")
                             ]
                             fallback_resp = await agent.llm.ainvoke(fallback_messages)
                             if fallback_resp.tool_calls:
@@ -481,6 +485,40 @@ class PlanStage(PipelineStage):
                                 return
                         except Exception as fb_err:
                             logger.error(f"Fallback missing tool prompt also failed: {fb_err}")
+
+            # Verify-on-Stop Gate: Check if resident code was modified or mentioned but unverified
+            verify_stop_retry_count = context.metadata.get("verify_stop_retry_count", 0)
+            user_query = str(context.input_message.content or "").lower()
+            code_task_keywords = ["编写", "修改", "脚本", "代码", "程序", "metabolic", "cage", "analysis", ".py", "python"]
+            is_code_related_task = any(kw in user_query for kw in code_task_keywords)
+
+            if is_code_related_task and verify_stop_retry_count < 1:
+                # Inspect recent messages for check_python_syntax or verify_file_exists
+                recent_tool_names = []
+                for m in messages[-10:]:
+                    if isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+                        for tc in m.tool_calls:
+                            recent_tool_names.append(tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", ""))
+                
+                has_verified = "check_python_syntax" in recent_tool_names or "verify_file_exists" in recent_tool_names or "delegate_coding_task" in recent_tool_names
+                if not has_verified:
+                    logger.warning(f"Verify-on-Stop: Code-related task detected without syntax/file verification in recent turns. Issuing verification prompt.")
+                    context.metadata["verify_stop_retry_count"] = verify_stop_retry_count + 1
+                    
+                    verify_prompt_msg = HumanMessage(
+                        content="[System Verification Gate: You are completing a coding/script task. Please run 'check_python_syntax' or 'verify_file_exists' on the target file under 'data/resident/' now (or delegate_coding_task) to verify syntax and file existence before concluding.]"
+                    )
+                    clean_messages = list(messages)
+                    clean_messages.append(verify_prompt_msg)
+                    try:
+                        v_response = await agent.llm.ainvoke(clean_messages)
+                        if v_response.tool_calls:
+                            context.tool_calls = v_response.tool_calls
+                            context.metadata["messages"].append(verify_prompt_msg)
+                            context.metadata["messages"].append(v_response)
+                            return
+                    except Exception as v_err:
+                        logger.error(f"Error during verify-on-stop prompting: {v_err}")
 
             context.final_answer = response.content
             context.stop_execution = True
