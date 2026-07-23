@@ -489,24 +489,31 @@ class PlanStage(PipelineStage):
             # Verify-on-Stop Gate: Check if resident code was modified or mentioned but unverified
             verify_stop_retry_count = context.metadata.get("verify_stop_retry_count", 0)
             user_query = str(context.input_message.content or "").lower()
-            code_task_keywords = ["编写", "修改", "脚本", "代码", "程序", "metabolic", "cage", "analysis", ".py", "python"]
+            code_task_keywords = ["编写", "修改", "脚本", "代码", "程序", "metabolic", "cage", "analysis", ".py", "python", ".m", "matlab"]
             is_code_related_task = any(kw in user_query for kw in code_task_keywords)
 
             if is_code_related_task and verify_stop_retry_count < 1:
-                # Inspect recent messages for check_python_syntax or verify_file_exists
+                # Inspect recent messages for verification tools
                 recent_tool_names = []
                 for m in messages[-10:]:
                     if isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
                         for tc in m.tool_calls:
                             recent_tool_names.append(tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", ""))
                 
-                has_verified = "check_python_syntax" in recent_tool_names or "verify_file_exists" in recent_tool_names or "delegate_coding_task" in recent_tool_names
+                has_verified = (
+                    "check_python_syntax" in recent_tool_names 
+                    or "verify_file_exists" in recent_tool_names 
+                    or "delegate_coding_task" in recent_tool_names
+                    or "read_file" in recent_tool_names
+                    or "write_file" in recent_tool_names
+                    or "execute_shell_command" in recent_tool_names
+                )
                 if not has_verified:
                     logger.warning(f"Verify-on-Stop: Code-related task detected without syntax/file verification in recent turns. Issuing verification prompt.")
                     context.metadata["verify_stop_retry_count"] = verify_stop_retry_count + 1
                     
                     verify_prompt_msg = HumanMessage(
-                        content="[System Verification Gate: You are completing a coding/script task. Please run 'check_python_syntax' or 'verify_file_exists' on the target file under 'data/resident/' now (or delegate_coding_task) to verify syntax and file existence before concluding.]"
+                        content="[System Verification Gate: You are completing a coding/script task. Please run 'verify_file_exists' or 'check_python_syntax' on the target file under 'data/resident/' now (or delegate_coding_task) to verify file existence and syntax before concluding.]"
                     )
                     clean_messages = list(messages)
                     clean_messages.append(verify_prompt_msg)
@@ -517,10 +524,19 @@ class PlanStage(PipelineStage):
                             context.metadata["messages"].append(verify_prompt_msg)
                             context.metadata["messages"].append(v_response)
                             return
+                        elif v_response.content:
+                            # Use LLM's verification response content if no tool calls were generated
+                            context.final_answer = str(v_response.content).strip()
+                            context.stop_execution = True
+                            return
                     except Exception as v_err:
                         logger.error(f"Error during verify-on-stop prompting: {v_err}")
 
-            context.final_answer = response.content
+            # Ensure final_answer is never empty if response content exists
+            final_text = str(response.content or "").strip()
+            if not final_text and context.thoughts:
+                final_text = context.thoughts[-1]
+            context.final_answer = final_text
             context.stop_execution = True
 
 

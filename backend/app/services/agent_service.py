@@ -1154,8 +1154,12 @@ class AgentService:
                 "MAX_ITERATIONS",
             )
 
+        final_ans = context.final_answer
+        if not final_ans and context.thoughts:
+            final_ans = f"【执行总结】\n{context.thoughts[-1]}"
+
         return (
-            (context.final_answer or "No response generated. (LLM returned an empty message)"),
+            (final_ans or "智能体已接收指令并完成分析，未产生额外的文本回复。"),
             context.continuation_req,
             context.continuation_reason,
         )
