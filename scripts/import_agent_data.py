@@ -225,9 +225,18 @@ def import_data(input_path: str, checksum: str = None, force: bool = False) -> b
                 generate_frontend_restore_html(frontend_state, helper_html_path)
                 print(f"\n🌐 Generated Frontend LocalStorage Helper: {helper_html_path}")
 
-            # 6. Count Resident Files
+            # 6. Count Resident Files & Chat History
             resident_dir = project_root / "data" / "resident"
             resident_count = len([f for f in resident_dir.rglob("*") if f.is_file()]) if resident_dir.exists() else 0
+
+            chat_jsonl = project_root / "backend" / "memory" / "chat.jsonl"
+            history_lines = 0
+            if chat_jsonl.exists():
+                try:
+                    with open(chat_jsonl, "r", encoding="utf-8") as f:
+                        history_lines = max(0, len(f.readlines()) - 1)
+                except Exception:
+                    pass
 
     except Exception as e:
         print(f"❌ Error extracting backup archive: {e}")
@@ -235,7 +244,8 @@ def import_data(input_path: str, checksum: str = None, force: bool = False) -> b
 
     print("\n✅ Import Completed Successfully!")
     print("==================================================")
-    print(f"📁 Restored Resident Artifacts (data/resident/): {resident_count} files")
+    print(f"💬 Restored Chat History Entries: {history_lines} messages (backend/memory/chat.jsonl)")
+    print(f"📁 Restored Resident Artifacts: {resident_count} files (data/resident/)")
     print("💡 NEXT STEPS:")
     print("1. Start Bit Politeia backend service (Port 8100):")
     print("   nohup python backend/main.py > backend/data/logs/cron.log 2>&1 &")

@@ -134,6 +134,14 @@ def export_data(output_path: str = None, include_logs: bool = False) -> str:
 
                 files_to_pack.append((item, rel_str))
 
+    # D. Backend memory directory (backend/memory/) - Episodic & Chat History
+    backend_mem_dir = project_root / "backend" / "memory"
+    if backend_mem_dir.exists():
+        for item in backend_mem_dir.rglob("*"):
+            if item.is_file():
+                rel = item.relative_to(project_root)
+                files_to_pack.append((item, str(rel)))
+
     print(f"📋 Collected {len(files_to_pack)} file items for packaging...")
 
     # 2. Write Zip Archive
