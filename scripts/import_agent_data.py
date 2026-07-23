@@ -225,16 +225,21 @@ def import_data(input_path: str, checksum: str = None, force: bool = False) -> b
                 generate_frontend_restore_html(frontend_state, helper_html_path)
                 print(f"\n🌐 Generated Frontend LocalStorage Helper: {helper_html_path}")
 
+            # 6. Count Resident Files
+            resident_dir = project_root / "data" / "resident"
+            resident_count = len([f for f in resident_dir.rglob("*") if f.is_file()]) if resident_dir.exists() else 0
+
     except Exception as e:
         print(f"❌ Error extracting backup archive: {e}")
         return False
 
     print("\n✅ Import Completed Successfully!")
     print("==================================================")
+    print(f"📁 Restored Resident Artifacts (data/resident/): {resident_count} files")
     print("💡 NEXT STEPS:")
-    print("1. Restart Bit Politeia backend service:")
+    print("1. Start Bit Politeia backend service (Port 8100):")
     print("   nohup python backend/main.py > backend/data/logs/cron.log 2>&1 &")
-    print("2. Open 'frontend_restore_helper.html' in your browser to restore Web LocalStorage identity.")
+    print("2. Open http://localhost:3000 in your browser. The Web Console will automatically detect your active backend node and bypass the onboarding setup.")
     print("==================================================")
     return True
 
