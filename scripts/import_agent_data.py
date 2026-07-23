@@ -146,7 +146,7 @@ def generate_frontend_restore_html(frontend_state: dict, output_file: Path):
                 }}
                 const statusEl = document.getElementById('status');
                 statusEl.className = 'status success';
-                statusEl.innerHTML = '✅ 成功恢复 ' + count + ' 项前端设置与身份秘钥！<br>请直接刷新或打开 <a href="http://localhost:5173" style="color:#38bdf8">Web 控制台 (http://localhost:5173)</a> 即可进入恢复状态。';
+                statusEl.innerHTML = '✅ 成功恢复 ' + count + ' 项前端设置与身份秘钥！<br>请直接刷新或打开 <a href="http://localhost:3000" style="color:#38bdf8">Web 控制台 (http://localhost:3000)</a> 即可进入恢复状态。';
             }} catch (err) {{
                 alert('写入 LocalStorage 失败: ' + err.message);
             }}

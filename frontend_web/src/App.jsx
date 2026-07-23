@@ -13,9 +13,32 @@ function App() {
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {
-        const onboarded = localStorage.getItem('bp_onboarded') === 'true'
-        setHasOnboarded(onboarded)
-        setLoading(false)
+        const checkStatus = async () => {
+            const onboarded = localStorage.getItem('bp_onboarded') === 'true'
+            if (onboarded) {
+                setHasOnboarded(true)
+                setLoading(false)
+                return
+            }
+
+            // Fallback: If backend is already configured (e.g. after data import), auto-pass onboarding
+            try {
+                const { default: api } = await import('./services/api')
+                const response = await api.get('/api/v1/status')
+                const statusData = response.data
+                if (statusData && (statusData.node_id || statusData.model)) {
+                    localStorage.setItem('bp_onboarded', 'true')
+                    if (statusData.model) localStorage.setItem('bp_model', statusData.model)
+                    if (statusData.base_url) localStorage.setItem('bp_llm_base_url', statusData.base_url)
+                    setHasOnboarded(true)
+                }
+            } catch (err) {
+                console.error('Failed to check backend status:', err)
+            } finally {
+                setLoading(false)
+            }
+        }
+        checkStatus()
     }, [])
 
     if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>
