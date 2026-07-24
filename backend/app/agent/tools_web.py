@@ -8,8 +8,16 @@ import json
 import logging
 import re
 
-import httpx
-from langchain_core.tools import tool
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
+try:
+    from langchain_core.tools import tool
+except ImportError:
+    def tool(func):
+        return func
 
 # Optional: Readability
 try:
@@ -69,7 +77,7 @@ def _to_markdown(html_content: str) -> str:
 @tool
 async def fetch_web_page(url: str, extract_mode: str = "markdown") -> str:
     """
-    Fetch a URL and extract its content.
+    Fetch a URL and extract its content with Playwright Headless rendering & HTTP fallback.
     Use this to read documentation, articles, or other web pages found via search.
 
     Args:
@@ -77,6 +85,31 @@ async def fetch_web_page(url: str, extract_mode: str = "markdown") -> str:
         extract_mode: "markdown" (default) or "text" (plain text).
     """
     try:
+        from ..services.browser_service import browser_service
+
+        # 1. Try Playwright Headless Chromium Rendering
+        render_res = await browser_service.fetch_page_dom(url)
+        if render_res.get("success") and render_res.get("html"):
+            html_text = render_res["html"]
+            title = render_res.get("title", "Rendered Page")
+
+            if HAS_READABILITY:
+                try:
+                    doc = Document(html_text)
+                    title = doc.title() or title
+                    html_text = doc.summary()
+                except Exception:
+                    pass
+
+            if extract_mode == "markdown":
+                content = _to_markdown(html_text)
+                return f"# {title}\n\n{content}\n\nSource: {url} (Rendered via Playwright Chromium)"
+            else:
+                content = _strip_tags(html_text)
+                return f"Title: {title}\n\n{content}\n\nSource: {url} (Rendered via Playwright Chromium)"
+
+        # 2. Fallback to HTTP Client
+        logger.info(f"Using HTTP fallback fetch for {url} (Reason: {render_res.get('error') or 'Fallback mode'})")
         if not HAS_READABILITY:
             return (
                 "Error: readability-lxml library not installed. Please install it to use this tool."
@@ -90,15 +123,15 @@ async def fetch_web_page(url: str, extract_mode: str = "markdown") -> str:
 
         content_type = response.headers.get("content-type", "").lower()
 
-        # 1. JSON
+        # JSON
         if "application/json" in content_type:
             return json.dumps(response.json(), indent=2)
 
-        # 2. HTML
+        # HTML
         if "text/html" in content_type:
             doc = Document(response.text)
             title = doc.title()
-            summary_html = doc.summary()  # Readability's main content extraction
+            summary_html = doc.summary()
 
             if extract_mode == "markdown":
                 content = _to_markdown(summary_html)
@@ -107,11 +140,50 @@ async def fetch_web_page(url: str, extract_mode: str = "markdown") -> str:
                 content = _strip_tags(summary_html)
                 return f"Title: {title}\n\n{content}\n\nSource: {url}"
 
-        # 3. Plain Text / Other
-        return response.text[:50000]  # Cap at 50k chars
+        return response.text[:50000]
 
     except Exception as e:
         return f"Error fetching URL {url}: {e!s}"
+
+
+@tool
+async def browser_fetch_page(url: str, wait_selector: str = None, extract_mode: str = "markdown") -> str:
+    """
+    Render a web page using Playwright Headless Chromium browser.
+    Use this for dynamic SPA pages (React/Vue/Angular), pages requiring JavaScript execution, or deep web rendering.
+
+    Args:
+        url: The web page URL to render.
+        wait_selector: Optional CSS selector to wait for before extracting DOM (e.g. 'article', '.content').
+        extract_mode: "markdown" (default) or "text".
+    """
+    try:
+        from ..services.browser_service import browser_service
+
+        res = await browser_service.fetch_page_dom(url, wait_selector=wait_selector)
+        if not res.get("success"):
+            return f"Browser Fetch Failed ({res.get('mode')}): {res.get('error')}. Falling back to standard fetch...\n\n" + await fetch_web_page(url, extract_mode=extract_mode)
+
+        html_text = res["html"]
+        title = res.get("title", "Rendered Page")
+
+        if HAS_READABILITY:
+            try:
+                doc = Document(html_text)
+                title = doc.title() or title
+                html_text = doc.summary()
+            except Exception:
+                pass
+
+        if extract_mode == "markdown":
+            content = _to_markdown(html_text)
+            return f"# {title}\n\n{content}\n\nSource: {url} [Playwright Headless]"
+        else:
+            content = _strip_tags(html_text)
+            return f"Title: {title}\n\n{content}\n\nSource: {url} [Playwright Headless]"
+
+    except Exception as e:
+        return f"Error rendering browser page {url}: {e!s}"
 
 
 @tool

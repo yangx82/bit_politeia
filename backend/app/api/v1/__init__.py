@@ -42,6 +42,24 @@ async def send_instruction(request: ChatRequest):
     return await agent_service.process_user_instruction(request.content)
 
 
+@router.post("/agent/steer")
+async def steer_agent(payload: dict = Body(...)) -> dict:
+    """
+    In-flight Steering & Interrupt Endpoint (/steer).
+    Allows user to interrupt or steer an active pipeline session during tool execution.
+    """
+    session_id = payload.get("session_id", "resident")
+    action = payload.get("action", "steer")  # 'steer' or 'cancel'
+    instruction = payload.get("instruction", "")
+
+    try:
+        res = await agent_service.steer_session(session_id, action, instruction)
+        return res
+    except Exception as e:
+        logger.error(f"Error executing steer: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/history", response_model=list[Message])
 async def get_history():
     history = await agent_service.get_history()

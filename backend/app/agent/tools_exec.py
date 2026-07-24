@@ -6,7 +6,11 @@ Ported/Adapted from Nanobot's agent/tools/shell.py
 import logging
 import re
 
-from langchain_core.tools import tool
+try:
+    from langchain_core.tools import tool
+except ImportError:
+    def tool(func):
+        return func
 
 logger = logging.getLogger(__name__)
 

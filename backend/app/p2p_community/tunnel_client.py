@@ -3,7 +3,10 @@ import os
 import subprocess
 from typing import Any
 
-import httpx
+try:
+    import httpx
+except ImportError:
+    httpx = None
 
 logger = logging.getLogger(__name__)
 
@@ -31,18 +34,19 @@ class TunnelClient:
         verify_ssl = os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true"
 
         try:
-            async with httpx.AsyncClient(timeout=10.0, verify=verify_ssl) as client:
-                resp = await client.post(
-                    f"{self.bootstrap_url}/tunnel/v1/request", json={"node_id": self.node_id}
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("success"):
-                        self.config = data.get("config")
-                        logger.info(
-                            f"[Tunnel] Tunnel allocated: Remote Port {self.config.get('remote_port')}"
-                        )
-                        return True
+            if httpx:
+                async with httpx.AsyncClient(timeout=10.0, verify=verify_ssl) as client:
+                    resp = await client.post(
+                        f"{self.bootstrap_url}/tunnel/v1/request", json={"node_id": self.node_id}
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get("success"):
+                            self.config = data.get("config")
+                            logger.info(
+                                f"[Tunnel] Tunnel allocated: Remote Port {self.config.get('remote_port')}"
+                            )
+                            return True
                 logger.error(f"[Tunnel] Request failed with status {resp.status_code}: {resp.text}")
         except Exception as e:
             logger.error(f"[Tunnel] Connection error while requesting tunnel: {e}")

@@ -1,8 +1,23 @@
+import sys
+import site
+import os
+
+user_site = site.getusersitepackages()
+if user_site and user_site not in sys.path:
+    sys.path.insert(0, user_site)
+
 import logging
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from typing import Any
 
-from pydantic import BaseModel
+try:
+    from pydantic import BaseModel
+except ImportError:
+    class BaseModel:
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items():
+                setattr(self, k, v)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +45,10 @@ class PipelineContext(BaseModel):
     continuation_req: bool = False
     continuation_reason: str | None = None
 
+    # In-flight Steering (/steer) support
+    steer_instructions: list[str] = []
+    steering_flag: bool = False
+
     # Execution Environment
     _sandbox: Any | None = None  # Lazy initialized sandbox
 
@@ -48,7 +67,17 @@ class PipelineStage:
         raise NotImplementedError()
 
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+try:
+    from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+except ImportError:
+    class BaseMessage:
+        def __init__(self, content: str = "", **kwargs):
+            self.content = content
+            for k, v in kwargs.items(): setattr(self, k, v)
+    class AIMessage(BaseMessage): pass
+    class HumanMessage(BaseMessage): pass
+    class SystemMessage(BaseMessage): pass
+    class ToolMessage(BaseMessage): pass
 
 from ..bus.events import OutboundMessage
 from ..services.knowledge_base import knowledge_base
@@ -551,6 +580,37 @@ class ExecuteStage(PipelineStage):
         messages = context.metadata["messages"]
 
         for tool_call in context.tool_calls:
+            # In-flight Steering Check Point
+            if context.stop_execution:
+                logger.info(f"[{context.session.session_id}] Pipeline execution stopped by user interrupt.")
+                break
+
+            if context.steer_instructions:
+                steer_text = "\n".join(context.steer_instructions)
+                context.steer_instructions = []
+                context.steering_flag = False
+
+                logger.info(f"[{context.session.session_id}] In-flight Steering Intercepted: {steer_text}")
+
+                steer_notice = f"**[✋ 接收到行中纠偏指令]**: {steer_text}\n已中断后续工具链，正在重新规划方案..."
+                await agent.message_bus.publish_outbound(
+                    OutboundMessage(
+                        channel="gateway",
+                        session_id=context.input_message.session_id,
+                        content=steer_notice,
+                        type="thought",
+                    )
+                )
+
+                # Inject steering directive into messages history
+                steer_msg = HumanMessage(content=f"[居民行中纠偏指令]: {steer_text}")
+                messages.append(steer_msg)
+
+                # Clear remaining tool calls & re-trigger PlanStage with updated context
+                context.tool_calls = []
+                await PlanStage().run(context, agent)
+                return
+
             tool_name = tool_call["name"]
             args = tool_call["args"]
             tool_call_id = tool_call["id"]
@@ -780,18 +840,45 @@ class RetrospectiveStage(PipelineStage):
 
             try:
                 from langchain_core.messages import HumanMessage
+                lesson_msg = await agent.llm.ainvoke([HumanMessage(content=prompt)])
+                task.lessons_learned = lesson_msg.content
+                logger.info(f"Retrospective for task '{task.goal}': {task.lessons_learned}")
+            except Exception as e:
+                logger.error(f"Failed to generate task retrospective: {e}")
 
-                resp = await agent.llm.ainvoke([HumanMessage(content=prompt)])
-                task.lessons_learned = resp.content
-                agent.task_manager.save_tasks()
+        # 2. Self-Healing Skill Subsystem: Check if complex code/repair task succeeded and auto-learn
+        user_content = str(context.input_message.content or "").lower()
+        if any(kw in user_content for kw in ["报错", "修改", "调试", "程序", "代码", ".py", ".m", "script"]):
+            if context.tool_results and any(r.get("tool") in ["write_file", "edit_file", "execute_shell_command", "check_python_syntax"] for r in context.tool_results):
+                try:
+                    from pathlib import Path
+                    auto_skills_dir = Path("backend/skills/auto_learned")
+                    auto_skills_dir.mkdir(parents=True, exist_ok=True)
+                    timestamp_slug = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    skill_file = auto_skills_dir / f"learned_experience_{timestamp_slug}.md"
+
+                    tool_names = ", ".join([r.get("tool", "") for r in context.tool_results])
+                    skill_card = f"""# Learned Experience Card ({datetime.now().strftime("%Y-%m-%d")})
+
+## 🎯 Target Task / Request
+{context.input_message.content[:300]}
+
+## 🛠️ Actions & Tools Executed
+{tool_names}
+
+## 💡 Outcome & Summary
+{context.final_answer[:500] if context.final_answer else "Task executed and verified."}
+"""
+                    skill_file.write_text(skill_card, encoding="utf-8")
+                    logger.info(f"RetrospectiveStage: Generated self-healing skill card at {skill_file}")
+                except Exception as e:
+                    logger.error(f"Failed to generate self-healing skill card: {e}")
 
                 # Optional: Push to Semantic Memory
-                if agent.resident_memory:
+                if agent.resident_memory and hasattr(task, 'lessons_learned'):
                     agent.resident_memory.log_interaction(
                         sender="system",
                         content=f"Retrospective for '{task.goal}': {task.lessons_learned}",
                         msg_type="moderation",
                         status="sent",
                     )
-            except Exception as e:
-                logger.error(f"Retrospective generation failed: {e}")

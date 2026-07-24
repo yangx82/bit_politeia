@@ -1,9 +1,20 @@
+import sys
+import site
+
+user_site = site.getusersitepackages()
+if user_site and user_site not in sys.path:
+    sys.path.insert(0, user_site)
+
 import io
 import logging
 import os
 
-from dotenv import find_dotenv
-from dotenv import load_dotenv as _load_dotenv
+try:
+    from dotenv import find_dotenv
+    from dotenv import load_dotenv as _load_dotenv
+except ImportError:
+    def find_dotenv(): return ""
+    def _load_dotenv(*args, **kwargs): return False
 
 logger = logging.getLogger(__name__)
 

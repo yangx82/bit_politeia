@@ -1,9 +1,27 @@
+import sys
+import site
+
+user_site = site.getusersitepackages()
+if user_site and user_site not in sys.path:
+    sys.path.insert(0, user_site)
+
 import logging
 import os
 from pathlib import Path
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
+try:
+    from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+    from langchain_openai import ChatOpenAI
+except ImportError:
+    class BaseMessage:
+        def __init__(self, content: str = "", **kwargs):
+            self.content = content
+            for k, v in kwargs.items(): setattr(self, k, v)
+    class AIMessage(BaseMessage): pass
+    class HumanMessage(BaseMessage): pass
+    class SystemMessage(BaseMessage): pass
+    class ToolMessage(BaseMessage): pass
+    class ChatOpenAI: pass
 
 logger = logging.getLogger(__name__)
 

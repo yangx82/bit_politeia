@@ -1,6 +1,7 @@
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+UTC = timezone.utc
 
 from ..services.knowledge_base import knowledge_base
 from ..services.memory_store import memory_store

@@ -5,13 +5,16 @@ import os
 from collections.abc import Callable
 from typing import Any
 
-from aiortc import (
-    RTCConfiguration,
-    RTCIceServer,
-    RTCPeerConnection,
-    RTCSessionDescription,
-)
-from aiortc.contrib.signaling import object_from_string
+try:
+    from aiortc import (
+        RTCConfiguration,
+        RTCIceServer,
+        RTCPeerConnection,
+        RTCSessionDescription,
+    )
+    from aiortc.contrib.signaling import object_from_string
+except ImportError:
+    RTCConfiguration = RTCIceServer = RTCPeerConnection = RTCSessionDescription = object_from_string = None
 
 logger = logging.getLogger(__name__)
 

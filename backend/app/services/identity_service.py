@@ -4,7 +4,8 @@ import os
 import random
 import string
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+UTC = timezone.utc
 
 logger = logging.getLogger(__name__)
 

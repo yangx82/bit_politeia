@@ -1,3 +1,11 @@
+import sys
+import site
+import os
+
+user_site = site.getusersitepackages()
+if user_site and user_site not in sys.path:
+    sys.path.insert(0, user_site)
+
 import json
 import logging
 import os
@@ -6,7 +14,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import HumanMessage
+try:
+    from langchain_core.messages import HumanMessage
+except ImportError:
+    class HumanMessage:
+        def __init__(self, content: str):
+            self.content = content
 
 from .memory_store import memory_store
 
@@ -111,11 +124,33 @@ class ResidentMemory:
             self._vault = {}
 
     def save_semantic_profile(self):
-        """Persist semantic profile to disk."""
+        """Persist semantic profile to disk and sync to USER.md."""
         try:
             self._semantic_profile["last_updated"] = datetime.now().isoformat()
             with open(self.semantic_file, "w", encoding="utf-8") as f:
                 json.dump(self._semantic_profile, f, ensure_ascii=False, indent=2)
+
+            # Sync to USER.md for prefix-caching & prompt readability
+            lines = ["# Resident User Profile & Directives", ""]
+            lines.append(f"**Persona/Role**: {self._semantic_profile.get('persona', 'Resident Human User')}")
+            lines.append(f"**Last Updated**: {self._semantic_profile.get('last_updated')}")
+            lines.append("")
+
+            prefs = self._semantic_profile.get("preferences", {})
+            if prefs:
+                lines.append("### User Preferences & Directives")
+                for k, v in prefs.items():
+                    lines.append(f"- **{k}**: {v}")
+                lines.append("")
+
+            facts = self._semantic_profile.get("facts", [])
+            if facts:
+                lines.append("### Known Facts About User")
+                for fact in facts:
+                    lines.append(f"- {fact}")
+
+            user_md_content = "\n".join(lines)
+            memory_store.write_user_profile(user_md_content)
         except Exception as e:
             logger.error(f"Failed to save semantic profile: {e}")
 

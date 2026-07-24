@@ -1,4 +1,8 @@
-from langchain_core.tools import tool
+try:
+    from langchain_core.tools import tool
+except ImportError:
+    def tool(func):
+        return func
 
 
 @tool

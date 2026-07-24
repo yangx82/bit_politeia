@@ -324,6 +324,27 @@ const Chat = () => {
         })
     }
 
+    const handleCancelTask = async () => {
+        try {
+            await api.post('/api/v1/agent/steer', {
+                session_id: activeSessionId || 'resident',
+                action: 'cancel',
+                instruction: ''
+            })
+            setAgentLogs([])
+        } catch (err) {
+            console.error("Cancel task failed:", err)
+        }
+    }
+
+    const handleSteerTask = (promptText = '') => {
+        if (promptText) {
+            setInput(promptText)
+        } else if (!input.startsWith('/steer ')) {
+            setInput('/steer ' + input)
+        }
+    }
+
     const handleSend = async (e) => {
         e.preventDefault()
         if (!input.trim()) return
@@ -334,6 +355,25 @@ const Chat = () => {
         setAgentLogs([])
 
         try {
+            if (content.trim().startsWith('/steer') || content.trim() === '/cancel') {
+                let action = 'steer'
+                let instruction = content.trim()
+                if (content.trim() === '/cancel') {
+                    action = 'cancel'
+                    instruction = ''
+                } else {
+                    instruction = content.trim().replace(/^\/steer\s*/, '')
+                }
+
+                await api.post('/api/v1/agent/steer', {
+                    session_id: activeSessionId || 'resident',
+                    action,
+                    instruction
+                })
+                setTimeout(() => fetchData(), 500)
+                return
+            }
+
             if (activeSessionId === 'resident') {
                 // Internal Instruction
                 await api.post('/api/v1/chat/instruction', { content })
@@ -343,7 +383,6 @@ const Chat = () => {
                     target_id: activeSessionId,
                     content: { text: content }
                 })
-                // Optional: alert the user it was forwarded, or just let them see the system message
                 console.log("Suggestion forwarded:", res.data);
             }
             // Give backend a moment to log the instruction before fetching
@@ -701,6 +740,33 @@ const Chat = () => {
 
                         {/* Input */}
                         <div className="p-4 bg-white border-t border-slate-200">
+                            {agentLogs.length > 0 && (
+                                <div className="mb-3 flex items-center justify-between bg-amber-50/80 border border-amber-200/80 px-3.5 py-2 rounded-xl text-xs text-amber-900 shadow-sm">
+                                    <div className="flex items-center gap-2">
+                                        <span className="relative flex h-2 w-2">
+                                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                                          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                                        </span>
+                                        <span className="font-semibold">智能体正在执行任务/思考中...</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => handleSteerTask()}
+                                            className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-medium transition-all shadow-xs flex items-center gap-1 cursor-pointer"
+                                        >
+                                            ✋ 行中纠偏 (/steer)
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={handleCancelTask}
+                                            className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-medium transition-all shadow-xs flex items-center gap-1 cursor-pointer"
+                                        >
+                                            🛑 紧急打断
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                             <form onSubmit={handleSend} className="relative">
                                 <input
                                     value={input}

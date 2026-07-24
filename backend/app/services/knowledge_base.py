@@ -5,20 +5,91 @@ import ssl
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 
-import httpx
+try:
+    import httpx
+except ImportError:
+    httpx = None
 
 logger = logging.getLogger(__name__)
 
 
 class WebResearcher:
     """
-    Simulates a web search tool.
-    In production, this would use Tavily, Bing, or Google Search API.
+    Web search researcher tool supporting Tavily Search API with academic fallbacks.
     """
 
+    def _search_tavily(self, query: str) -> list[dict[str, str]] | None:
+        """
+        Perform a web search using Tavily API (via SDK or HTTP REST).
+        Returns None if TAVILY_API_KEY is not configured or request fails.
+        """
+        api_key = os.getenv("TAVILY_API_KEY")
+        if not api_key:
+            return None
+
+        try:
+            logger.info(f"Triggering Tavily Search API for query: {query}")
+
+            # 1. Try SDK if available
+            try:
+                from tavily import TavilyClient
+
+                client = TavilyClient(api_key=api_key)
+                response = client.search(query=query, search_depth="basic", max_results=5)
+                results = response.get("results", [])
+            except ImportError:
+                # 2. Native HTTP REST Fallback
+                tavily_url = "https://api.tavily.com/search"
+                payload = {
+                    "api_key": api_key,
+                    "query": query,
+                    "search_depth": "basic",
+                    "max_results": 5,
+                    "include_answer": True,
+                }
+                res = httpx.post(tavily_url, json=payload, timeout=15.0)
+                res.raise_for_status()
+                response = res.json()
+                results = response.get("results", [])
+
+            search_results = []
+            if response.get("answer"):
+                search_results.append(
+                    {
+                        "title": "AI Summary Answer (Tavily)",
+                        "abstract": response["answer"],
+                        "source": "Tavily AI Answer",
+                        "published": "",
+                    }
+                )
+
+            for item in results:
+                search_results.append(
+                    {
+                        "title": item.get("title", "No Title"),
+                        "abstract": item.get("content", item.get("snippet", "")),
+                        "source": item.get("url", "Tavily Web Result"),
+                        "published": item.get("published_date", ""),
+                    }
+                )
+
+            if search_results:
+                return search_results
+
+        except Exception as e:
+            logger.warning(f"Tavily search failed ({e}). Falling back to academic/local search.")
+
+        return None
+
     def search(self, query: str) -> list[dict[str, str]]:
+        # 0. Try Tavily Search API first
+        tavily_results = self._search_tavily(query)
+        if tavily_results:
+            return tavily_results
+
         # Handle user's request for space/AND support
         # If no explicit operators (AND, OR, ANDNOT) are found, assume intersection (AND)
         if not any(op in query for op in ["AND", "OR", "ANDNOT"]):

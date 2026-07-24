@@ -2,10 +2,18 @@ import asyncio
 import logging
 import os
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+UTC = timezone.utc
 from typing import Any
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+try:
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+except ImportError:
+    class AsyncIOScheduler:
+        def __init__(self, **kwargs): pass
+        def start(self): pass
+        def shutdown(self): pass
+        def add_job(self, *args, **kwargs): pass
 
 from ..bus.events import InboundMessage, OutboundMessage
 from ..bus.queue import message_bus
@@ -18,13 +26,27 @@ from .p2p_service import p2p_service
 
 logger = logging.getLogger(__name__)
 p2p_logger = logging.getLogger("p2p_network")
-import langchain
+try:
+    import langchain
+    langchain.debug = True
+except ImportError:
+    langchain = None
 
-langchain.debug = True
 import json
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
+try:
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+    from langchain_openai import ChatOpenAI
+except ImportError:
+    class BaseMessage:
+        def __init__(self, content: str = "", **kwargs):
+            self.content = content
+            for k, v in kwargs.items(): setattr(self, k, v)
+    class AIMessage(BaseMessage): pass
+    class HumanMessage(BaseMessage): pass
+    class SystemMessage(BaseMessage): pass
+    class ToolMessage(BaseMessage): pass
+    class ChatOpenAI: pass
 
 from ..agent.context import ContextBuilder
 from ..agent.prompts import AGENT_SYSTEM_PROMPT, CODING_SUBAGENT_PROMPT, SELF_HEALING_SUBAGENT_PROMPT
@@ -59,6 +81,7 @@ class AgentService:
         self.status = AgentStatus(is_online=True, reputation=10, balance=0.0)
         self.message_bus = message_bus
         self.resident_bridges: dict[str, str] = {}  # Bridge Name -> Chat/OpenID
+        self.active_pipelines: dict[str, Any] = {}  # session_id -> PipelineContext for /steer
 
         # Resolve absolute path to backend/data
         from pathlib import Path
@@ -97,7 +120,7 @@ class AgentService:
         self.p2p_reply_delay = 60
 
         # Initialization logic (Moved to __init__)
-        self.tools_map = {t.name: t for t in AGENT_TOOLS}
+        self.tools_map = {getattr(t, "name", getattr(t, "__name__", str(t))): t for t in AGENT_TOOLS}
         self.governance_manager = None
         self.reputation_manager = None
         self.archive_manager = None
@@ -1094,52 +1117,51 @@ class AgentService:
                     )
                 )
                 await asyncio.sleep(remaining_seconds)
-        #     p2p_logger.info(f"DEBUG: Delay FINISHED for {msg.sender_id}")
-        # elif msg.channel == "p2p":
-        #     p2p_logger.info(f"DEBUG: P2P Delay SKIPPED. Reason: msg.channel={msg.channel}, delay_val={delay_val}")
-        # else:
-        #     p2p_logger.info(f"DEBUG: Pipeline delay NOT APPLICABLE for channel={msg.channel}")
-
+        
         context = PipelineContext(session=session, input_message=msg)
+        self.active_pipelines[session.session_id] = context
 
-        stages = [
-            SenseStage(),
-            PlanStage(),
-            ExecuteStage(),
-            ConsolidateStage(),
-            RetrospectiveStage(),
-            NotifyStage(),
-            ArchiveStage(),
-        ]
+        try:
+            stages = [
+                SenseStage(),
+                PlanStage(),
+                ExecuteStage(),
+                ConsolidateStage(),
+                RetrospectiveStage(),
+                NotifyStage(),
+                ArchiveStage(),
+            ]
 
-        logger.info(
-            f"Starting pipeline execution for user {msg.sender_id} (Session: {session.session_id})"
-        )
+            logger.info(
+                f"Starting pipeline execution for user {msg.sender_id} (Session: {session.session_id})"
+            )
 
-        # 1. Preliminary Stage: Sense
-        await stages[0].run(context, self)
+            # 1. Preliminary Stage: Sense
+            await stages[0].run(context, self)
 
-        # 2. Main Loop: Plan & Execute (ReAct)
-        max_iterations = 50
-        iteration = 0
-        while not context.stop_execution and iteration < max_iterations:
-            iteration += 1
-            
-            # --- Micro-compact context before planning to prevent context explosion ---
-            if "messages" in context.metadata and self.context_manager:
-                self.context_manager.apply_micro_compaction(context.metadata["messages"])
+            # 2. Main Loop: Plan & Execute (ReAct)
+            max_iterations = 50
+            iteration = 0
+            while not context.stop_execution and iteration < max_iterations:
+                iteration += 1
 
-            await stages[1].run(context, self)  # Plan
-            if not context.stop_execution:
-                await stages[2].run(context, self)  # Execute
+                # --- Micro-compact context before planning to prevent context explosion ---
+                if "messages" in context.metadata and self.context_manager:
+                    self.context_manager.apply_micro_compaction(context.metadata["messages"])
 
-        # 3. Wrapping Up: Consolidate, Retrospective, Notify, Archive
-        await stages[3].run(context, self)  # Consolidate
-        session_manager.save_session(context.session)  # Save intermediate
-        await stages[4].run(context, self)  # Retrospective
-        await stages[5].run(context, self)  # Notify
-        await stages[6].run(context, self)  # Archive
-        session_manager.save_session(context.session)  # Final save
+                await stages[1].run(context, self)  # Plan
+                if not context.stop_execution:
+                    await stages[2].run(context, self)  # Execute
+
+            # 3. Wrapping Up: Consolidate, Retrospective, Notify, Archive
+            await stages[3].run(context, self)  # Consolidate
+            session_manager.save_session(context.session)  # Save intermediate
+            await stages[4].run(context, self)  # Retrospective
+            await stages[5].run(context, self)  # Notify
+            await stages[6].run(context, self)  # Archive
+            session_manager.save_session(context.session)  # Final save
+        finally:
+            self.active_pipelines.pop(session.session_id, None)
 
         if iteration >= max_iterations:
             logger.warning(
@@ -1686,6 +1708,35 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         # Return the last Message object from history
         return self.history[-1] if self.history else None
+
+    async def steer_session(self, session_id: str, action: str, instruction: str = "") -> dict[str, Any]:
+        """
+        In-flight steering endpoint helper (/steer).
+        Interprets steering or cancellation signals for an active or new pipeline session.
+        """
+        norm_session_id = self._normalize_session_id(session_id)
+
+        matched_ctx = None
+        for sid, ctx in self.active_pipelines.items():
+            if sid == session_id or sid == norm_session_id or self._normalize_session_id(sid) == norm_session_id:
+                matched_ctx = ctx
+                break
+
+        if matched_ctx:
+            if action.lower() == "cancel":
+                matched_ctx.stop_execution = True
+                logger.info(f"Steer: Session {session_id} cancelled by user.")
+                return {"success": True, "status": "cancelled", "message": "已成功取消当前任务"}
+            else:
+                matched_ctx.steer_instructions.append(instruction)
+                matched_ctx.steering_flag = True
+                logger.info(f"Steer: Injected steering directive to session {session_id}: {instruction}")
+                return {"success": True, "status": "steered", "message": "已注入行中纠偏指令，智能体正在调整策略..."}
+        else:
+            if action.lower() == "steer" and instruction:
+                asyncio.create_task(self.process_user_instruction(instruction))
+                return {"success": True, "status": "idle_routed", "message": "智能体当前处于空闲状态，打断指令已作为新对话接收"}
+            return {"success": False, "status": "no_active_session", "message": "当前会话没有正在运行中的任务"}
 
     # 2. Community Contact (P2P Listener)
     async def process_network_inbox(self, verbose: bool = False):

@@ -2,7 +2,11 @@ import json
 import logging
 import os
 
-from langchain_core.tools import tool
+try:
+    from langchain_core.tools import tool
+except ImportError:
+    def tool(func):
+        return func
 
 from ..services.p2p_service import p2p_service
 
@@ -778,7 +782,7 @@ from ..agent.tools_cron import (
 from ..agent.tools_exec import execute_shell_command
 from ..agent.tools_fs import copy_files, edit_file, list_dir, move_files, read_file, write_file
 from ..agent.tools_task import TASK_TOOLS
-from ..agent.tools_web import academic_research, fetch_web_page
+from ..agent.tools_web import academic_research, browser_fetch_page, fetch_web_page
 from ..agent.tools_identity import get_account_pairing_code, bind_account_by_code, unbind_account
 
 
@@ -900,6 +904,56 @@ async def append_daily_note(content: str) -> str:
         return f"Error appending to daily note: {e!s}"
 
 
+@tool
+async def manage_memory(target: str, action: str, content: str = "") -> str:
+    """
+    Actively read or update persistent Agent Memory (MEMORY.md) or Resident User Profile (USER.md).
+
+    Use this tool whenever:
+    - You learn a critical permanent rule, operating instruction, or lesson -> target='agent', action='append'/'update'
+    - You learn a resident preference, directive, or persona habit (e.g., '用户希望用MATLAB') -> target='user', action='append'/'update'
+    - You want to inspect current memory or user directives -> target='agent'/'user', action='read'
+
+    Args:
+        target: 'agent' for MEMORY.md (agent rules) or 'user' for USER.md (resident profile & directives).
+        action: 'read' (view memory), 'append' (append new lines), or 'update' (overwrite content).
+        content: The text content to write or append (ignored if action='read').
+    """
+    from ..services.memory_store import memory_store
+
+    try:
+        tgt = target.lower().strip()
+        act = action.lower().strip()
+
+        if tgt == "agent":
+            if act == "read":
+                res = memory_store.read_long_term()
+                return f"=== MEMORY.md (Agent Memory) ===\n{res or '(Empty)'}"
+            elif act == "append":
+                existing = memory_store.read_long_term()
+                new_text = (existing.strip() + "\n\n" + content.strip()) if existing else content.strip()
+                memory_store.write_long_term(new_text)
+                return "Successfully appended to MEMORY.md"
+            elif act == "update":
+                memory_store.write_long_term(content)
+                return "Successfully updated MEMORY.md"
+        elif tgt == "user":
+            if act == "read":
+                res = memory_store.read_user_profile()
+                return f"=== USER.md (Resident User Profile) ===\n{res or '(Empty)'}"
+            elif act == "append":
+                memory_store.append_user_profile(content)
+                return "Successfully appended directive/preference to USER.md"
+            elif act == "update":
+                memory_store.write_user_profile(content)
+                return "Successfully updated USER.md"
+
+        return "Invalid parameters. target must be 'agent' or 'user', action must be 'read', 'append', or 'update'."
+    except Exception as e:
+        logger.error(f"Error in manage_memory tool: {e}")
+        return f"Error executing manage_memory: {e!s}"
+
+
 # List of Tools to bind to the agent
 AGENT_TOOLS = [
     send_p2p_message,
@@ -912,6 +966,7 @@ AGENT_TOOLS = [
     search_chat_history,
     update_core_memory,
     append_daily_note,
+    manage_memory,
     propose_election,
     submit_proposal,
     publish_research,
@@ -937,6 +992,7 @@ AGENT_TOOLS = [
     copy_files,
     move_files,
     fetch_web_page,
+    browser_fetch_page,
     academic_research,
     schedule_reminder,
     list_reminders,

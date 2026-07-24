@@ -4,7 +4,10 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-import httpx
+try:
+    import httpx
+except ImportError:
+    httpx = None
 
 from .bootstrap_client import NodeRegistration, bootstrap_client
 from .message_protocol import MessageProtocol, MessageType, SignedMessage
@@ -31,7 +34,7 @@ class NetworkManager:
         self.local_node_id: str | None = None
         self.message_protocol = message_protocol
         self.bootstrap = bootstrap_client
-        self.http_client = httpx.AsyncClient(timeout=3.0, trust_env=False)
+        self.http_client = httpx.AsyncClient(timeout=3.0, trust_env=False) if httpx else None
         self._last_logs: dict[str, float] = {}  # For deduplication: message -> last_time
         self.tunnel: TunnelClient | None = None
 

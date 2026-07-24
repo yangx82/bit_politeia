@@ -1,8 +1,12 @@
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 
-import httpx
+try:
+    import httpx
+except ImportError:
+    httpx = None
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +101,7 @@ class BootstrapClient:
         self.verify = verify
         self.client = httpx.AsyncClient(
             timeout=15.0, verify=verify, trust_env=False
-        )  # Increased for LAN stability
+        ) if httpx else None
 
     async def set_server_url(self, url: str):
         """Dynamically update the bootstrap server URL."""

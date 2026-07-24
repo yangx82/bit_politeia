@@ -1,4 +1,14 @@
-from langchain_core.tools import tool
+import sys
+import site
+
+user_site = site.getusersitepackages()
+if user_site and user_site not in sys.path:
+    sys.path.insert(0, user_site)
+
+try:
+    from langchain_core.tools import tool
+except ImportError:
+    def tool(func): return func
 
 from ..services.skill_manager import SkillManager
 

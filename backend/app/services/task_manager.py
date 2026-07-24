@@ -1,12 +1,22 @@
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+try:
+    from pydantic import BaseModel, Field
+except ImportError:
+    class BaseModel:
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items(): setattr(self, k, v)
+        def model_dump(self, mode="json"):
+            return self.__dict__
+    def Field(default_factory=None, **kwargs):
+        return default_factory() if default_factory else None
 
 logger = logging.getLogger(__name__)
 

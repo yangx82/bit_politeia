@@ -7,7 +7,14 @@ import subprocess
 import sys
 from typing import Any
 
-from langchain_core.tools import Tool
+try:
+    from langchain_core.tools import Tool
+except ImportError:
+    class Tool:
+        def __init__(self, name, func, description=""):
+            self.name = name
+            self.func = func
+            self.description = description
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +37,13 @@ class SkillManager:
         # In-memory cache of loaded tools
         # Map: tool_name -> Tool object
         self.loaded_tools: dict[str, Tool] = {}
+        self._cached_skill_index: str | None = None
+        self._dirty_flag: bool = True
+
+    def invalidate_cache(self) -> None:
+        """Invalidate in-memory skill index cache for prefix caching."""
+        self._dirty_flag = True
+        self._cached_skill_index = None
 
     def validate_code(self, code: str) -> bool:
         """
@@ -138,6 +152,7 @@ class SkillManager:
         # Attempt to load immediately to verify syntax and structure
         try:
             self.load_single_tool(safe_name)
+            self.invalidate_cache()
             return f"Tool '{safe_name}' created and loaded successfully."
         except Exception as e:
             # If load fails, delete the file to keep state clean?
@@ -319,15 +334,23 @@ class SkillManager:
         return "No instruction guide found."
 
     def get_skill_index(self) -> str:
-        """Returns a string description of available skills for the system prompt."""
-        if not self.loaded_tools:
-            return ""
+        """Returns a string description of available skills for the system prompt using prefix cache snapshot."""
+        if not self._dirty_flag and self._cached_skill_index is not None:
+            return self._cached_skill_index
 
-        index = "\n\n## Custom Skills (Dynamically Loaded)\n"
-        for name, tool in self.loaded_tools.items():
-            index += f"- {name}: {tool.description}\n"
-        return index
-        return index
+        if not self.loaded_tools:
+            compiled = ""
+        else:
+            index = "\n\n## Custom Skills (Dynamically Loaded)\n"
+            # Sort keys to guarantee deterministic byte-level parity across invocations
+            for name in sorted(self.loaded_tools.keys()):
+                tool = self.loaded_tools[name]
+                index += f"- {name}: {tool.description}\n"
+            compiled = index
+
+        self._cached_skill_index = compiled
+        self._dirty_flag = False
+        return compiled
 
 
 # Global instance

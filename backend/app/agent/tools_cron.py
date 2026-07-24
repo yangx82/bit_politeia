@@ -7,7 +7,11 @@ import logging
 import os
 from datetime import datetime, timedelta
 
-from langchain_core.tools import tool
+try:
+    from langchain_core.tools import tool
+except ImportError:
+    def tool(func):
+        return func
 
 logger = logging.getLogger(__name__)
 

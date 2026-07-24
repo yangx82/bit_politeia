@@ -1,7 +1,8 @@
 """Memory system for persistent agent memory (Long-term & Daily Notes)."""
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+UTC = timezone.utc
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -39,11 +40,20 @@ class MemoryStore:
 
         self.memory_dir = ensure_dir(self.workspace / "memory")
         self.memory_file = self.memory_dir / "MEMORY.md"
+        self.user_file = self.memory_dir / "USER.md"
         self.summary_file = self.memory_dir / "daily_notes_summary.md"
         self.history_summary_file = self.memory_dir / "history_summary.md"
         self.archive_dir = ensure_dir(self.memory_dir / "archive")
 
+        self._cached_memory_context: str | None = None
+        self._dirty_flag: bool = True
+
         logger.info(f"MemoryStore initialized at {self.memory_dir}")
+
+    def invalidate_cache(self) -> None:
+        """Invalidate the in-memory compiled snapshot cache for prefix-caching."""
+        self._dirty_flag = True
+        self._cached_memory_context = None
 
     def _get_today_date(self) -> str:
         """Get today's date string."""
@@ -73,6 +83,7 @@ class MemoryStore:
             content = header + content
 
         today_file.write_text(content, encoding="utf-8")
+        self.invalidate_cache()
 
     def read_long_term(self) -> str:
         """Read long-term memory (MEMORY.md)."""
@@ -83,6 +94,28 @@ class MemoryStore:
     def write_long_term(self, content: str) -> None:
         """Write to long-term memory (MEMORY.md)."""
         self.memory_file.write_text(content, encoding="utf-8")
+        self.invalidate_cache()
+
+    def read_user_profile(self) -> str:
+        """Read resident user profile (USER.md)."""
+        if self.user_file.exists():
+            return self.user_file.read_text(encoding="utf-8")
+        return ""
+
+    def write_user_profile(self, content: str) -> None:
+        """Write resident user profile (USER.md)."""
+        self.user_file.write_text(content, encoding="utf-8")
+        self.invalidate_cache()
+
+    def append_user_profile(self, content: str) -> None:
+        """Append to resident user profile (USER.md)."""
+        existing = self.read_user_profile()
+        if existing:
+            new_content = existing.strip() + "\n\n" + content.strip()
+        else:
+            new_content = "# Resident User Profile & Directives\n\n" + content.strip()
+        self.user_file.write_text(new_content, encoding="utf-8")
+        self.invalidate_cache()
 
     def get_recent_memories(self, days: int = 7) -> str:
         """Get memories from the last N days."""
@@ -103,20 +136,31 @@ class MemoryStore:
         return "\n\n".join(memories)
 
     def get_memory_context(self) -> str:
-        """Get formatted memory context including long-term and recent memories."""
+        """Get formatted memory context using in-memory snapshot cache for prefix caching."""
+        if not self._dirty_flag and self._cached_memory_context is not None:
+            return self._cached_memory_context
+
         parts = []
 
-        # Long-term memory
+        # 1. Long-term Agent Memory
         long_term = self.read_long_term()
         if long_term:
-            parts.append("## Long-term Memory\n" + long_term)
+            parts.append("## Long-term Agent Memory (MEMORY.md)\n" + long_term)
 
-        # Today's notes
+        # 2. Resident User Profile
+        user_profile = self.read_user_profile()
+        if user_profile:
+            parts.append("## Resident User Profile & Directives (USER.md)\n" + user_profile)
+
+        # 3. Today's notes
         today = self.read_today()
         if today:
             parts.append("## Today's Notes\n" + today)
 
-        return "\n\n".join(parts) if parts else ""
+        compiled = "\n\n".join(parts) if parts else ""
+        self._cached_memory_context = compiled
+        self._dirty_flag = False
+        return compiled
 
     def read_summary(self) -> str:
         """Read the compressed summary of old daily notes."""
