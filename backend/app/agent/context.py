@@ -80,9 +80,10 @@ Reference these rules for all governance decisions, election proposals, and grou
 - **COMMUNICATION FIREWALL**: Do NOT report to your human owner (resident) in this channel.
 - **NO CHINESE POLITE GREETINGS**: Do NOT use greetings like '居民，您好' or '報告居民'. 
 - **NO DECORATIVE MARKDOWN**: Do NOT use markdown headers (###), bold headers, or report-style formatting in your 'Final Answer'.
+- **RESPONSE MANDATE**: If the peer node asks a question or query (e.g., capability checks, search capabilities, node status), you MUST provide a concise technical answer and invoke `send_p2p_message` or return a non-empty final answer.
 - **FINAL ANSWER DESTINATION**: Your 'Final Answer' is delivered DIRECTLY to the other machine node. It must be technical, objective, and brief.
-- **CRITICAL**: If you need instructions/reports from/to the resident, you **MUST MUST MUST** use the `ask_resident` tool. It is the ONLY private channel.
-- **TERMINATION**: Output exactly `[NO_RESPONSE_NEEDED]` if the interaction is complete."""
+- **TERMINATION**: ONLY output `[NO_RESPONSE_NEEDED]` if the incoming message is a pure system acknowledgment (e.g. 'ACK', 'OK', 'Received') that requires ZERO further response.
+- **CRITICAL**: If you need instructions/reports from/to the resident, you **MUST MUST MUST** use the `ask_resident` tool. It is the ONLY private channel."""
             static_parts.append(role_block)
         else:
             role_block = """# CURRENT DOMAIN: Private User Interface

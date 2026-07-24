@@ -754,6 +754,22 @@ class NotifyStage(PipelineStage):
                     # FORCEFULLY TRUNCATE the message sent to the P2P group
                     confirmation = "[SECURITY SUPPRESSION: Internal report misrouted. Please check Resident tab for details.]"
 
+            # 1.6 P2P Outbound Fallback Delivery: Ensure peer receives message if tool call was omitted
+            if context.input_message.channel == "p2p" and confirmation and "[NO_RESPONSE_NEEDED]" not in confirmation:
+                p2p_tool_called = any(r.get("tool") == "send_p2p_message" for r in context.tool_results)
+                if not p2p_tool_called and hasattr(agent, "send_p2p_message"):
+                    logger.info(f"[{context.session.session_id}] P2P Fallback Delivery: Auto-routing final answer via send_p2p_message.")
+                    target_id = context.input_message.session_id or context.input_message.sender_id
+                    try:
+                        msg_kind = "group" if context.input_message.session_id and "group" in context.input_message.session_id.lower() else "direct"
+                        await agent.send_p2p_message(
+                            recipient_id=target_id,
+                            content=confirmation,
+                            msg_type=msg_kind
+                        )
+                    except Exception as err:
+                        logger.error(f"P2P Fallback Delivery failed: {err}")
+
             # 2. Always mirror to Gateway for Observability
             if confirmation:
                 await agent.message_bus.publish_outbound(
