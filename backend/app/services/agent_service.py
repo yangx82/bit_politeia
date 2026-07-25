@@ -4486,17 +4486,44 @@ async def code_supervisor_proxy():
     """Integrated code supervisor: polls pending.json and processes code updates."""
     if not agent_service:
         return
+    import json
     from pathlib import Path
+    from datetime import datetime
 
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    WATCH_FILE = PROJECT_ROOT / "data" / "code_updates" / "pending.json"
-    LOG_DIR = PROJECT_ROOT / "data" / "logs"
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    WATCH_FILE = PROJECT_ROOT / "backend" / "data" / "code_updates" / "pending.json"
 
     if not WATCH_FILE.exists():
         return
 
     logger.info(f"[CodeSupervisor] Detected pending update at {WATCH_FILE}")
-    processing_file = WATCH_FILE.with_suffix(".json.processing")
+    try:
+        processing_file = WATCH_FILE.with_suffix(".json.processing")
+        if WATCH_FILE.exists():
+            WATCH_FILE.rename(processing_file)
+
+        import sys
+        scripts_dir = str(PROJECT_ROOT / "backend" / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import code_supervisor
+
+        with open(processing_file, encoding="utf-8") as f:
+            request = json.load(f)
+
+        success = await asyncio.to_thread(code_supervisor.process_update, request)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if success:
+            processing_file.rename(processing_file.parent / f"success_{timestamp}.json")
+        else:
+            processing_file.rename(processing_file.parent / f"failed_{timestamp}.json")
+    except Exception as e:
+        logger.error(f"[CodeSupervisor] Error processing code update: {e}")
+        if WATCH_FILE.exists():
+            try:
+                WATCH_FILE.unlink()
+            except Exception:
+                pass
 
 
 async def run_literature_watcher_proxy():
