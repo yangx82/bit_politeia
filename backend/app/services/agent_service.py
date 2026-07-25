@@ -153,17 +153,19 @@ class AgentService:
             if not getattr(self, "_jobs_added", False):
                 self.scheduler.add_job(
                     "app.services.agent_service:trigger_scheduled_task_proxy",
-                    "interval",
-                    hours=24,
-                    misfire_grace_time=60,
+                    "cron",
+                    hour=0,
+                    minute=0,
+                    misfire_grace_time=3600,
                     id="periodic_brief_job",
                     replace_existing=True,
                 )
                 self.scheduler.add_job(
                     "app.services.agent_service:run_literature_watcher_proxy",
-                    "interval",
-                    hours=24,
-                    misfire_grace_time=300,
+                    "cron",
+                    hour=0,
+                    minute=30,
+                    misfire_grace_time=3600,
                     id="periodic_literature_watcher_job",
                     replace_existing=True,
                 )
