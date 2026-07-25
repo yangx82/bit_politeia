@@ -859,6 +859,15 @@ class RetrospectiveStage(PipelineStage):
                 lesson_msg = await agent.llm.ainvoke([HumanMessage(content=prompt)])
                 task.lessons_learned = lesson_msg.content
                 logger.info(f"Retrospective for task '{task.goal}': {task.lessons_learned}")
+
+                # Push task retrospective to Semantic Memory
+                if agent.resident_memory and hasattr(task, 'lessons_learned'):
+                    agent.resident_memory.log_interaction(
+                        sender="system",
+                        content=f"Retrospective for '{task.goal}': {task.lessons_learned}",
+                        msg_type="moderation",
+                        status="sent",
+                    )
             except Exception as e:
                 logger.error(f"Failed to generate task retrospective: {e}")
 
@@ -887,14 +896,14 @@ class RetrospectiveStage(PipelineStage):
 """
                     skill_file.write_text(skill_card, encoding="utf-8")
                     logger.info(f"RetrospectiveStage: Generated self-healing skill card at {skill_file}")
+
+                    # Push self-healing experience summary to Semantic Memory
+                    if agent.resident_memory:
+                        agent.resident_memory.log_interaction(
+                            sender="system",
+                            content=f"Self-Healing Experience Learned: {context.input_message.content[:200]} (Tools: {tool_names})",
+                            msg_type="moderation",
+                            status="sent",
+                        )
                 except Exception as e:
                     logger.error(f"Failed to generate self-healing skill card: {e}")
-
-                # Optional: Push to Semantic Memory
-                if agent.resident_memory and hasattr(task, 'lessons_learned'):
-                    agent.resident_memory.log_interaction(
-                        sender="system",
-                        content=f"Retrospective for '{task.goal}': {task.lessons_learned}",
-                        msg_type="moderation",
-                        status="sent",
-                    )
