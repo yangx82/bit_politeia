@@ -215,10 +215,10 @@ class AgentService:
                     replace_existing=True,
                 )
                 self.scheduler.add_job(
-                    "app.services.agent_service:self_reflection_proxy",
+                    "app.services.agent_service:system_health_monitor_proxy",
                     "interval",
                     minutes=15,
-                    id="self_reflection_job",
+                    id="system_health_monitor_job",
                     replace_existing=True,
                 )
                 self.scheduler.add_job(
@@ -4004,7 +4004,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             )
         )
 
-    async def _self_reflection(self):
+    async def _system_health_monitor(self):
         """Periodic job to scan logs for errors and trigger autonomous repair."""
         log_path = "backend/data/logs/p2p_network.log"
         if not os.path.exists(log_path):
@@ -4053,7 +4053,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     break
 
         except Exception as e:
-            logger.error(f"Error in self_reflection job: {e}")
+            logger.error(f"Error in system_health_monitor job: {e}")
 
     async def _run_autonomous_repair_subagent(self, error_message: str):
         """Invoke a specialized sub-agent to diagnose and fix a system error."""
@@ -4492,10 +4492,10 @@ async def retry_failed_messages_proxy():
         await agent_service._retry_failed_messages()
 
 
-async def self_reflection_proxy():
-    """Proxy for agent_service._self_reflection"""
+async def system_health_monitor_proxy():
+    """Proxy for agent_service._system_health_monitor"""
     if agent_service:
-        await agent_service._self_reflection()
+        await agent_service._system_health_monitor()
 
 
 async def check_unhandled_messages_proxy():
