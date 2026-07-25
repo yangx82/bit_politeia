@@ -183,27 +183,11 @@ class AgentService:
                     replace_existing=True,
                 )
                 self.scheduler.add_job(
-                    "app.services.agent_service:run_consolidation_proxy",
+                    "app.services.agent_service:nightly_maintenance_pipeline_proxy",
                     "cron",
                     hour=2,
                     minute=0,
-                    id="nightly_consolidation_job",
-                    replace_existing=True,
-                )
-                self.scheduler.add_job(
-                    "app.services.agent_service:run_archiving_proxy",
-                    "cron",
-                    hour=2,
-                    minute=10,
-                    id="nightly_archiving_job",
-                    replace_existing=True,
-                )
-                self.scheduler.add_job(
-                    "app.services.agent_service:compress_history_proxy",
-                    "cron",
-                    hour=2,
-                    minute=30,
-                    id="nightly_history_compression_job",
+                    id="nightly_maintenance_pipeline_job",
                     replace_existing=True,
                 )
                 self.scheduler.add_job(
@@ -3659,6 +3643,56 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         return f"SUCCESS: Archived Block #{block.index} Hash: {block.hash[:16]}..."
 
+    async def run_nightly_maintenance_pipeline(self):
+        """
+        Unified Nightly Maintenance Pipeline:
+        Executes sequentially at 02:00 UTC:
+        1. Cognitive Memory Consolidation (ConsolidationService)
+        2. History Context Compression (ContextManager)
+        3. Blockchain Block Archiving (ArchiveManager)
+        """
+        logger.info("==================================================")
+        logger.info("[Nightly Pipeline] Starting Unified Maintenance Pipeline...")
+        logger.info("==================================================")
+
+        # Step 1: Cognitive Memory Consolidation
+        try:
+            if self.consolidation_service:
+                logger.info("[Nightly Pipeline 1/3] Step 1: Memory Consolidation starting...")
+                await self.consolidation_service.run_daily_consolidation()
+                logger.info("[Nightly Pipeline 1/3] Step 1: Memory Consolidation completed.")
+            else:
+                logger.info("[Nightly Pipeline 1/3] ConsolidationService uninitialized, skipped.")
+        except Exception as e:
+            logger.error(f"[Nightly Pipeline 1/3] Memory consolidation failed: {e}")
+
+        # Step 2: History Context Compression
+        try:
+            if self.context_manager:
+                logger.info("[Nightly Pipeline 2/3] Step 2: History Compression starting...")
+                res = await self.context_manager.compress_archived_history()
+                comp_count = res.get("compressed_count", 0) if isinstance(res, dict) else 0
+                logger.info(f"[Nightly Pipeline 2/3] Step 2: History Compression completed ({comp_count} messages summarized).")
+            else:
+                logger.info("[Nightly Pipeline 2/3] ContextManager uninitialized, skipped.")
+        except Exception as e:
+            logger.error(f"[Nightly Pipeline 2/3] History compression failed: {e}")
+
+        # Step 3: Blockchain Block Archiving
+        try:
+            if self.archive_manager:
+                logger.info("[Nightly Pipeline 3/3] Step 3: Blockchain Block Archiving starting...")
+                res_str = await self.run_archiving()
+                logger.info(f"[Nightly Pipeline 3/3] Step 3: Block Archiving completed ({res_str}).")
+            else:
+                logger.info("[Nightly Pipeline 3/3] ArchiveManager uninitialized, skipped.")
+        except Exception as e:
+            logger.error(f"[Nightly Pipeline 3/3] Block archiving failed: {e}")
+
+        logger.info("==================================================")
+        logger.info("[Nightly Pipeline] Maintenance Pipeline Finished Successfully.")
+        logger.info("==================================================")
+
     async def check_tasks_monitor(self):
         """Background job to check status of long-term tasks."""
         if not self.task_manager:
@@ -4544,6 +4578,12 @@ async def compress_history_proxy():
                 )
         except Exception as e:
             logger.error(f"History compression job failed: {e}")
+
+
+async def nightly_maintenance_pipeline_proxy():
+    """Proxy for agent_service.run_nightly_maintenance_pipeline"""
+    if agent_service:
+        await agent_service.run_nightly_maintenance_pipeline()
 
 
 agent_service = AgentService()
