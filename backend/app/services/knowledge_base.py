@@ -15,6 +15,13 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+try:
+    from app.utils.env_utils import load_dotenv_safe
+    load_dotenv_safe()
+except Exception:
+    pass
+
+
 
 class WebResearcher:
     """
