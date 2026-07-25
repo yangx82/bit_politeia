@@ -465,6 +465,39 @@ class AgentService:
                     return node_id
         return sid
 
+    def _is_automated_error_notification(self, content: str) -> bool:
+        """Detect if a P2P message is an automated system/LLM error notification or refusal.
+        
+        Such messages should be stored in history for audit/context, but must NOT trigger
+        downstream LLM response generation to prevent error-reply feedback loops across nodes.
+        """
+        if not content:
+            return False
+            
+        text = content.strip().lower()
+        
+        error_indicators = [
+            "[no_response_needed]",
+            "[no response needed]",
+            "error communicating with llm",
+            "triggered ralph wiggum auto-heal",
+            "llm 限制提示",
+            "llm 服务提示",
+            "message refused:",
+            "security suppression:",
+            "fatal_llm_request_validation_error",
+            "fatal_parallel_tool_calls_unsupported",
+            "fatal_no_model_loaded",
+            "fatal_sglang_fc_parser_error",
+            "token_length_exceeded",
+            "api_error:",
+            "connection error",
+        ]
+        for pattern in error_indicators:
+            if pattern in text:
+                return True
+        return False
+
     def _is_pure_acknowledgment_rules(self, content: str) -> bool:
         """Detect if a P2P message is a pure acknowledgment or status confirmation using rules."""
         if not content:
@@ -472,8 +505,8 @@ class AgentService:
             
         text = content.strip().lower()
         
-        # Check explicit bypass flags
-        if "[no_response_needed]" in text or "[no response needed]" in text:
+        # Check automated error notifications or explicit bypass flags
+        if self._is_automated_error_notification(text):
             return True
             
         import re
@@ -490,7 +523,7 @@ class AgentService:
         indicators = [
             "?", "？", "为什么", "how", "why", "what", "who", "where", "which",
             "如何", "怎么", "谁", "什么", "哪", "是否", "吗", "请问", "please",
-            "request", "question", "help", "请", "需要", "要求", "error", "错误",
+            "request", "question", "help", "请", "需要", "要求", "错误",
             "bug", "fail", "失败", "except", "warn", "alert", "警报", "更新", "update",
             "check", "检查", "verify", "验证", "test", "测试"
         ]
@@ -571,8 +604,8 @@ class AgentService:
             
         text = content.strip().lower()
         
-        # 0. Fast-path check for explicit bypass flags
-        if "[no_response_needed]" in text or "[no response needed]" in text:
+        # 0. Fast-path check for explicit bypass flags & automated error notifications
+        if self._is_automated_error_notification(text):
             return True
 
         # Try utilizing the auxiliary LLM
@@ -596,13 +629,14 @@ class AgentService:
             if llm:
                 system_prompt = (
                     "You are a P2P message filter assistant. Your task is to analyze the user message "
-                    "and determine if it is a pure acknowledgment or standby status confirmation message "
-                    "(e.g., '收到', '收悉', 'OK', 'got it', 'agreed', '维持 standby 状态', '同步确认。议题结束，维持 Standby。', "
-                    "'roger', 'copy that', etc.) which requires NO further response from the receiver.\n\n"
+                    "and determine if it is a pure acknowledgment, standby status confirmation message, "
+                    "or automated system/LLM error notification (e.g., '收到', '收悉', 'OK', 'got it', 'agreed', '维持 standby 状态', "
+                    "'同步确认。议题结束，维持 Standby。', 'Error communicating with LLM', 'Message Refused', etc.) "
+                    "which requires NO further response from the receiver.\n\n"
                     "Follow these rules:\n"
-                    "1. If the message only serves as an acknowledgment, agreement, sign-off, or standby confirmation, "
+                    "1. If the message only serves as an acknowledgment, agreement, sign-off, standby confirmation, or automated system error notification, "
                     "respond with exactly 'YES'.\n"
-                    "2. If the message contains actual content, questions, instructions, or requires a response/action "
+                    "2. If the message contains actual user questions, instructions, or requires a response/action "
                     "from the receiver, respond with exactly 'NO'.\n"
                     "Respond ONLY with 'YES' or 'NO' (no punctuation, no explanation)."
                 )

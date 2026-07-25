@@ -55,7 +55,13 @@ async def test_is_pure_acknowledgment_base_cases():
         )
         assert await agent_service.is_pure_acknowledgment(user_msg) is True
         
-        # 4. Action/Instruction/Questions (Should return False)
+        # 4. Automated Error Notifications & System Refusals (Should return True to prevent error-reply loops)
+        assert await agent_service.is_pure_acknowledgment("Error communicating with LLM. (Triggered Ralph Wiggum auto-heal if enabled: Connection error.)") is True
+        assert await agent_service.is_pure_acknowledgment("⚠️ Message Refused: Message appears to be a social engineering/phishing attempt.") is True
+        assert await agent_service.is_pure_acknowledgment("[SECURITY SUPPRESSION: Internal report misrouted.]") is True
+        assert await agent_service.is_pure_acknowledgment("LLM 服务提示：请求参数验证失败（400 Bad Request）。") is True
+
+        # 5. Action/Instruction/Questions (Should return False)
         assert await agent_service.is_pure_acknowledgment("维持standby状态") is False
         assert await agent_service.is_pure_acknowledgment("请维持standby状态") is False
         assert await agent_service.is_pure_acknowledgment("我需要你维持standby状态") is False
