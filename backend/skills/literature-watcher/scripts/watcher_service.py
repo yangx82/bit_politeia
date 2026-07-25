@@ -92,14 +92,24 @@ class WatcherService:
             logger.error(f"OpenAlex search failed: {e}")
             return []
 
-    def get_incremental_papers(self, topic, interval_days=7):
+    def get_incremental_papers(self, topic, interval_days=7, positive_keywords=None, negative_keywords=None):
         """
-        Retrieves new papers that are NOT in the history.
+        Retrieves new papers that are NOT in history, incorporating resident preferences.
         """
         from_date = (datetime.now() - timedelta(days=interval_days)).strftime('%Y-%m-%d')
-        raw_results = self.search_openalex(topic, from_date=from_date)
+        
+        # Expand search topic with positive keywords if available
+        search_topic = topic
+        if positive_keywords and isinstance(positive_keywords, list):
+            valid_pos = [kw.strip() for kw in positive_keywords if kw and isinstance(kw, str)]
+            if valid_pos:
+                search_topic = f"{topic} {' '.join(valid_pos[:3])}"
+
+        raw_results = self.search_openalex(search_topic, from_date=from_date)
         
         new_papers = []
+        neg_kws = [kw.lower().strip() for kw in negative_keywords] if negative_keywords and isinstance(negative_keywords, list) else []
+
         for raw in raw_results:
             paper = {
                 'id': raw.get('id', ''),
@@ -113,6 +123,13 @@ class WatcherService:
                 'citations': raw.get('cited_by_count', 0),
                 'topic': topic
             }
+
+            # Filter out papers matching negative keywords
+            if neg_kws:
+                text_content = f"{paper['title']} {paper['abstract']}".lower()
+                if any(neg_kw in text_content for neg_kw in neg_kws if neg_kw):
+                    logger.info(f"Filtering out paper '{paper['title']}' due to negative keyword match.")
+                    continue
             
             if not self.history.is_duplicate(
                 doi=paper['doi'], 

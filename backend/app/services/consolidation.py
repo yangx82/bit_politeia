@@ -72,6 +72,7 @@ class ConsolidationService:
         1. [PUBLIC SEMANTICS] Extract general facts about the resident, world, or project.
         2. [PRIVATE SECRETS] Identify sensitive data (API keys, credentials, private secrets) intended for the Private User Vault.
         3. [SOCIAL ANALYSIS] Identify peers interacted with and rate trust impact (-10 to +10).
+        4. [RESEARCH PREFERENCES] Identify resident feedback or preferences on literature/research topics (positive keywords to focus on, negative keywords to exclude/reduce, and brief preference summary).
         
         Return a JSON object:
         {{
@@ -79,7 +80,12 @@ class ConsolidationService:
           "private_secrets": {{"key": "value"}},
           "social_updates": [
             {{"peer_id": "uuid", "trust_diff": 5.0, "rel_type": "ally", "name": "Name"}}
-          ]
+          ],
+          "research_preferences": {{
+            "positive_keywords": ["keyword1"],
+            "negative_keywords": ["keyword2"],
+            "feedback_summary": "summary string"
+          }}
         }}
         """
 
@@ -117,6 +123,14 @@ class ConsolidationService:
                         rel_type=update.get("rel_type"),
                         name=update.get("name"),
                     )
+
+            res_prefs = result.get("research_preferences", {})
+            if res_prefs:
+                mem.update_research_preferences(
+                    positive_keywords=res_prefs.get("positive_keywords"),
+                    negative_keywords=res_prefs.get("negative_keywords"),
+                    feedback_summary=res_prefs.get("feedback_summary"),
+                )
 
             # 6. Update Metadata & Persist
             mem._semantic_profile["last_consolidation_time"] = now.isoformat()

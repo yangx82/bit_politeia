@@ -2149,9 +2149,20 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             from watcher_service import WatcherService
             watcher = WatcherService()
             
+            # Fetch resident feedback preferences from memory
+            res_prefs = {}
+            if self.resident_memory:
+                res_prefs = self.resident_memory.get_research_preferences()
+
             # 2. Search for new papers (Sync wrapper for asyncio)
             # We look back 7 days to catch any missed updates
-            new_papers = await asyncio.to_thread(watcher.get_incremental_papers, self.research_field, interval_days=7)
+            new_papers = await asyncio.to_thread(
+                watcher.get_incremental_papers,
+                self.research_field,
+                interval_days=7,
+                positive_keywords=res_prefs.get("positive_keywords"),
+                negative_keywords=res_prefs.get("negative_keywords"),
+            )
             
             if not new_papers:
                 logger.info("No new literature found in this cycle.")
@@ -2164,8 +2175,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             shared_count = 0
 
             for paper in new_papers:
-                # Use LLM to decide quality and sharing
-                decision = await self._evaluate_and_share_paper(paper)
+                # Use LLM to decide quality and sharing, taking resident preferences into account
+                decision = await self._evaluate_and_share_paper(paper, research_prefs=res_prefs)
                 
                 # A. Internal Log & Resident Notification
                 if decision.get("is_high_quality"):
@@ -2195,10 +2206,17 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         except Exception as e:
             logger.error(f"Literature Watcher process failed: {e}")
 
-    async def _evaluate_and_share_paper(self, paper: dict) -> dict:
+    async def _evaluate_and_share_paper(self, paper: dict, research_prefs: dict = None) -> dict:
         """Ask LLM to evaluate the paper and decide on sharing with the network."""
         if not self.llm:
             return {"is_high_quality": False, "should_share": False}
+
+        prefs_str = "None specified."
+        if research_prefs:
+            pos = ", ".join(research_prefs.get("positive_keywords", [])) or "None"
+            neg = ", ".join(research_prefs.get("negative_keywords", [])) or "None"
+            summary = research_prefs.get("feedback_summary", "")
+            prefs_str = f"Preferred Topics: [{pos}]\nExclude Topics: [{neg}]\nSummary: {summary}"
 
         prompt = f"""
         You are a proactive Research Agent in the Bit-Politeia network. 
@@ -2209,8 +2227,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         Authors: {paper.get('authors')}
         Abstract: {paper.get('abstract', 'No abstract available.')}
         
+        RESIDENT ACADEMIC PREFERENCES & FEEDBACK:
+        {prefs_str}
+
         TASK:
-        1. Evaluate if this paper is high quality and highly relevant to your research field: {self.research_field}.
+        1. Evaluate if this paper is high quality and highly relevant to your research field: {self.research_field}, aligning with the resident's preferences.
         2. Decide if you should share and discuss this with other autonomous nodes in the P2P community to foster scientific collaboration.
         3. Create a brief internal summary in {self.agent_language} explaining why it's important.
         4. If sharing, create a "Discussion Starter" in {self.agent_language} (e.g. "I found this interesting because... What do you think about X?").

@@ -97,8 +97,19 @@ class ResidentMemory:
                 "facts": [],
                 "preferences": {},
                 "persona": "Neutral Resident",
+                "research_preferences": {
+                    "positive_keywords": [],
+                    "negative_keywords": [],
+                    "feedback_summary": "",
+                },
                 "last_updated": None,
                 "last_consolidation_time": None,
+            }
+        elif "research_preferences" not in self._semantic_profile:
+            self._semantic_profile["research_preferences"] = {
+                "positive_keywords": [],
+                "negative_keywords": [],
+                "feedback_summary": "",
             }
 
     def _load_social_graph(self):
@@ -177,6 +188,42 @@ class ResidentMemory:
         if fact not in self._semantic_profile["facts"]:
             self._semantic_profile["facts"].append(fact)
             self.save_semantic_profile()
+
+    def get_research_preferences(self) -> dict:
+        """Get structured literature search preferences."""
+        return self._semantic_profile.get("research_preferences", {
+            "positive_keywords": [],
+            "negative_keywords": [],
+            "feedback_summary": "",
+        })
+
+    def update_research_preferences(
+        self,
+        positive_keywords: list = None,
+        negative_keywords: list = None,
+        feedback_summary: str = None,
+    ):
+        """Update resident's literature preferences based on feedback."""
+        prefs = self._semantic_profile.setdefault("research_preferences", {
+            "positive_keywords": [],
+            "negative_keywords": [],
+            "feedback_summary": "",
+        })
+
+        if positive_keywords:
+            for kw in positive_keywords:
+                if kw and kw not in prefs["positive_keywords"]:
+                    prefs["positive_keywords"].append(kw)
+
+        if negative_keywords:
+            for kw in negative_keywords:
+                if kw and kw not in prefs["negative_keywords"]:
+                    prefs["negative_keywords"].append(kw)
+
+        if feedback_summary:
+            prefs["feedback_summary"] = feedback_summary
+
+        self.save_semantic_profile()
 
     def update_social_edge(
         self, peer_id: str, trust_diff: float = 0, rel_type: str = None, name: str = None
