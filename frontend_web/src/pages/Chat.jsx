@@ -206,7 +206,8 @@ const Chat = () => {
                 let displayName = sessionId
 
                 if (sessionId === 'resident') {
-                    displayName = `${agentName} (My Agent)`
+                    const effectiveAgentName = (!agentName || agentName === 'Anonym') ? 'Agent' : agentName
+                    displayName = `${effectiveAgentName} (My Agent)`
                 } else if (groupsMap[sessionId]) {
                     displayName = groupsMap[sessionId]
                 } else if (peersMap[sessionId]) {
@@ -532,7 +533,7 @@ const Chat = () => {
                                 <div>
                                     <h2 className="font-bold text-slate-800">
                                         {activeSessionId === 'resident'
-                                            ? `${agentName} (My Agent)`
+                                            ? `${(!agentName || agentName === 'Anonym') ? 'Agent' : agentName} (My Agent)`
                                             : (groupsMap[activeSessionId] || peersMap[activeSessionId] || activeSessionId)}
                                     </h2>
                                     <p className="text-xs text-slate-500 flex items-center gap-1">

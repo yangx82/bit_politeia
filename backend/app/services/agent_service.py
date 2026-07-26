@@ -135,7 +135,7 @@ class AgentService:
         self.consolidation_service = ConsolidationService(self)
 
         # Identity Defaults
-        self.name = "Anonym"
+        self.name = os.getenv("AGENT_NAME", "Agent")
         self.personality = "Professional and helpful"
         self.agent_language = "中文"
         self.context_manager = None
@@ -966,7 +966,10 @@ class AgentService:
         # Load identity and behavioral parameters from JSON config
         json_config = self._load_config()
         
-        name = json_config.get("name", os.getenv("AGENT_NAME", "Anonym"))
+        loaded_name = json_config.get("name")
+        if not loaded_name or loaded_name == "Anonym":
+            loaded_name = os.getenv("AGENT_NAME", "Agent")
+        name = loaded_name
         personality = json_config.get("personality", os.getenv("AGENT_PERSONALITY", "Professional, helpfup, and humorous"))
         research_field = json_config.get("research_field", os.getenv("AGENT_RESEARCH_FIELD", "AI Governance"))
         p2p_reply_delay = int(json_config.get("p2p_reply_delay", os.getenv("AGENT_P2P_REPLY_DELAY", "5")))
