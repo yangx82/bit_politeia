@@ -138,6 +138,10 @@ class AgentService:
         self.name = os.getenv("AGENT_NAME", "Agent")
         self.personality = "Professional and helpful"
         self.agent_language = "中文"
+        self.model = os.getenv("AGENT_MODEL", None)
+        self.base_url = os.getenv("AGENT_BASE_URL", None)
+        self.api_key = os.getenv("AGENT_API_KEY", None)
+        self.llm = None
         self.context_manager = None
         self.knowledge_base = knowledge_base
 
@@ -2330,10 +2334,10 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
     async def get_status(self) -> AgentStatus:
         """Get current agent status including ledger and network info."""
         # Ensure status object is up to date with instance attributes
-        self.status.name = self.name
-        self.status.personality = self.personality
-        self.status.model = self.model
-        self.status.base_url = self.base_url
+        self.status.name = getattr(self, "name", "Agent")
+        self.status.personality = getattr(self, "personality", "Professional and helpful")
+        self.status.model = getattr(self, "model", None)
+        self.status.base_url = getattr(self, "base_url", None)
 
         if p2p_service.local_node:
             node_id = p2p_service.local_node.node_id
