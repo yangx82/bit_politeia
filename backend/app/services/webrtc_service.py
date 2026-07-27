@@ -18,6 +18,20 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+def safe_create_task(coro, name: str = "unnamed"):
+    """Wrapper for asyncio.create_task with exception logging."""
+    async def _wrapped():
+        try:
+            await coro
+        except asyncio.CancelledError:
+            pass  # Normal cancellation, not an error
+        except Exception as e:
+            logger.error(f"[Task:{name}] Unhandled exception: {e}", exc_info=True)
+
+    return asyncio.create_task(_wrapped())
+
+
 # Feature: Conditional Debug File Logging
 ENABLE_DEBUG_LOG = os.getenv("ENABLE_DEBUG_LOGGING", "true").lower() == "true"
 if ENABLE_DEBUG_LOG:
@@ -173,7 +187,7 @@ class WebRTCManager:
             candidates = self.pending_candidates.pop(peer_id_lower)
             logger.info(f"[{peer_id}] Flushing {len(candidates)} buffered ICE candidates.")
             for cand_data in candidates:
-                asyncio.create_task(self.handle_candidate(peer_id, cand_data))
+                safe_create_task(self.handle_candidate(peer_id, cand_data), name=f"ice_candidate_{peer_id[:8]}")
 
         return pc
 
@@ -221,8 +235,8 @@ class WebRTCManager:
             print(f"\n[!!!] WebRTC DATA CHANNEL OPEN WITH {peer_id} [!!!]\n", flush=True)
             # Start heartbeat
             if peer_id_lower not in self.heartbeat_tasks:
-                self.heartbeat_tasks[peer_id_lower] = asyncio.create_task(
-                    self._heartbeat_loop(peer_id, channel)
+                self.heartbeat_tasks[peer_id_lower] = safe_create_task(
+                    self._heartbeat_loop(peer_id, channel), name=f"heartbeat_{peer_id[:8]}"
                 )
 
         @channel.on("message")
@@ -232,32 +246,41 @@ class WebRTCManager:
                 msg_data = json.loads(message)
                 if isinstance(msg_data, dict):
                     if msg_data.get("type") == "ping":
-                        channel.send(json.dumps({"type": "pong"}))
+                        try:
+                            channel.send(json.dumps({"type": "pong"}))
+                        except Exception as e:
+                            logger.warning(f"[{peer_id}] Failed to send pong: {e}")
                         return
                     if msg_data.get("type") == "pong":
                         # Heartbeat received
                         return
-            except:
-                pass
+            except json.JSONDecodeError:
+                pass  # Not JSON, proceed to handle as regular message
+            except Exception as e:
+                logger.warning(f"[{peer_id}] Message parse error: {e}")
+                return
 
             logger.info(f"[{peer_id}] >>> RECEIVED VIA WEBRTC: {message[:100]}...")
             # Handle received data
             if self.message_callback:
-                if self.loop:
-                    asyncio.run_coroutine_threadsafe(
-                        self.message_callback(peer_id, message), self.loop
-                    )
-                else:
-                    # Fallback
-                    try:
-                        import asyncio as _asyncio
-
-                        loop = _asyncio.get_running_loop()
-                        _asyncio.run_coroutine_threadsafe(
-                            self.message_callback(peer_id, message), loop
+                try:
+                    if self.loop:
+                        asyncio.run_coroutine_threadsafe(
+                            self.message_callback(peer_id, message), self.loop
                         )
-                    except:
-                        logger.error(f"[{peer_id}] WebRTC Message Error: No event loop available.")
+                    else:
+                        # Fallback
+                        try:
+                            import asyncio as _asyncio
+
+                            loop = _asyncio.get_running_loop()
+                            _asyncio.run_coroutine_threadsafe(
+                                self.message_callback(peer_id, message), loop
+                            )
+                        except RuntimeError:
+                            logger.error(f"[{peer_id}] WebRTC Message Error: No event loop available.")
+                except Exception as e:
+                    logger.error(f"[{peer_id}] WebRTC Message callback error: {e}")
 
         if channel.readyState == "open":
             on_open()
@@ -364,9 +387,15 @@ class WebRTCManager:
             # the peer with the lexicographically "smaller" ID backs off (polite).
             # The one with the "larger" ID ignores the incoming offer and waits for an answer.
             if pc.signalingState == "have-local-offer":
-                from .p2p_service import p2p_service
-
-                local_id = p2p_service.local_node.node_id if p2p_service.local_node else "z"
+                # Avoid circular import: use TYPE_CHECKING pattern
+                # Get local node ID from network_manager directly if possible
+                try:
+                    # Lazy import at runtime to avoid circular dependency at module load
+                    from .p2p_service import p2p_service
+                    local_id = p2p_service.local_node.node_id if p2p_service.local_node else "z"
+                except ImportError:
+                    # Fallback: use environment or default
+                    local_id = os.getenv("NODE_ID", "z")
                 if local_id < peer_id:
                     logger.info(
                         f"[{peer_id}] Glare detected. I am POLITE. Resetting connection for their offer."

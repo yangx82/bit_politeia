@@ -12,6 +12,19 @@ from .webrtc_service import WebRTCManager
 logger = logging.getLogger(__name__)
 
 
+def safe_create_task(coro, name: str = "unnamed"):
+    """Wrapper for asyncio.create_task with exception logging."""
+    async def _wrapped():
+        try:
+            await coro
+        except asyncio.CancelledError:
+            pass  # Normal cancellation, not an error
+        except Exception as e:
+            logger.error(f"[Task:{name}] Unhandled exception: {e}", exc_info=True)
+
+    return asyncio.create_task(_wrapped())
+
+
 class P2PService:
     """
     Service layer for P2P network operations.
@@ -86,7 +99,7 @@ class P2PService:
         if self.early_messages:
             logger.info(f"Processing {len(self.early_messages)} buffered early messages...")
             for msg in self.early_messages:
-                asyncio.create_task(self.local_node.receive_message(msg))
+                safe_create_task(self.local_node.receive_message(msg), name="early_message")
             self.early_messages.clear()
 
     async def send_signaling_message(
@@ -231,8 +244,8 @@ class P2PService:
                     # GOSSIP FORWARD: Ensure propagation
                     recipient_id = message.get("recipient_id")
                     if recipient_id and recipient_id in self.network_manager.groups:
-                        asyncio.create_task(
-                            self._forward_governance_message(msg_obj, event_type)
+                        safe_create_task(
+                            self._forward_governance_message(msg_obj, event_type), name=f"gossip_{event_type}"
                         )
                 return True
             except Exception as e:
@@ -242,22 +255,22 @@ class P2PService:
         # 3. Dispatch remaining by Message Type
         if msg_type == MessageType.SDP_OFFER.value:
             if self.webrtc_manager:
-                asyncio.create_task(
-                    self.webrtc_manager.handle_offer(sender_id, message.get("content", {}))
+                safe_create_task(
+                    self.webrtc_manager.handle_offer(sender_id, message.get("content", {})), name=f"sdp_offer_{sender_id[:8]}"
                 )
             return True
 
         elif msg_type == MessageType.SDP_ANSWER.value:
             if self.webrtc_manager:
-                asyncio.create_task(
-                    self.webrtc_manager.handle_answer(sender_id, message.get("content", {}))
+                safe_create_task(
+                    self.webrtc_manager.handle_answer(sender_id, message.get("content", {})), name=f"sdp_answer_{sender_id[:8]}"
                 )
             return True
 
         elif msg_type == MessageType.ICE_CANDIDATE.value:
             if self.webrtc_manager:
-                asyncio.create_task(
-                    self.webrtc_manager.handle_candidate(sender_id, message.get("content", {}))
+                safe_create_task(
+                    self.webrtc_manager.handle_candidate(sender_id, message.get("content", {})), name=f"ice_candidate_{sender_id[:8]}"
                 )
             return True
 
@@ -270,8 +283,8 @@ class P2PService:
                 )
                 from .agent_service import agent_service
 
-                asyncio.create_task(
-                    agent_service.handle_remote_delivery_error(m_id, message.get("content"))
+                safe_create_task(
+                    agent_service.handle_remote_delivery_error(m_id, message.get("content")), name=f"delivery_error_{m_id[:8]}"
                 )
             return True
 
@@ -279,7 +292,7 @@ class P2PService:
             # Handle state synchronization requests
             content = message.get("content", {})
             if content.get("sync_type") == "state_request":
-                asyncio.create_task(self.network_manager.handle_state_sync_request(message))
+                safe_create_task(self.network_manager.handle_state_sync_request(message), name="state_sync")
             return True
 
         return False
@@ -324,7 +337,7 @@ class P2PService:
             return
 
         logger.info(f"ICE Warmup: Proactively initiating WebRTC connection with {peer_id}")
-        asyncio.create_task(self.webrtc_manager.initiate_connection(peer_id))
+        safe_create_task(self.webrtc_manager.initiate_connection(peer_id), name=f"warmup_{peer_id[:8]}")
 
     async def send_message(
         self,
