@@ -221,9 +221,13 @@ class P2PService:
                 MessageType.ICE_CANDIDATE.value,
             ]:
                 self.processed_signaling_ids.add(message_id)
-                # Keep set size manageable
+                # Keep set size manageable - remove oldest half instead of clearing all
+                # This prevents race condition where messages processed during clear() are lost
                 if len(self.processed_signaling_ids) > 1000:
-                    self.processed_signaling_ids.clear()
+                    # Convert to list, keep only the most recent 500
+                    ids_list = list(self.processed_signaling_ids)
+                    self.processed_signaling_ids = set(ids_list[500:])
+                    logger.debug(f"[Dedup] Trimmed cache from 1000 to {len(self.processed_signaling_ids)}")
 
         # 2. SECURITY: For governance messages, verify signature before processing
         gov_msg_types = [
@@ -361,7 +365,9 @@ class P2PService:
                 now = time.time()
                 dead_peers = []
 
-                for peer_id, last_seen in self._peer_last_seen.items():
+                # Create a snapshot to avoid concurrent modification issues
+                peer_snapshot = list(self._peer_last_seen.items())
+                for peer_id, last_seen in peer_snapshot:
                     elapsed = now - last_seen
                     if elapsed > self._heartbeat_timeout:
                         dead_peers.append(peer_id)
@@ -390,6 +396,23 @@ class P2PService:
             except Exception as e:
                 logger.error(f"[Heartbeat] Error in heartbeat loop: {e}", exc_info=True)
                 await asyncio.sleep(5)  # Brief pause before retry
+
+    async def shutdown(self):
+        """Stop heartbeat and cleanup resources."""
+        logger.info("[P2PService] Shutting down...")
+        
+        # Stop heartbeat
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
+            logger.info("[P2PService] Heartbeat stopped")
+        
+        logger.info("[P2PService] Shutdown complete")
+
 
     async def warmup_webrtc(self, peer_id: str):
         """

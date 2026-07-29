@@ -715,6 +715,47 @@ class NetworkManager:
         # Fallback to relay
         return await self._send_via_relay(peer_id, message)
 
+    async def disconnect_peer(self, peer_id: str) -> bool:
+        """Disconnect a peer from the network.
+        
+        This removes the peer from local tracking and cleans up any resources.
+        Note: This does NOT remove the peer from the bootstrap server - it only
+        affects the local node's view of the network.
+        
+        Args:
+            peer_id: The node ID of the peer to disconnect
+            
+        Returns:
+            True if the peer was found and disconnected, False otherwise
+        """
+        if peer_id not in self.nodes:
+            logger.debug(f"[Network] Peer {peer_id[:8]}... not in local nodes, nothing to disconnect")
+            return False
+        
+        # Don't disconnect ourselves
+        if peer_id == self.local_node_id:
+            logger.warning(f"[Network] Cannot disconnect local node {peer_id[:8]}...")
+            return False
+        
+        peer = self.nodes[peer_id]
+        logger.info(f"[Network] Disconnecting peer {peer_id[:8]}... (endpoint: {peer.endpoint})")
+        
+        # Mark peer as offline by clearing its endpoint
+        peer.endpoint = None
+        peer.last_seen = datetime.min.replace(tzinfo=timezone.utc)
+        
+        # Remove peer from all groups' member lists
+        for group in self.groups.values():
+            if peer_id in group.members:
+                group.members.discard(peer_id)
+                logger.debug(f"[Network] Removed {peer_id[:8]}... from group {group.group_id[:8]}...")
+        
+        # Remove from local nodes cache
+        del self.nodes[peer_id]
+        
+        logger.info(f"[Network] Successfully disconnected peer {peer_id[:8]}...")
+        return True
+
     def get_network_structure(self):
         """Returns a dict representation of the hierarchy."""
         return {
