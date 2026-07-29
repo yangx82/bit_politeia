@@ -351,7 +351,18 @@ class AgentService:
             )
 
             logger.info(f"[Auto-Resume] Triggering async pipeline resume for session {session_id}...")
-            await asyncio.sleep(1)  # Brief wait for services to stabilize
+
+            # Wait for Agent LLM and ContextManager to fully initialize (up to 30s)
+            for wait_turn in range(60):
+                if self.llm and self.context_manager:
+                    logger.info(f"[Auto-Resume] Agent fully initialized after {wait_turn * 0.5:.1f}s. Proceeding with resume.")
+                    break
+                await asyncio.sleep(0.5)
+
+            if not self.llm or not self.context_manager:
+                logger.warning("[Auto-Resume] Agent initialization timed out after 30s. Deferring auto-resume.")
+                return
+
             asyncio.create_task(self.process_bus_message(resume_msg))
 
         except Exception as e:

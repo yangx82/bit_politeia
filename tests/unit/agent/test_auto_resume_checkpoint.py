@@ -66,6 +66,8 @@ class TestAutoResumeCheckpoint(unittest.TestCase):
         async def run_test():
             from app.services.agent_service import AgentService
             svc = AgentService()
+            svc.llm = MagicMock()
+            svc.context_manager = MagicMock()
 
             # Mock checkpoint manager to return fake checkpoint
             fake_cp = {
