@@ -299,8 +299,31 @@ class ResidentMemory:
         try:
             with open(file_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            # Sync to Next-Gen L2 Short-Term Memory (Redis) if active
+            try:
+                from .next_gen_memory import next_gen_memory
+                s_id = session_id or "resident"
+                next_gen_memory.write_short_term(session_id=s_id, role=sender, content=content)
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"Failed to log to {topic}: {e}")
+
+    def record_reflection(self, session_id: str, trigger_error: str, corrective_action: str, context_snippet: str = ""):
+        """Record an error reflection lesson into L3 MongoDB and Next-Gen Memory."""
+        try:
+            from .next_gen_memory import next_gen_memory
+            next_gen_memory.record_reflection(session_id, trigger_error, corrective_action, context_snippet)
+        except Exception as e:
+            logger.warning(f"Failed to record reflection: {e}")
+
+    def get_reflections(self, trigger_error: str = None, limit: int = 5) -> list[dict]:
+        """Fetch error reflections from L3 MongoDB."""
+        try:
+            from .next_gen_memory import next_gen_memory
+            return next_gen_memory.search_reflections(trigger_error=trigger_error, limit=limit)
+        except Exception:
+            return []
 
     def update_message_status(self, message_id: str, status: str, topic: str = None):
         """Update the status of a specific message in the JSONL log. Searches all topics if not found."""

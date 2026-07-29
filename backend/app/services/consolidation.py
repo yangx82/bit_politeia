@@ -108,6 +108,17 @@ class ConsolidationService:
             # 5. Update Layers
             for f in result.get("public_facts", []):
                 mem.update_semantic_fact(f)
+                # Sink to Next-Gen L4 Temporal Knowledge Graph (Neo4j)
+                try:
+                    from .next_gen_memory import next_gen_memory
+                    next_gen_memory.add_temporal_fact(
+                        subject=mem._semantic_profile.get("persona", "Resident"),
+                        relation="KNOWS_FACT",
+                        target=f,
+                        valid_from=now.isoformat()
+                    )
+                except Exception:
+                    pass
 
             vault_items = result.get("private_secrets", {})
             for k, v in vault_items.items():
