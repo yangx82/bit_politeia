@@ -622,6 +622,24 @@ class ExecuteStage(PipelineStage):
             args = tool_call["args"]
             tool_call_id = tool_call["id"]
 
+            # Save in-flight execution checkpoint for auto-resume upon restart
+            try:
+                from .checkpoint_manager import checkpoint_manager
+
+                active_task_id = context.session.current_task if hasattr(context.session, "current_task") else None
+                checkpoint_manager.save_checkpoint(
+                    session_id=context.input_message.session_id,
+                    channel=context.input_message.channel,
+                    sender_id=getattr(context.input_message, "sender_id", "resident"),
+                    input_message_content=context.input_message.content,
+                    thoughts=context.thoughts,
+                    tool_results=context.tool_results,
+                    pending_tool_calls=context.tool_calls,
+                    task_id=active_task_id,
+                )
+            except Exception as cp_err:
+                logger.error(f"Failed to save in-flight checkpoint: {cp_err}")
+
             # Emit Tool Call Event
             # Emit Tool Call Event - Unified Log
             # We send to the current session so the specific channel sees the tool invoking bubble
@@ -807,8 +825,10 @@ class ArchiveStage(PipelineStage):
         logger.info(f"[{context.session.session_id}] Stage: Archive")
         # 1. Persistence: Session Service handles disk save
         from ..services.session_service import session_manager
+        from .checkpoint_manager import checkpoint_manager
 
         session_manager.save_session(context.session)
+        checkpoint_manager.clear_checkpoint()
 
         # 2. Cleanup Sandbox
         if context._sandbox:

@@ -294,8 +294,68 @@ class AgentService:
                 logger.info("Scheduler started successfully.")
             else:
                 logger.info("Scheduler already running, jobs ensured.")
+
+            # --- STARTUP AUTO-RESUME CHECK ---
+            asyncio.create_task(self.check_and_resume_interrupted_tasks())
         except Exception as e:
             logger.error(f"Failed to start scheduler/jobs: {e}")
+
+    async def check_and_resume_interrupted_tasks(self):
+        """
+        Check for interrupted tasks caused by self-code modification or backend reloads.
+        Restores working memory (thoughts, previous tool calls) and resumes execution.
+        """
+        try:
+            from app.agent.checkpoint_manager import checkpoint_manager
+
+            checkpoint = checkpoint_manager.load_checkpoint()
+            if not checkpoint:
+                logger.info("[Auto-Resume] No interrupted task checkpoint found.")
+                return
+
+            session_id = checkpoint.get("session_id", "resident")
+            channel = checkpoint.get("channel", "resident")
+            sender_id = checkpoint.get("sender_id", "resident")
+            orig_input = checkpoint.get("input_message_content", "")
+            thoughts = checkpoint.get("thoughts", [])
+            tool_results = checkpoint.get("tool_results", [])
+
+            logger.info(
+                f"[Auto-Resume] Interrupted task checkpoint detected! Session: {session_id}, "
+                f"Thoughts: {len(thoughts)}, Tool Results: {len(tool_results)}"
+            )
+
+            # Build continuation prompt
+            thoughts_str = "\n".join([f"- {t[:150]}..." if len(t) > 150 else f"- {t}" for t in thoughts[-3:]]) if thoughts else "无"
+            executed_tools = ", ".join([r.get("tool", "tool") for r in tool_results]) or "无"
+
+            resume_prompt = (
+                f"[SYSTEM AUTO-RESUME NOTICE]: 检测到系统因代码修改/热重载进行了重新启动。"
+                f"已成功自动恢复工作记忆与执行断点！\n"
+                f"你中断前正在推进的需求: \"{orig_input}\"\n"
+                f"中断前的最新思考记录:\n{thoughts_str}\n"
+                f"中断前已执行完毕的工具: {executed_tools}\n"
+                f"请先检查修改后的代码文件状态，验证代码语法/文件逻辑，然后接着从中断的地方继续完成后续的任务。"
+            )
+
+            # Clear checkpoint to prevent repeated resumption
+            checkpoint_manager.clear_checkpoint()
+
+            from app.bus.events import InboundMessage
+            resume_msg = InboundMessage(
+                channel=channel,
+                sender_id=sender_id,
+                session_id=session_id,
+                content=resume_prompt,
+                metadata={"is_auto_resume": True, "original_request": orig_input}
+            )
+
+            logger.info(f"[Auto-Resume] Triggering async pipeline resume for session {session_id}...")
+            await asyncio.sleep(1)  # Brief wait for services to stabilize
+            asyncio.create_task(self.process_bus_message(resume_msg))
+
+        except Exception as e:
+            logger.error(f"[Auto-Resume] Failed to resume interrupted task: {e}")
 
     async def _retry_failed_messages(self):
         """10-minute automatic retry for failed/pending P2P messages."""
