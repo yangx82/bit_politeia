@@ -2837,6 +2837,37 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         # Return list of proposals
         return [p.to_dict() for p in self.governance_manager.proposals.values()]
 
+    async def get_research_proposals(self, group_id: str = None) -> list[dict]:
+        """Get research proposals with optional filtering."""
+        if not self.governance_manager:
+            return []
+        return self.governance_manager.get_research_proposals(group_id=group_id)
+
+    async def get_research_proposal(self, election_id: str) -> dict:
+        """Get detailed information about a research proposal."""
+        if not self.governance_manager:
+            return {}
+        return self.governance_manager.get_research_proposal(election_id)
+
+    async def submit_research_evaluation(
+        self, election_id: str, score: float, feedback: str, reward_amount: float = 0
+    ) -> tuple[bool, str]:
+        """Submit an evaluation for a research publication."""
+        if not self.governance_manager:
+            return False, "Governance manager not initialized"
+        
+        if not p2p_service.local_node:
+            return False, "P2P node not initialized"
+        
+        evaluator_id = p2p_service.local_node.node_id
+        return self.governance_manager.submit_research_evaluation(
+            election_id=election_id,
+            evaluator_id=evaluator_id,
+            score=score,
+            feedback=feedback,
+            reward_amount=reward_amount,
+        )
+
     async def delete_proposal(self, proposal_id: str) -> bool:
         """Remove a proposal and its associated election."""
         if self.governance_manager:
@@ -3951,11 +3982,22 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             details = ""
 
             if election.election_type == ElectionType.RESEARCH_EVALUATION:
-                payout_amount = tally.get("average_amount", 0.0)
+                # average_amount is the average score (0-5), convert to reward amount
+                # Score mapping: 0-2 → 0 reward, 2-3 → 50 stater, 3-4 → 100 stater, 4-5 → 200 stater
+                avg_score = tally.get("average_amount", 0.0)
+                if avg_score >= 4.0:
+                    payout_amount = 200.0
+                elif avg_score >= 3.0:
+                    payout_amount = 100.0
+                elif avg_score >= 2.0:
+                    payout_amount = 50.0
+                else:
+                    payout_amount = 0.0
+                
                 if payout_amount > 0:
                     payout_needed = True
                     category = "REWARD"
-                    details = f"Research evaluation reward for proposal {(election.proposal_id or '')[:8]}"
+                    details = f"Research evaluation reward (score: {avg_score:.2f}) for proposal {(election.proposal_id or '')[:8]}"
                 else:
                     election.payout_status = "no_reward"
                     self.governance_manager.save_state()

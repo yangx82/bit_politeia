@@ -348,6 +348,175 @@ class GovernanceManager:
         except Exception as e:
             logger.error(f"Failed to load governance state: {e}")
 
+    def submit_research_evaluation(self, election_id: str, evaluator_id: str, score: float, feedback: str, reward_amount: float = 0) -> tuple[bool, str]:
+        """Submit an evaluation for a research publication.
+        
+        Args:
+            election_id: The election/proposal ID
+            evaluator_id: The evaluator's node ID
+            score: Quality score (0-5)
+            feedback: Evaluation feedback text
+            reward_amount: Proposed reward amount (deprecated, calculated from score)
+        """
+        if election_id not in self.active_elections:
+            return False, "Election not found"
+
+        election = self.active_elections[election_id]
+
+        # Check if already evaluated by this evaluator (votes are keyed by voter_id)
+        if evaluator_id in election.votes:
+            return False, "Already evaluated by this evaluator"
+
+        # Check if evaluator is the author (excluded from voting)
+        if evaluator_id in election.excluded_voters:
+            return False, "Author cannot evaluate their own research"
+
+        # Validate score range
+        if not (0 <= score <= 5):
+            return False, "Score must be between 0 and 5"
+
+        # Create vote for research evaluation
+        # Store score in reward_amount field for averaging in finalize
+        vote = Vote(
+            voter_id=evaluator_id,
+            candidate_id=None,  # Research evaluation doesn't have candidates
+            timestamp=datetime.now(UTC),
+            approval=score >= 3.0,  # Approve if score >= 3
+            reason=feedback,
+            reward_amount=score,  # Store score for averaging
+        )
+
+        # Store vote keyed by voter_id (matching receive_ballot pattern)
+        election.votes[evaluator_id] = [vote]
+
+        # Check if we have enough evaluations
+        evaluation_count = len(election.votes)
+        eligible_count = len(election.eligible_voters - election.excluded_voters)
+        # Require at least 2 evaluations, or 50% of eligible voters (whichever is smaller)
+        required_count = max(2, min(eligible_count, (eligible_count + 1) // 2))
+        
+        logger.info(f"Research evaluation: {evaluation_count}/{required_count} for election {election_id[:8]}")
+        
+        if evaluation_count >= required_count:
+            success, msg = self.finalize_research_evaluation(election_id)
+            if success:
+                logger.info(f"Research evaluation finalized: {msg}")
+            else:
+                logger.warning(f"Failed to finalize research evaluation: {msg}")
+
+        self.save_state()
+        return True, f"Evaluation submitted successfully ({evaluation_count}/{required_count} evaluations)"
+
+    def finalize_research_evaluation(self, election_id: str) -> tuple[bool, str]:
+        """Finalize a research evaluation and calculate rewards.
+        
+        Updates:
+        - Election status → finished
+        - Proposal status → evaluated
+        - Election payout_status → pending (for reward distribution)
+        """
+        if election_id not in self.active_elections:
+            return False, "Election not found"
+
+        election = self.active_elections[election_id]
+        
+        # Collect all votes
+        all_votes = []
+        for voter_votes in election.votes.values():
+            all_votes.extend(voter_votes)
+
+        if not all_votes:
+            return False, "No evaluations submitted"
+
+        # Calculate average score (stored in reward_amount field)
+        total_score = sum(v.reward_amount for v in all_votes)
+        avg_score = total_score / len(all_votes)
+
+        # Update proposal status to "evaluated"
+        if election.proposal_id and election.proposal_id in self.proposals:
+            proposal = self.proposals[election.proposal_id]
+            proposal.status = "evaluated"
+            logger.info(f"Proposal {election.proposal_id[:8]} status updated to 'evaluated'")
+
+        # Move to finished elections and mark payout as pending
+        election.status = "finished"
+        election.payout_status = "pending"
+        self.finished_elections[election_id] = election
+        del self.active_elections[election_id]
+
+        self.save_state()
+        return True, f"Research evaluation finalized. Average score: {avg_score:.2f}, payout pending."
+
+    def get_research_proposals(self, group_id: str = None, status: str = None) -> list[dict]:
+        """Get research proposals with optional filtering."""
+        results = []
+
+        # Search in active elections
+        for election_id, election in self.active_elections.items():
+            if election.election_type != ElectionType.RESEARCH_EVALUATION:
+                continue
+            if group_id and election.group_id != group_id:
+                continue
+
+            proposal = self.proposals.get(election.proposal_id)
+            if not proposal:
+                continue
+
+            proposal_data = proposal.to_dict()
+            proposal_data["election_id"] = election_id
+            proposal_data["status"] = "active"
+            proposal_data["evaluations_count"] = len(election.votes)
+            results.append(proposal_data)
+
+        # Search in finished elections
+        for election_id, election in self.finished_elections.items():
+            if election.election_type != ElectionType.RESEARCH_EVALUATION:
+                continue
+            if group_id and election.group_id != group_id:
+                continue
+
+            proposal = self.proposals.get(election.proposal_id)
+            if not proposal:
+                continue
+
+            proposal_data = proposal.to_dict()
+            proposal_data["election_id"] = election_id
+            proposal_data["status"] = "completed"
+            proposal_data["evaluations_count"] = len(election.votes)
+            results.append(proposal_data)
+
+        return results
+
+    def get_research_proposal(self, election_id: str) -> dict:
+        """Get detailed information about a research proposal."""
+        election = self.active_elections.get(election_id) or self.finished_elections.get(election_id)
+        if not election:
+            return {}
+
+        proposal = self.proposals.get(election.proposal_id)
+        if not proposal:
+            return {}
+
+        proposal_data = proposal.to_dict()
+        proposal_data["election_id"] = election_id
+        proposal_data["status"] = "active" if election.status == "active" else "completed"
+        
+        # Collect all evaluations
+        evaluations = []
+        for voter_id, voter_votes in election.votes.items():
+            for v in voter_votes:
+                evaluations.append({
+                    "evaluator_id": v.voter_id,
+                    "score": v.reward_amount,
+                    "feedback": v.reason,
+                    "timestamp": v.timestamp.isoformat() if hasattr(v.timestamp, 'isoformat') else str(v.timestamp),
+                })
+        
+        proposal_data["evaluations"] = evaluations
+        proposal_data["evaluations_count"] = len(evaluations)
+
+        return proposal_data
+
     def initiate_election(
         self, group_id: str, candidates: list[str], duration_minutes: int = 60
     ) -> Election:

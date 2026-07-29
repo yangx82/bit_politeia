@@ -380,7 +380,7 @@ class P2PService:
                 for peer_id in dead_peers:
                     self._peer_last_seen.pop(peer_id, None)
                     # Also disconnect from network manager if connected
-                    if peer_id in self.network_manager.peers:
+                    if peer_id in self.network_manager.nodes:
                         try:
                             await self.network_manager.disconnect_peer(peer_id)
                             logger.info(f"[Heartbeat] Disconnected dead peer {peer_id[:8]}...")

@@ -2,7 +2,16 @@ import logging
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from ...models.schemas import AgentStatus, ChatRequest, ConfigRequest, Message, P2PMessage
+from ...models.schemas import (
+    AgentStatus,
+    ChatRequest,
+    ConfigRequest,
+    Message,
+    P2PMessage,
+    ResearchPublishRequest,
+    ResearchEvaluateRequest,
+    ResearchProposalResponse,
+)
 from ...services.agent_service import agent_service
 from ...services.crypto_service import crypto_service
 
@@ -228,3 +237,53 @@ async def delete_election(election_id: str) -> dict:
         return {"status": "success", "message": f"Election {election_id} removed."}
     else:
         raise HTTPException(status_code=404, detail="Election not found")
+
+
+# Research Publication Endpoints
+@router.post("/research/publish")
+async def publish_research(request: ResearchPublishRequest) -> dict:
+    """Publish a new research paper for evaluation."""
+    try:
+        election_id = await agent_service.publish_research(
+            group_id=request.group_id,
+            content=request.content,
+            pdf_hash=request.pdf_hash,
+        )
+        return {
+            "status": "success",
+            "message": f"Research published with election ID: {election_id}",
+            "election_id": election_id,
+        }
+    except Exception as e:
+        logger.error(f"Error publishing research: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/research/proposals")
+async def list_research_proposals(group_id: str = None) -> list[dict]:
+    """List all research proposals with optional group filtering."""
+    return await agent_service.get_research_proposals(group_id=group_id)
+
+
+@router.get("/research/proposals/{election_id}")
+async def get_research_proposal(election_id: str) -> dict:
+    """Get detailed information about a research proposal."""
+    proposal = await agent_service.get_research_proposal(election_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Research proposal not found")
+    return proposal
+
+
+@router.post("/research/evaluate/{election_id}")
+async def evaluate_research(election_id: str, request: ResearchEvaluateRequest) -> dict:
+    """Submit an evaluation for a research publication."""
+    success, message = await agent_service.submit_research_evaluation(
+        election_id=election_id,
+        score=request.score,
+        feedback=request.feedback,
+        reward_amount=request.reward_amount,
+    )
+    if success:
+        return {"status": "success", "message": message}
+    else:
+        raise HTTPException(status_code=400, detail=message)

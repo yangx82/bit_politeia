@@ -111,3 +111,31 @@ class ProposalCreateRequest(BaseModel):
     group_id: str
     content: str
     duration_minutes: int = 60
+
+
+class ResearchPublishRequest(BaseModel):
+    """Request to publish research."""
+    group_id: str
+    content: str
+    pdf_hash: str
+    duration_minutes: int = 60
+
+
+class ResearchEvaluateRequest(BaseModel):
+    """Request to evaluate research."""
+    score: float = 0.0
+    feedback: str
+    reward_amount: float = 0.0
+
+
+class ResearchProposalResponse(BaseModel):
+    """Response for research proposal."""
+    election_id: str
+    group_id: str
+    content: str
+    pdf_hash: str
+    status: str
+    evaluations_count: int
+    initiator_id: str
+    start_time: str
+    end_time: str
