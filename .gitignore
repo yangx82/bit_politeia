@@ -81,3 +81,7 @@ venv/
 **/FEATURE_REQUESTS.md
 **/daily_report_*.md
 **/daily-*.md
+
+# Auto-learned custom skills (Local runtime only, not synced to GitHub)
+backend/skills/auto_learned/
+**/skills/auto_learned/
