@@ -347,6 +347,13 @@ class PlanStage(PipelineStage):
                     messages = _compact_messages_in_flight(messages, aggressiveness=attempt + 1)
                     continue
 
+                if ("connection error" in err_msg.lower() or "connect" in err_msg.lower() or "timeout" in err_msg.lower()) and attempt < 2:
+                    logger.warning(
+                        f"[{context.session.session_id}] Transient LLM network error on attempt {attempt+1}/3: {err_msg}. Retrying in 2s..."
+                    )
+                    await asyncio.sleep(2)
+                    continue
+
                 if is_context_limit_err:
                     user_friendly_err = "LLM 限制提示：单次请求输入内容过长，超出模型 token 上限。系统已自动进行紧急压缩但仍超限，建议清理会话历史或分割长文本请求。"
                     context.continuation_req = False

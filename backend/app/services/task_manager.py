@@ -132,6 +132,10 @@ class TaskManager:
         self.save_tasks()
         return task
 
+    def get_all_tasks(self) -> list[Task]:
+        """Return all tasks regardless of status."""
+        return list(self.tasks.values())
+
     def get_active_tasks(self) -> list[Task]:
         """Return tasks that are not completed or failed."""
         return [

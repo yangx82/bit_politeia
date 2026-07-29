@@ -640,14 +640,14 @@ class ResidentReporter:
         
         # 2. Fetch Task Status
         tasks = self.agent.task_manager.get_all_tasks()
-        active_tasks = [t for t in tasks if t.status in ["running", "pending"]]
-        recent_done = [t for t in tasks if t.status == "completed"][-3:]
+        active_tasks = [t for t in tasks if str(t.status).lower() in ["running", "pending", "active"]]
+        recent_done = [t for t in tasks if str(t.status).lower() in ["completed", "done"]][-3:]
         
         task_text = ""
         if active_tasks:
-            task_text += "Active Tasks:\n" + "\n".join([f"- {t.title} ({t.status})" for t in active_tasks])
+            task_text += "Active Tasks:\n" + "\n".join([f"- {getattr(t, 'goal', getattr(t, 'title', 'Task'))} ({t.status})" for t in active_tasks])
         if recent_done:
-            task_text += "\nRecently Completed:\n" + "\n".join([f"- {t.title}" for t in recent_done])
+            task_text += "\nRecently Completed:\n" + "\n".join([f"- {getattr(t, 'goal', getattr(t, 'title', 'Task'))}" for t in recent_done])
 
         # 3. Generate Research Part (Increased limit)
         recent_research = self.agent.resident_memory.get_recent_history(limit=15, topic="research")
