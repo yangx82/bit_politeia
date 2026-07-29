@@ -780,7 +780,13 @@ class NetworkManager:
         await self.route_message(sync_msg, gossip_forward=True)
 
     async def handle_state_sync_request(self, message: SignedMessage | dict):
-        """Handle incoming state sync request by sharing known proposals/elections dynamically (delta sync)."""
+        """Handle incoming state sync request by sharing known proposals/elections dynamically (delta sync).
+        
+        Includes integrity verification via hash comparison to detect data tampering.
+        """
+        import hashlib
+        import json
+        
         if isinstance(message, dict):
             try:
                 msg_obj = SignedMessage.from_dict(message)
@@ -806,10 +812,22 @@ class NetworkManager:
         if not agent_service or not agent_service.governance_manager:
             return
 
+        # Helper function to compute data hash for integrity verification
+        def compute_data_hash(data: dict) -> str:
+            """Compute SHA256 hash of data for integrity verification."""
+            # Sort keys for deterministic serialization
+            serialized = json.dumps(data, sort_keys=True, default=str)
+            return hashlib.sha256(serialized.encode()).hexdigest()[:16]
+
         # Share active proposals and elections
         gm = agent_service.governance_manager
         group_id = msg_obj.recipient_id
         requester_known = content.get("known_proposals", {})
+
+        # Track sync statistics
+        synced_count = 0
+        skipped_count = 0
+        integrity_mismatch_count = 0
 
         # Get proposals for this group
         for proposal in gm.proposals.values():
@@ -818,20 +836,47 @@ class NetworkManager:
                 election = gm.active_elections.get(pid)
                 local_vote_count = len(election.votes) if election else 0
 
-                # Check if requester already has this proposal up to date
+                # Prepare local proposal data
+                local_proposal_data = proposal.to_dict()
+                local_election_data = election.to_dict() if election else None
+                local_data_hash = compute_data_hash({
+                    "proposal": local_proposal_data,
+                    "election": local_election_data,
+                })
+
+                # Check if requester already has this proposal
                 if pid in requester_known:
                     req_state = requester_known[pid]
+                    
+                    # Check basic status match
                     if (
                         req_state.get("status") == proposal.status
                         and req_state.get("vote_count") == local_vote_count
                     ):
-                        # State is identical, skip sending to reduce network overhead
-                        continue
+                        # Check hash-based integrity verification if provided
+                        remote_hash = req_state.get("data_hash")
+                        if remote_hash:
+                            if remote_hash == local_data_hash:
+                                # State is identical and verified, skip sending
+                                skipped_count += 1
+                                continue
+                            else:
+                                # Hash mismatch - data integrity issue detected!
+                                integrity_mismatch_count += 1
+                                logger.warning(
+                                    f"[StateSync] Integrity mismatch for proposal {pid[:8]}... "
+                                    f"(local: {local_data_hash[:8]}, remote: {remote_hash[:8]})"
+                                )
+                        else:
+                            # No hash provided, assume identical (backward compatibility)
+                            skipped_count += 1
+                            continue
 
-                # Prepare proposal data
+                # Prepare proposal data with hash for integrity verification
                 proposal_data = {
-                    "proposal": proposal.to_dict(),
-                    "election": election.to_dict() if election else None,
+                    "proposal": local_proposal_data,
+                    "election": local_election_data,
+                    "data_hash": local_data_hash,  # Include hash for verification
                 }
                 
                 # Create a direct message to the requester instead of broadcasting
@@ -842,8 +887,15 @@ class NetworkManager:
                     content=proposal_data,
                 )
                 await self.route_message(sync_msg, gossip_forward=False)
+                synced_count += 1
                 
                 logger.info(
-                    f"[StateSync] Synced proposal {proposal.proposal_id[:8]}... to {requester_id[:8]}..."
+                    f"[StateSync] Synced proposal {proposal.proposal_id[:8]}... to {requester_id[:8]}... "
+                    f"(hash: {local_data_hash[:8]})"
                 )
                 await asyncio.sleep(0.1)  # Rate limit to avoid flooding
+
+        logger.info(
+            f"[StateSync] Sync complete for {requester_id[:8]}...: "
+            f"synced={synced_count}, skipped={skipped_count}, integrity_mismatch={integrity_mismatch_count}"
+        )

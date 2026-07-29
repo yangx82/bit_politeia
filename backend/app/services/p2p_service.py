@@ -39,6 +39,12 @@ class P2PService:
         self.early_messages: list[dict[str, Any]] = []  # Buffer for messages before initialization
         self._initialized = False
 
+        # Heartbeat mechanism for connection health monitoring
+        self._heartbeat_task: asyncio.Task | None = None
+        self._heartbeat_interval = 60  # seconds
+        self._heartbeat_timeout = 30  # seconds
+        self._peer_last_seen: dict[str, float] = {}  # peer_id -> last message timestamp
+
         # Initialize WebRTC Manager
         self.webrtc_manager = WebRTCManager(self.send_signaling_message, self.handle_webrtc_message)
 
@@ -102,6 +108,9 @@ class P2PService:
                 safe_create_task(self.local_node.receive_message(msg), name="early_message")
             self.early_messages.clear()
 
+        # Start heartbeat monitoring
+        self._start_heartbeat()
+
     async def send_signaling_message(
         self, recipient_id: str, msg_type: str, content: dict[str, Any]
     ):
@@ -111,7 +120,11 @@ class P2PService:
     async def handle_webrtc_message(self, peer_id: str, message: str):
         """Callback: Handle message received via WebRTC Data Channel."""
         import datetime
+        import time
         import uuid
+
+        # Update peer last seen timestamp for heartbeat monitoring
+        self._peer_last_seen[peer_id] = time.time()
 
         # Try parse JSON if message looks like standard P2P payload
         incoming_id = None
@@ -185,9 +198,15 @@ class P2PService:
         Intercept P2P messages for WebRTC signaling and Governance.
         Returns True if handled, False otherwise.
         """
+        import time
+
         msg_type = message.get("message_type")
         sender_id = message.get("sender_id")
         message_id = message.get("message_id")
+
+        # Update peer last seen timestamp for heartbeat monitoring
+        if sender_id:
+            self._peer_last_seen[sender_id] = time.time()
 
         # 1. Deduplication for signaling messages
         if message_id:
@@ -297,8 +316,6 @@ class P2PService:
 
         return False
 
-        return False
-
     async def _forward_governance_message(self, message: dict, event_type: str):
         """
         Forward a governance message to other group members (Gossip protocol).
@@ -321,6 +338,58 @@ class P2PService:
 
         except Exception as e:
             logger.debug(f"[Gossip] Failed to forward {event_type} message: {e}")
+
+    def _start_heartbeat(self):
+        """Start the heartbeat monitoring task for connection health."""
+        if self._heartbeat_task is None or self._heartbeat_task.done():
+            self._heartbeat_task = asyncio.create_task(
+                self._heartbeat_loop(), name="p2p_heartbeat"
+            )
+            logger.info(f"Heartbeat started: interval={self._heartbeat_interval}s, timeout={self._heartbeat_timeout}s")
+
+    async def _heartbeat_loop(self):
+        """
+        Periodically check peer connection health.
+        - Update last-seen timestamps when messages arrive
+        - Remove peers that haven't been seen within timeout
+        """
+        import time
+        logger.info("Heartbeat loop running")
+        while True:
+            try:
+                await asyncio.sleep(self._heartbeat_interval)
+                now = time.time()
+                dead_peers = []
+
+                for peer_id, last_seen in self._peer_last_seen.items():
+                    elapsed = now - last_seen
+                    if elapsed > self._heartbeat_timeout:
+                        dead_peers.append(peer_id)
+                        logger.warning(
+                            f"[Heartbeat] Peer {peer_id[:8]}... timed out "
+                            f"(last seen {elapsed:.0f}s ago)"
+                        )
+
+                # Remove dead peers
+                for peer_id in dead_peers:
+                    self._peer_last_seen.pop(peer_id, None)
+                    # Also disconnect from network manager if connected
+                    if peer_id in self.network_manager.peers:
+                        try:
+                            await self.network_manager.disconnect_peer(peer_id)
+                            logger.info(f"[Heartbeat] Disconnected dead peer {peer_id[:8]}...")
+                        except Exception as e:
+                            logger.debug(f"[Heartbeat] Error disconnecting {peer_id[:8]}: {e}")
+
+                if dead_peers:
+                    logger.info(f"[Heartbeat] Cleaned up {len(dead_peers)} dead peer(s)")
+
+            except asyncio.CancelledError:
+                logger.info("Heartbeat loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"[Heartbeat] Error in heartbeat loop: {e}", exc_info=True)
+                await asyncio.sleep(5)  # Brief pause before retry
 
     async def warmup_webrtc(self, peer_id: str):
         """
