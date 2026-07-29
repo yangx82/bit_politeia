@@ -109,8 +109,8 @@ class AgentService:
         self.api_key = None
         self.llm = None
 
-        # Identity Config Path (Consolidated to project root)
-        self.config_path = str(self.backend_dir.parent / "agent_config.json")
+        # .env 文件路径（项目根目录）- 方案A: 统一使用 .env
+        self.env_file = self.backend_dir.parent / ".env"
 
         # P2P Reply Delay Default
 
@@ -684,7 +684,7 @@ class AgentService:
         self.ralph_wiggum_mode = ralph_wiggum_mode
         self.llm_timeout = llm_timeout
 
-        # Save to JSON
+        # 方案A: 统一保存到 .env
         self._save_config(
             {
                 "name": self.name,
@@ -704,31 +704,6 @@ class AgentService:
         )
 
         logger.info(f"Agent Configured: Name={self.name}, Model={model}")
-
-        # Persist configuration to .env
-        try:
-            from dotenv import find_dotenv, set_key
-
-            env_file = find_dotenv()
-            if not env_file:
-                # Create .env if not found
-                import os
-
-                # Force standard path: backend/.env or just .env in CWD
-                # Ideally, we should look for where managing script is running
-                env_file = ".env"
-                if not os.path.exists(env_file):
-                    open(env_file, "a").close()
-
-            set_key(env_file, "AGENT_BASE_URL", self.base_url)
-            set_key(env_file, "AGENT_API_KEY", self.api_key)
-            set_key(env_file, "AGENT_MODEL", self.model)
-            # if bootstrap_url:
-            set_key(env_file, "AGENT_BOOTSTRAP_URL", self.bootstrap_url)
-            
-            logger.info(f"Infrastructure settings saved to {env_file}")
-        except Exception as e:
-            logger.error(f"Failed to save configuration to .env: {e}")
 
         # Apply custom bootstrap settings if provided
         from ..p2p_community.bootstrap_client import bootstrap_client
@@ -956,32 +931,28 @@ class AgentService:
     # ... (process_message, etc.) ...
 
     def load_config_from_env(self):
-        """Load configuration from environment variables."""
+        """方案A: 所有配置统一从 .env 读取"""
         from ..utils.env_utils import load_dotenv_safe
 
         load_dotenv_safe()
         import os
 
+        # 所有配置都从环境变量读取
         base_url = os.getenv("AGENT_BASE_URL")
         api_key = os.getenv("AGENT_API_KEY")
         model = os.getenv("AGENT_MODEL", "gpt-4o")
         bootstrap_url = os.getenv("AGENT_BOOTSTRAP_URL", "https://bootstrap.bitpoliteia.com")
+        bootstrap_verify = os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true"
         
-        # Load identity and behavioral parameters from JSON config
-        json_config = self._load_config()
-        
-        loaded_name = json_config.get("name")
-        if not loaded_name or loaded_name == "Anonym":
-            loaded_name = os.getenv("AGENT_NAME", "Agent")
-        name = loaded_name
-        personality = json_config.get("personality", os.getenv("AGENT_PERSONALITY", "Professional, helpfup, and humorous"))
-        research_field = json_config.get("research_field", os.getenv("AGENT_RESEARCH_FIELD", "AI Governance"))
-        p2p_reply_delay = int(json_config.get("p2p_reply_delay", os.getenv("AGENT_P2P_REPLY_DELAY", "5")))
-        agent_language = json_config.get("agent_language", os.getenv("AGENT_LANGUAGE", "中文"))
-        ralph_wiggum_mode = json_config.get("ralph_wiggum_mode", os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true")
-        llm_timeout = max(180.0, float(os.getenv("AGENT_LLM_TIMEOUT", json_config.get("llm_timeout", "180.0"))))
-        verbose_llm = json_config.get("verbose_llm", os.getenv("AGENT_VERBOSE_LLM", "true").lower() == "true")
-        bootstrap_verify = json_config.get("bootstrap_verify", os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true")
+        # 身份和行为配置
+        name = os.getenv("AGENT_NAME", "Agent")
+        personality = os.getenv("AGENT_PERSONALITY", "Professional, helpful, and humorous")
+        research_field = os.getenv("AGENT_RESEARCH_FIELD", "AI Governance")
+        p2p_reply_delay = int(os.getenv("AGENT_P2P_REPLY_DELAY", "5"))
+        agent_language = os.getenv("AGENT_LANGUAGE", "中文")
+        ralph_wiggum_mode = os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true"
+        llm_timeout = max(180.0, float(os.getenv("AGENT_LLM_TIMEOUT", "180.0")))
+        verbose_llm = os.getenv("AGENT_VERBOSE_LLM", "true").lower() == "true"
         self.enable_welcome = os.getenv("AGENT_ENABLE_WELCOME", "true").lower() == "true"
 
         if base_url and api_key:
@@ -1040,41 +1011,64 @@ class AgentService:
             return "Transfer failed. Insufficient funds or invalid amount."
 
     def _load_config(self) -> dict:
-        """Load agent configuration from JSON file."""
-        import json
+        """方案A: 从 .env 加载配置（兼容旧接口）"""
+        from ..utils.env_utils import load_dotenv_safe
+        load_dotenv_safe()
         import os
-
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path, encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"Failed to load agent config: {e}")
-        return {}
+        
+        # 从环境变量构建配置字典
+        return {
+            "name": os.getenv("AGENT_NAME", "Agent"),
+            "personality": os.getenv("AGENT_PERSONALITY", "Professional, helpful, and humorous"),
+            "research_field": os.getenv("AGENT_RESEARCH_FIELD", "AI Governance"),
+            "bootstrap_url": os.getenv("AGENT_BOOTSTRAP_URL"),
+            "bootstrap_verify": os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true",
+            "p2p_reply_delay": int(os.getenv("AGENT_P2P_REPLY_DELAY", "5")),
+            "agent_language": os.getenv("AGENT_LANGUAGE", "中文"),
+            "ralph_wiggum_mode": os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true",
+            "verbose_llm": os.getenv("AGENT_VERBOSE_LLM", "true").lower() == "true",
+            "llm_timeout": float(os.getenv("AGENT_LLM_TIMEOUT", "180.0")),
+        }
 
     def _save_config(self, config: dict):
-        """
-        Save agent configuration to JSON file.
-        excludes sensitive keys that should be in .env
-        """
-        import json
-
-        # Keys to exclude from JSON (they go to .env)
-        EXCLUDED_KEYS = {"api_key", "base_url", "bootstrap_url", "model"}
-
+        """方案A: 保存配置到 .env（替代 JSON）"""
         try:
-            # Merge with existing
-            current = self._load_config()
-
-            # Update only non-excluded keys
-            for k, v in config.items():
-                if k not in EXCLUDED_KEYS:
-                    current[k] = v
-
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(current, f, indent=4, ensure_ascii=False)
+            from dotenv import set_key
+            import os
+            
+            # 确保 .env 文件存在
+            env_path = self.env_file
+            if not os.path.exists(env_path):
+                with open(env_path, "w") as f:
+                    f.write("# Bit-Politeia Agent Configuration\n")
+            
+            # 映射配置键到环境变量
+            key_mapping = {
+                "name": "AGENT_NAME",
+                "personality": "AGENT_PERSONALITY",
+                "research_field": "AGENT_RESEARCH_FIELD",
+                "bootstrap_url": "AGENT_BOOTSTRAP_URL",
+                "bootstrap_verify": "AGENT_BOOTSTRAP_VERIFY",
+                "p2p_reply_delay": "AGENT_P2P_REPLY_DELAY",
+                "agent_language": "AGENT_LANGUAGE",
+                "ralph_wiggum_mode": "AGENT_RALPH_WIGGUM_MODE",
+                "verbose_llm": "AGENT_VERBOSE_LLM",
+                "llm_timeout": "AGENT_LLM_TIMEOUT",
+            }
+            
+            for config_key, env_key in key_mapping.items():
+                if config_key in config:
+                    value = config[config_key]
+                    # 转换为字符串
+                    if isinstance(value, bool):
+                        value = "true" if value else "false"
+                    else:
+                        value = str(value)
+                    set_key(str(env_path), env_key, value)
+            
+            logger.info(f"Configuration saved to {env_path}")
         except Exception as e:
-            logger.error(f"Failed to save agent config: {e}")
+            logger.error(f"Failed to save config to .env: {e}")
 
     async def get_balance(self) -> float:
         if self.ledger and p2p_service.local_node:
