@@ -40,12 +40,40 @@ class Ledger:
         self.balances: dict[str, float] = {}
         self.transactions: list[Transaction] = []
         self.storage_path = storage_path
+        self._event_callback = None  # Callback for transaction events
 
         if self.storage_path:
             self.load_state()
 
+    def set_event_callback(self, callback):
+        """Set callback function for transaction events.
+        
+        Args:
+            callback: Async function that accepts (event_type, transaction_data)
+        """
+        self._event_callback = callback
+
     def get_balance(self, node_id: str) -> float:
         return self.balances.get(node_id, 0.0)
+
+    def get_transaction_by_context(self, context_id: str, category: str = None) -> Transaction | None:
+        """Find an existing transaction by context_id and optionally category.
+        
+        This is used for idempotency checks to prevent duplicate transactions
+        for the same context (e.g., same election payout).
+        
+        Args:
+            context_id: The context identifier (e.g., election_id)
+            category: Optional category filter
+            
+        Returns:
+            Transaction if found, None otherwise
+        """
+        for tx in self.transactions:
+            if tx.context_id == context_id:
+                if category is None or tx.category == category:
+                    return tx
+        return None
 
     def credit(self, node_id: str, amount: float):
         if amount < 0:
@@ -75,6 +103,17 @@ class Ledger:
         if not self.verify_transaction(tx):
             return False
 
+        # === IDEMPOTENCY CHECK ===
+        # Prevent duplicate transactions for the same context_id + category
+        if tx.context_id:
+            existing = self.get_transaction_by_context(tx.context_id, tx.category)
+            if existing:
+                logger.warning(
+                    f"Duplicate transaction blocked: context_id={tx.context_id}, category={tx.category} "
+                    f"(existing tx: {existing.transaction_id})"
+                )
+                return False
+
         # Execute Transfer
         if tx.payer_id != "system":
             self.balances[tx.payer_id] = self.balances.get(tx.payer_id, 0.0) - tx.amount
@@ -86,6 +125,20 @@ class Ledger:
         )
 
         self.save_state()
+
+        # === BROADCAST TRANSACTION EVENT ===
+        if self._event_callback:
+            try:
+                import asyncio
+                event_data = tx.to_dict()
+                # Handle both sync and async callbacks
+                if asyncio.iscoroutinefunction(self._event_callback):
+                    asyncio.ensure_future(self._event_callback("transaction.completed", event_data))
+                else:
+                    self._event_callback("transaction.completed", event_data)
+            except Exception as e:
+                logger.warning(f"Transaction event callback failed: {e}")
+
         return True
 
     def create_transaction(

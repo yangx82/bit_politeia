@@ -126,6 +126,8 @@ class AgentService:
         self.archive_manager = None
         ledger_path = str(self.data_dir / "ledger.json")
         self.ledger = Ledger(storage_path=ledger_path)
+        # Register transaction event callback for broadcasting
+        self.ledger.set_event_callback(self._on_transaction_completed)
         self.resident_memory = ResidentMemory()
         self.reporter = None
         self.research_field = "AI Governance"
@@ -1045,6 +1047,9 @@ class AgentService:
         return None
 
     # Financial Methods
+    # Concurrency lock for ledger operations to prevent race conditions
+    _ledger_lock = asyncio.Lock()
+
     async def transfer_funds(
         self,
         payee_id: str,
@@ -1056,6 +1061,26 @@ class AgentService:
     ) -> str:
         if not self.ledger:
             return "Ledger not initialized"
+
+        # === PAYEE VALIDATION ===
+        if not payee_id or not isinstance(payee_id, str):
+            logger.warning(f"Transfer rejected: invalid payee_id '{payee_id}'")
+            return "Transfer failed: invalid payee_id. Must be a non-empty string."
+        
+        payee_stripped = payee_id.strip()
+        if not payee_stripped:
+            logger.warning("Transfer rejected: empty payee_id after stripping whitespace")
+            return "Transfer failed: payee_id cannot be empty."
+        
+        if payee_stripped.lower() == "system":
+            logger.warning(f"Transfer rejected: cannot transfer to 'system' account")
+            return "Transfer failed: cannot transfer to 'system' account."
+        
+        # Validate payee exists in network (for P2P transfers, not system payouts)
+        if payer_id != "system" and p2p_service._initialized and p2p_service.network_manager:
+            if payee_stripped not in p2p_service.network_manager.nodes:
+                logger.warning(f"Transfer rejected: payee '{payee_stripped[:8]}' not found in network topology")
+                return f"Transfer failed: payee '{payee_stripped[:8]}' not found in network topology."
 
         # === REWARD AMOUNT VALIDATION ===
         if amount <= 0:
@@ -1069,45 +1094,47 @@ class AgentService:
         if not payer_id:
             payer_id = self.governance_manager.node_id if self.governance_manager else "unknown"
 
-        # === RETRY TRACKING FOR GOVERNANCE PAYOUTS ===
-        if self.governance_manager and context_id:
-            election = self.governance_manager.finished_elections.get(context_id)
-            if election:
-                # Check max retry limit
-                if election.payout_attempts >= election.max_payout_attempts:
-                    election.payout_status = "failed"
-                    election.payout_error = f"Max retry attempts ({election.max_payout_attempts}) exceeded"
-                    self.governance_manager.save_state()
-                    logger.error(f"Payout for election {context_id[:8]} failed: max retries exceeded")
-                    return f"Transfer failed: maximum retry attempts ({election.max_payout_attempts}) exceeded for this payout."
-                
-                # Increment attempt counter
-                election.payout_attempts += 1
-                election.payout_last_attempt = datetime.now(UTC)
-                logger.info(f"Payout attempt {election.payout_attempts}/{election.max_payout_attempts} for election {context_id[:8]}")
-
-        tx = self.ledger.create_transaction(
-            payer_id, payee_id, amount, details, category=category, context_id=context_id
-        )
-
-        if tx:
-            # If this is a reward or governance payout linked to a finalized election, update its status
+        # === CONCURRENT LEDGER ACCESS PROTECTION ===
+        async with self._ledger_lock:
+            # === RETRY TRACKING FOR GOVERNANCE PAYOUTS ===
             if self.governance_manager and context_id:
-                if context_id in self.governance_manager.finished_elections:
-                    election = self.governance_manager.finished_elections[context_id]
-                    election.payout_status = "paid"
-                    election.payout_error = None
-                    self.governance_manager.save_state()
-                    logger.info(f"Financial: Marked election {context_id} payout as paid.")
-            return f"Transfer successful. TX ID: {tx.transaction_id}"
-        else:
-            if self.governance_manager and context_id:
-                if context_id in self.governance_manager.finished_elections:
-                    election = self.governance_manager.finished_elections[context_id]
-                    election.payout_status = "failed"
-                    election.payout_error = "Transfer failed. Insufficient funds or invalid amount."
-                    self.governance_manager.save_state()
-            return "Transfer failed. Insufficient funds or invalid amount."
+                election = self.governance_manager.finished_elections.get(context_id)
+                if election:
+                    # Check max retry limit
+                    if election.payout_attempts >= election.max_payout_attempts:
+                        election.payout_status = "failed"
+                        election.payout_error = f"Max retry attempts ({election.max_payout_attempts}) exceeded"
+                        self.governance_manager.save_state()
+                        logger.error(f"Payout for election {context_id[:8]} failed: max retries exceeded")
+                        return f"Transfer failed: maximum retry attempts ({election.max_payout_attempts}) exceeded for this payout."
+                    
+                    # Increment attempt counter
+                    election.payout_attempts += 1
+                    election.payout_last_attempt = datetime.now(UTC)
+                    logger.info(f"Payout attempt {election.payout_attempts}/{election.max_payout_attempts} for election {context_id[:8]}")
+
+            tx = self.ledger.create_transaction(
+                payer_id, payee_stripped, amount, details, category=category, context_id=context_id
+            )
+
+            if tx:
+                # If this is a reward or governance payout linked to a finalized election, update its status
+                if self.governance_manager and context_id:
+                    if context_id in self.governance_manager.finished_elections:
+                        election = self.governance_manager.finished_elections[context_id]
+                        election.payout_status = "paid"
+                        election.payout_error = None
+                        self.governance_manager.save_state()
+                        logger.info(f"Financial: Marked election {context_id} payout as paid.")
+                return f"Transfer successful. TX ID: {tx.transaction_id}"
+            else:
+                if self.governance_manager and context_id:
+                    if context_id in self.governance_manager.finished_elections:
+                        election = self.governance_manager.finished_elections[context_id]
+                        election.payout_status = "failed"
+                        election.payout_error = "Transfer failed. Insufficient funds or invalid amount."
+                        self.governance_manager.save_state()
+                return "Transfer failed. Insufficient funds or invalid amount."
 
     async def execute_governance_payout(self, election_id: str, requester_id: str) -> str:
         """
@@ -1244,6 +1271,34 @@ class AgentService:
             logger.info(f"Configuration saved to {env_path}")
         except Exception as e:
             logger.error(f"Failed to save config to .env: {e}")
+
+    async def _on_transaction_completed(self, event_type: str, transaction_data: dict):
+        """Handle transaction completion events.
+        
+        This method is called by the Ledger when a transaction is successfully recorded.
+        It broadcasts the event to the message bus for UI updates and audit logging.
+        
+        Args:
+            event_type: Type of event (e.g., "transaction.completed")
+            transaction_data: Transaction details as dict
+        """
+        try:
+            # Broadcast to Gateway for UI updates
+            await self.message_bus.publish_outbound(
+                OutboundMessage(
+                    channel="gateway",
+                    session_id="transactions",
+                    content=f"Transaction {transaction_data.get('transaction_id', '')[:8]} completed: "
+                            f"{transaction_data.get('amount', 0)} stater from "
+                            f"{transaction_data.get('payer_id', '')[:8]} to "
+                            f"{transaction_data.get('payee_id', '')[:8]}",
+                    type="transaction",
+                    metadata=transaction_data,
+                )
+            )
+            logger.info(f"Transaction event broadcast: {event_type} - {transaction_data.get('transaction_id', '')[:8]}")
+        except Exception as e:
+            logger.warning(f"Failed to broadcast transaction event: {e}")
 
     async def get_balance(self) -> float:
         if self.ledger and p2p_service.local_node:
