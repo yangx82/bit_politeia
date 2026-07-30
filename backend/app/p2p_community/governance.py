@@ -113,7 +113,12 @@ class Election:
     status: str = "active"
     target_positions: int = 1
     excluded_voters: set[str] = field(default_factory=set)  # e.g. Proposal author
-    payout_status: str = "pending"  # "pending", "paid", "failed", "no_reward"
+    payout_status: str = "pending"  # "pending", "paid", "failed", "no_reward", "insufficient_evaluations"
+    payout_amount: float = 0.0  # Total reward amount to distribute
+    payout_attempts: int = 0  # Number of payout attempts made
+    max_payout_attempts: int = 3  # Maximum retry attempts before marking as failed
+    payout_last_attempt: datetime | None = None  # Timestamp of last attempt
+    payout_error: str | None = None  # Last error message if payout failed
 
     @property
     def total_votes(self) -> int:
@@ -253,6 +258,11 @@ class Election:
             "excluded_voters": list(self.excluded_voters),
             "participation_rate": self.participation_rate,
             "payout_status": self.payout_status,
+            "payout_amount": self.payout_amount,
+            "payout_attempts": self.payout_attempts,
+            "max_payout_attempts": self.max_payout_attempts,
+            "payout_last_attempt": self.payout_last_attempt.isoformat() if self.payout_last_attempt else None,
+            "payout_error": self.payout_error,
         }
 
     @classmethod
@@ -286,6 +296,11 @@ class Election:
             target_positions=data.get("target_positions", 1),
             excluded_voters=set(data.get("excluded_voters", [])),
             payout_status=data.get("payout_status", "pending"),
+            payout_amount=data.get("payout_amount", 0.0),
+            payout_attempts=data.get("payout_attempts", 0),
+            max_payout_attempts=data.get("max_payout_attempts", 3),
+            payout_last_attempt=parse_datetime(data["payout_last_attempt"]) if data.get("payout_last_attempt") else None,
+            payout_error=data.get("payout_error"),
         )
         if "votes" in data:
             e.votes = {k: [Vote.from_dict(v) for v in val] for k, val in data["votes"].items()}
@@ -414,6 +429,7 @@ class GovernanceManager:
         - Election status → finished
         - Proposal status → evaluated
         - Election payout_status → pending (for reward distribution)
+        - Calculate and store payout_amount based on average score
         """
         if election_id not in self.active_elections:
             return False, "Election not found"
@@ -438,6 +454,11 @@ class GovernanceManager:
             proposal.status = "evaluated"
             logger.info(f"Proposal {election.proposal_id[:8]} status updated to 'evaluated'")
 
+        # Calculate payout amount based on average score (0-5 scale)
+        # Convert to 0-100 stater range
+        election.payout_amount = avg_score * 20.0  # 5.0 → 100 stater
+        election.payout_attempts = 0  # Reset attempts counter
+        
         # Move to finished elections and mark payout as pending
         election.status = "finished"
         election.payout_status = "pending"
@@ -445,7 +466,7 @@ class GovernanceManager:
         del self.active_elections[election_id]
 
         self.save_state()
-        return True, f"Research evaluation finalized. Average score: {avg_score:.2f}, payout pending."
+        return True, f"Research evaluation finalized. Average score: {avg_score:.2f}, payout amount: {election.payout_amount:.1f} stater, payout pending."
 
     def get_research_proposals(self, group_id: str = None, status: str = None) -> list[dict]:
         """Get research proposals with optional filtering."""
@@ -599,7 +620,12 @@ class GovernanceManager:
         return proposal, election
 
     def finalize_expired_elections(self) -> list[str]:
-        """Move elections from active to finished if they have passed their end_time."""
+        """Move elections from active to finished if they have passed their end_time.
+        
+        For RESEARCH_EVALUATION elections:
+        - If enough evaluations collected → payout_status = "pending" (rewards will be distributed)
+        - If not enough evaluations → payout_status = "insufficient_evaluations" (no rewards)
+        """
         now = datetime.now(UTC)
         expired_ids = []
         for eid, e in self.active_elections.items():
@@ -616,6 +642,30 @@ class GovernanceManager:
         for eid in expired_ids:
             election = self.active_elections.pop(eid)
             election.status = "finished"
+            
+            # Special handling for RESEARCH_EVALUATION elections
+            if election.election_type == ElectionType.RESEARCH_EVALUATION:
+                evaluation_count = len(election.votes)
+                eligible_count = len(election.eligible_voters - election.excluded_voters)
+                required_count = max(2, min(eligible_count, (eligible_count + 1) // 2))
+                
+                if evaluation_count >= required_count:
+                    # Enough evaluations - mark for reward distribution
+                    election.payout_status = "pending"
+                    logger.info(f"Research election {eid[:8]} expired with sufficient evaluations ({evaluation_count}/{required_count}), payout pending")
+                else:
+                    # Not enough evaluations - no rewards
+                    election.payout_status = "insufficient_evaluations"
+                    logger.warning(f"Research election {eid[:8]} expired with insufficient evaluations ({evaluation_count}/{required_count}), no rewards")
+                
+                # Update proposal status
+                if election.proposal_id and election.proposal_id in self.proposals:
+                    proposal = self.proposals[election.proposal_id]
+                    if evaluation_count >= required_count:
+                        proposal.status = "evaluated"
+                    else:
+                        proposal.status = "evaluation_failed"
+            
             self.finished_elections[eid] = election
             logger.info(f"Governance: Finalized expired election {eid}")
 

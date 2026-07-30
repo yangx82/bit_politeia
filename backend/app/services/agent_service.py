@@ -1057,8 +1057,34 @@ class AgentService:
         if not self.ledger:
             return "Ledger not initialized"
 
+        # === REWARD AMOUNT VALIDATION ===
+        if amount <= 0:
+            logger.warning(f"Transfer rejected: invalid amount {amount} (must be positive)")
+            return f"Transfer failed: invalid amount {amount}. Amount must be positive."
+        
+        if amount > 10000:
+            logger.warning(f"Transfer rejected: amount {amount} exceeds maximum limit 10000")
+            return f"Transfer failed: amount {amount} exceeds maximum limit 10000."
+
         if not payer_id:
             payer_id = self.governance_manager.node_id if self.governance_manager else "unknown"
+
+        # === RETRY TRACKING FOR GOVERNANCE PAYOUTS ===
+        if self.governance_manager and context_id:
+            election = self.governance_manager.finished_elections.get(context_id)
+            if election:
+                # Check max retry limit
+                if election.payout_attempts >= election.max_payout_attempts:
+                    election.payout_status = "failed"
+                    election.payout_error = f"Max retry attempts ({election.max_payout_attempts}) exceeded"
+                    self.governance_manager.save_state()
+                    logger.error(f"Payout for election {context_id[:8]} failed: max retries exceeded")
+                    return f"Transfer failed: maximum retry attempts ({election.max_payout_attempts}) exceeded for this payout."
+                
+                # Increment attempt counter
+                election.payout_attempts += 1
+                election.payout_last_attempt = datetime.now(UTC)
+                logger.info(f"Payout attempt {election.payout_attempts}/{election.max_payout_attempts} for election {context_id[:8]}")
 
         tx = self.ledger.create_transaction(
             payer_id, payee_id, amount, details, category=category, context_id=context_id
@@ -1070,6 +1096,7 @@ class AgentService:
                 if context_id in self.governance_manager.finished_elections:
                     election = self.governance_manager.finished_elections[context_id]
                     election.payout_status = "paid"
+                    election.payout_error = None
                     self.governance_manager.save_state()
                     logger.info(f"Financial: Marked election {context_id} payout as paid.")
             return f"Transfer successful. TX ID: {tx.transaction_id}"
@@ -1078,8 +1105,85 @@ class AgentService:
                 if context_id in self.governance_manager.finished_elections:
                     election = self.governance_manager.finished_elections[context_id]
                     election.payout_status = "failed"
+                    election.payout_error = "Transfer failed. Insufficient funds or invalid amount."
                     self.governance_manager.save_state()
             return "Transfer failed. Insufficient funds or invalid amount."
+
+    async def execute_governance_payout(self, election_id: str, requester_id: str) -> str:
+        """
+        Execute a governance payout. ONLY core nodes can trigger this.
+        
+        This is the manual payout execution method that replaces the automatic
+        payout trigger in check_governance_proposals().
+        
+        Args:
+            election_id: The election ID to process payout for
+            requester_id: The node ID requesting the payout (must be core node)
+        
+        Returns:
+            Status message
+        """
+        if not self.governance_manager:
+            return "Error: Governance Manager not initialized"
+        
+        if not p2p_service.local_node:
+            return "Error: P2P node not initialized"
+        
+        # === CORE NODE PERMISSION CHECK ===
+        is_core_node = False
+        target_group_id = None
+        
+        election = self.governance_manager.finished_elections.get(election_id)
+        if not election:
+            return f"Error: Election {election_id} not found in finished elections."
+        
+        target_group_id = election.group_id
+        
+        # Check if requester is a core node of the group
+        if target_group_id in p2p_service.local_node.network_manager.groups:
+            group = p2p_service.local_node.network_manager.groups[target_group_id]
+            if requester_id in group.core_node_ids:
+                is_core_node = True
+        
+        if not is_core_node:
+            logger.warning(f"Payout request denied: {requester_id[:8]} is not a core node of group {target_group_id[:8]}")
+            return f"Error: Only core nodes can execute governance payouts. Node {requester_id[:8]} is not authorized."
+        
+        # === VALIDATE ELECTION PAYOUT STATUS ===
+        if election.payout_status == "paid":
+            return f"Payout already completed for election {election_id[:8]}."
+        
+        if election.payout_status == "failed" and election.payout_attempts >= election.max_payout_attempts:
+            return f"Payout failed after {election.max_payout_attempts} attempts. Manual intervention required."
+        
+        if election.payout_status not in ["pending", "failed"]:
+            return f"Election {election_id[:8]} payout status is '{election.payout_status}', not eligible for payout."
+        
+        # === VALIDATE REWARD AMOUNT ===
+        payout_amount = election.payout_amount
+        if payout_amount <= 0:
+            election.payout_status = "no_reward"
+            self.governance_manager.save_state()
+            return f"No reward to distribute for election {election_id[:8]} (amount: {payout_amount})."
+        
+        # === EXECUTE PAYOUT ===
+        tally = election.tally()
+        recipient_id = election.initiator_id
+        category = "REWARD" if election.election_type == ElectionType.RESEARCH_EVALUATION else "GOVERNANCE"
+        details = f"Governance payout for {election.election_type.value} (election {election_id[:8]})"
+        
+        logger.info(f"Core node {requester_id[:8]} executing payout for election {election_id[:8]}: {payout_amount} stater to {recipient_id[:8]}")
+        
+        result = await self.transfer_funds(
+            payee_id=recipient_id,
+            amount=payout_amount,
+            details=details,
+            category=category,
+            context_id=election_id,
+            payer_id="system",
+        )
+        
+        return result
 
     def _load_config(self) -> dict:
         """方案A: 从 .env 加载配置（兼容旧接口）"""
@@ -3964,7 +4068,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             self.notified_governance_ids.add(eid)
             found_new = True
 
-        # 2. Check finished elections for pending payouts
+        # 2. Check finished elections for pending payouts - NOTIFY ONLY, do NOT auto-execute
+        # Rewards must be manually distributed by core nodes via execute_governance_payout()
         finished_elections = self.governance_manager.finished_elections
         for eid, election in list(finished_elections.items()):
             if election.payout_status != "pending":
@@ -3974,46 +4079,43 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             if notify_key in self.notified_governance_ids:
                 continue
 
+            # Calculate expected payout amount for notification purposes only
             tally = election.tally()
-            payout_needed = False
-            payout_amount = 0.0
+            payout_amount = election.payout_amount
             payout_recipient = election.initiator_id
-            category = "REWARD"
-            details = ""
 
             if election.election_type == ElectionType.RESEARCH_EVALUATION:
-                # average_amount is the average score (0-5), convert to reward amount
-                # Score mapping: 0-2 → 0 reward, 2-3 → 50 stater, 3-4 → 100 stater, 4-5 → 200 stater
-                avg_score = tally.get("average_amount", 0.0)
-                if avg_score >= 4.0:
-                    payout_amount = 200.0
-                elif avg_score >= 3.0:
-                    payout_amount = 100.0
-                elif avg_score >= 2.0:
-                    payout_amount = 50.0
-                else:
-                    payout_amount = 0.0
-                
-                if payout_amount > 0:
-                    payout_needed = True
-                    category = "REWARD"
-                    details = f"Research evaluation reward (score: {avg_score:.2f}) for proposal {(election.proposal_id or '')[:8]}"
-                else:
+                if payout_amount <= 0:
+                    # Calculate from average score if not set
+                    avg_score = tally.get("average_amount", 0.0)
+                    if avg_score >= 4.0:
+                        payout_amount = 200.0
+                    elif avg_score >= 3.0:
+                        payout_amount = 100.0
+                    elif avg_score >= 2.0:
+                        payout_amount = 50.0
+                    else:
+                        election.payout_status = "no_reward"
+                        self.governance_manager.save_state()
+                        continue
+                    # Store calculated amount
+                    election.payout_amount = payout_amount
+                    self.governance_manager.save_state()
+
+            elif election.election_type == ElectionType.PROPOSAL_VOTE:
+                if not tally.get("passed", False):
                     election.payout_status = "no_reward"
                     self.governance_manager.save_state()
                     continue
-
-            elif election.election_type == ElectionType.PROPOSAL_VOTE:
-                if tally.get("passed", False):
+                if payout_amount <= 0:
                     proposal = self.governance_manager.proposals.get(election.proposal_id)
                     if proposal:
                         import re
                         match = re.search(r'(?:budget|funding|reward|金额|金額|预算):\s*(\d+(?:\.\d+)?)', proposal.content, re.IGNORECASE)
                         if match:
                             payout_amount = float(match.group(1))
-                            payout_needed = True
-                            category = "GOVERNANCE"
-                            details = f"Passed proposal funding for proposal {(election.proposal_id or '')[:8]}"
+                            election.payout_amount = payout_amount
+                            self.governance_manager.save_state()
                         else:
                             election.payout_status = "no_reward"
                             self.governance_manager.save_state()
@@ -4022,41 +4124,37 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         election.payout_status = "no_reward"
                         self.governance_manager.save_state()
                         continue
-                else:
-                    election.payout_status = "no_reward"
-                    self.governance_manager.save_state()
-                    continue
             else:
                 election.payout_status = "no_reward"
                 self.governance_manager.save_state()
                 continue
 
-            if payout_needed:
-                logger.info(
-                    f"Governance Monitor: Pending payout detected for election {eid} ({election.election_type.value}): "
-                    f"Recipient={payout_recipient[:8]}, Amount={payout_amount}"
-                )
+            # === NOTIFY ONLY: Do NOT auto-execute payout ===
+            # Core nodes must manually trigger payout via execute_governance_payout()
+            logger.info(
+                f"Governance Monitor: Pending payout notification for election {eid} ({election.election_type.value}): "
+                f"Recipient={payout_recipient[:8]}, Amount={payout_amount}, Attempts={election.payout_attempts}/{election.max_payout_attempts}"
+            )
 
-                payout_poke_msg = InboundMessage(
-                    channel="internal",
-                    sender_id="system",
-                    session_id="resident",
-                    content=(
-                        f"[治理与资金监控]: 检测到提案/评估投票 (ID: {election.proposal_id}) 已经投票结束并通过。\n"
-                        f"类型: {election.election_type.value}\n"
-                        f"发起人/受益人: {payout_recipient[:8]} (Node ID: {payout_recipient})\n"
-                        f"计算结算金额: {payout_amount}\n"
-                        f"关联选举ID: {eid}\n\n"
-                        f"[自治指令]: 请执行以下结算与发布步骤：\n"
-                        f"1. 联系最高等级的小组（Core Nodes）确认该项奖励的发放金额。\n"
-                        f"2. 向全社区公布这一最终治理与财务结算结果（可使用 GROUP 或 GOSSIP 广播形式）。\n"
-                        f"3. 确认后，调用 `pay_resident` 工具发放奖励，参数必须指定 `payer_id='system'` 且传入 `context_id='{eid}'` 以完成结算核销。"
-                    ),
-                )
+            payout_poke_msg = InboundMessage(
+                channel="internal",
+                sender_id="system",
+                session_id="resident",
+                content=(
+                    f"[治理与资金监控]: 检测到一项待发放的奖励 (选举ID: {eid})。\n"
+                    f"类型: {election.election_type.value}\n"
+                    f"受益人: {payout_recipient[:8]} (Node ID: {payout_recipient})\n"
+                    f"奖励金额: {payout_amount} STATER\n"
+                    f"发放尝试: {election.payout_attempts}/{election.max_payout_attempts}\n\n"
+                    f"[重要]: 奖励发放需由核心节点(Core Nodes)手动执行。\n"
+                    f"核心节点可调用 `execute_governance_payout(election_id='{eid}')` 来执行发放。\n"
+                    f"非核心节点无权执行此操作。"
+                ),
+            )
 
-                asyncio.create_task(self._run_ralph_wiggum_loop(payout_poke_msg))
-                self.notified_governance_ids.add(notify_key)
-                found_new = True
+            asyncio.create_task(self._run_ralph_wiggum_loop(payout_poke_msg))
+            self.notified_governance_ids.add(notify_key)
+            found_new = True
 
         if found_new:
             self._save_system_state()
