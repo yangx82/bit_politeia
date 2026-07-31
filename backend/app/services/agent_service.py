@@ -1866,6 +1866,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 content=response_text,
                 reply_to=msg.metadata.get("message_id"),
                 metadata={"message_id": reply_id},
+                is_final=True,  # Mark as final response for channel filtering
             )
             await self.message_bus.publish_outbound(out_msg)
 
