@@ -53,7 +53,20 @@ from ..agent.prompts import AGENT_SYSTEM_PROMPT, CODING_SUBAGENT_PROMPT, SELF_HE
 from ..agent.tools import AGENT_TOOLS, CODING_TOOLS, REPAIR_TOOLS
 from ..agent.tools_meta import create_tool_tool
 from ..agent.tools_search_ext import create_search_tools
-from ..agent.tools_task_ext import set_current_task_tool
+from ..agent.tools_task_ext import (
+    set_current_task_tool,
+    define_deliverables_tool,
+    record_task_evidence_tool,
+    can_complete_task_tool,
+    get_task_completion_tool,
+)
+from ..tools.tools_deliverable_store import (
+    list_archived_deliverables,
+    verify_deliverable_integrity,
+    get_deliverable_store_stats,
+    read_archived_deliverable,
+    get_task_deliverables_summary,
+)
 from ..p2p_community.blockchain import ArchiveManager
 from ..p2p_community.economy import Ledger
 from ..p2p_community.governance import ElectionType, GovernanceManager, Vote
@@ -890,7 +903,20 @@ class AgentService:
 
             # Combine standard tools with skill tools and search tools
             all_tools = (
-                AGENT_TOOLS + skill_tools + search_tools + [create_tool_tool, set_current_task_tool]
+                AGENT_TOOLS + skill_tools + search_tools + [
+                    create_tool_tool,
+                    set_current_task_tool,
+                    define_deliverables_tool,
+                    record_task_evidence_tool,
+                    can_complete_task_tool,
+                    get_task_completion_tool,
+                    # P2: 成果物统一存储工具
+                    list_archived_deliverables,
+                    verify_deliverable_integrity,
+                    get_deliverable_store_stats,
+                    read_archived_deliverable,
+                    get_task_deliverables_summary,
+                ]
             )
 
             # Update system prompt with skill index (Progressive Disclosure) AND IDENTITY
