@@ -2,9 +2,13 @@ import requests
 import os
 import json
 import logging
+import urllib3
 from datetime import datetime, timedelta
 from pathlib import Path
 from history_manager import HistoryManager
+
+# 禁用 SSL 警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -84,7 +88,7 @@ class WatcherService:
         logger.info(f"Searching OpenAlex for '{topic}' since {from_date or 'beginning of time'}...")
         
         try:
-            response = requests.get(self.base_url, params=params, headers=headers, timeout=30)
+            response = requests.get(self.base_url, params=params, headers=headers, timeout=30, verify=False)
             response.raise_for_status()
             data = response.json()
             return data.get("results", [])
@@ -111,15 +115,25 @@ class WatcherService:
         neg_kws = [kw.lower().strip() for kw in negative_keywords] if negative_keywords and isinstance(negative_keywords, list) else []
 
         for raw in raw_results:
+            # Safe access helpers for nested None values
+            primary_loc = raw.get('primary_location') or {}
+            source_info = primary_loc.get('source') or {}
+            ids_info = raw.get('ids') or {}
+            author_list = raw.get('authorships') or raw.get('memberships') or []
+
             paper = {
                 'id': raw.get('id', ''),
                 'doi': raw.get('doi', '').replace('https://doi.org/', '') if raw.get('doi') else '',
                 'title': raw.get('title', ''),
                 'abstract': self._extract_abstract(raw),
                 'publication_date': raw.get('publication_date', ''),
-                'authors': ", ".join([a.get('author', {}).get('display_name', '') for a in raw.get('memberships', [])[:5]]),
-                'source': raw.get('primary_location', {}).get('source', {}).get('display_name', 'OpenAlex'),
-                'url': raw.get('doi', raw.get('ids', {}).get('mag', '')),
+                'authors': ", ".join([
+                    (a.get('author') or {}).get('display_name', '')
+                    for a in author_list[:5]
+                    if a and isinstance(a, dict)
+                ]),
+                'source': source_info.get('display_name', 'OpenAlex'),
+                'url': raw.get('doi') or ids_info.get('mag', ''),
                 'citations': raw.get('cited_by_count', 0),
                 'topic': topic
             }
@@ -166,3 +180,10 @@ if __name__ == "__main__":
     print(f"Found {len(papers)} new papers.")
     for p in papers[:3]:
         print(f"- {p['title']} ({p['publication_date']})")
+    
+    # 保存到数据库
+    if papers:
+        service.save_to_history(papers)
+        print(f"\n✅ 已保存 {len(papers)} 篇论文到数据库 (watcher_history.db)")
+    else:
+        print("\n⚠️ 没有找到新论文")

@@ -5,20 +5,28 @@ echo "=== [Step 1] 检查 Docker 运行环境 ==="
 docker info > /dev/null 2>&1 || { echo "⚠️ Notice: Docker 未在当前环境运行。如需拉起 Docker 集群，请先启动 Docker 服务。项目将维持本地轻量级记忆模式运行。"; exit 0; }
 
 echo "=== [Step 2] 启动中间件基础设施 (Docker Compose) ==="
-docker-compose -f docker-compose.memory.yml up -d
+docker compose -f docker-compose.memory.yml up -d
 
 echo "=== [Step 3] 等待数据库服务健康就绪 (Healthcheck Loop) ==="
 MAX_RETRIES=30
 RETRY=0
 
-until docker-compose -f docker-compose.memory.yml ps | grep -q "healthy" || [ $RETRY -eq $MAX_RETRIES ]; do
+until docker compose -f docker-compose.memory.yml ps | grep -q "healthy" || [ $RETRY -eq $MAX_RETRIES ]; do
     echo "等待服务启动中... ($((RETRY+1))/$MAX_RETRIES)"
     sleep 3
     RETRY=$((RETRY+1))
 done
 
 echo "=== [Step 4] 运行数据库 Schema 初始化脚本 ==="
-python3 scripts/init_memory_stores.py
+if [ -n "$CONDA_PREFIX" ] && [ -x "$CONDA_PREFIX/bin/python" ]; then
+    PYTHON_CMD="$CONDA_PREFIX/bin/python"
+elif [ -x "/home/xing/miniconda3/envs/bit_politeia/bin/python" ]; then
+    PYTHON_CMD="/home/xing/miniconda3/envs/bit_politeia/bin/python"
+else
+    PYTHON_CMD="python3"
+fi
+
+$PYTHON_CMD scripts/init_memory_stores.py
 
 echo "=== [Step 5] 部署健康检查冒烟测试 (Health Check Verification) ==="
 

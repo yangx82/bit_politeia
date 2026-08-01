@@ -1028,3 +1028,17 @@ CODING_TOOLS = [
     check_python_syntax,
     verify_file_exists,
 ]
+
+# Auto-register tools into ToolRegistry
+from .tool_registry import tool_registry, ToolCapability, ToolRiskLevel, ApprovalRequirement
+
+tool_registry.register("read_file", read_file, description="Read text file contents", capabilities=[ToolCapability.READ_ONLY], risk_level=ToolRiskLevel.LOW)
+tool_registry.register("list_dir", list_dir, description="List directory contents", capabilities=[ToolCapability.READ_ONLY], risk_level=ToolRiskLevel.LOW)
+tool_registry.register("verify_file_exists", verify_file_exists, description="Verify if file exists", capabilities=[ToolCapability.READ_ONLY], risk_level=ToolRiskLevel.LOW)
+tool_registry.register("check_python_syntax", check_python_syntax, description="Check Python AST syntax", capabilities=[ToolCapability.READ_ONLY], risk_level=ToolRiskLevel.LOW)
+
+tool_registry.register("write_file", write_file, description="Write or overwrite file", capabilities=[ToolCapability.WRITES_FILES], risk_level=ToolRiskLevel.MEDIUM)
+tool_registry.register("edit_file", edit_file, description="Edit file content", capabilities=[ToolCapability.WRITES_FILES], risk_level=ToolRiskLevel.MEDIUM)
+tool_registry.register("submit_code_fix", submit_code_fix, description="Submit code fix", capabilities=[ToolCapability.WRITES_FILES], risk_level=ToolRiskLevel.MEDIUM)
+tool_registry.register("execute_shell_command", execute_shell_command, description="Execute shell command", capabilities=[ToolCapability.EXECUTES_CODE, ToolCapability.NETWORK], risk_level=ToolRiskLevel.HIGH, approval=ApprovalRequirement.REQUIRED)
+

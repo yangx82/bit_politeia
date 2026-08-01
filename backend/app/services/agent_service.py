@@ -4484,154 +4484,192 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         if not self.api_key:
             return "Error: LLM API Key is not configured."
 
-        logger.info(f"Coding Sub-Agent: Starting task for target: {target_path}")
+        import hashlib
+        from ..agent.coding_fleet import coding_fleet
+        from ..agent.tool_registry import tool_registry
 
-        try:
-            # 1. Initialize dedicated LLM with low temperature
-            raw_coding_llm = ChatOpenAI(
-                base_url=self.base_url,
-                api_key=self.api_key,
-                model=self.model,
-                temperature=0.1,
-            )
-            url_str = (self.base_url or "").lower()
-            enable_parallel = "api.openai.com" in url_str or "aliyuncs.com" in url_str or "dashscope" in url_str
-            if enable_parallel:
-                coding_llm = raw_coding_llm.bind_tools(CODING_TOOLS)
-            else:
+        session_id = f"coding_{hashlib.md5(target_path.encode()).hexdigest()[:8]}"
+        session = coding_fleet.create_session(session_id, task_description, target_path)
+
+        logger.info(f"Coding Sub-Agent (Session: {session_id}): Starting task for target: {target_path}")
+
+        async with coding_fleet.get_semaphore():
+            file_lock = await coding_fleet.acquire_file_lock(target_path)
+            async with file_lock:
                 try:
-                    coding_llm = raw_coding_llm.bind_tools(CODING_TOOLS, parallel_tool_calls=False)
-                except Exception:
-                    coding_llm = raw_coding_llm.bind_tools(CODING_TOOLS)
-
-            coding_tools_map = {t.name: t for t in CODING_TOOLS}
-
-            # Ensure parent directory exists
-            abs_target_path = os.path.abspath(target_path)
-            os.makedirs(os.path.dirname(abs_target_path), exist_ok=True)
-
-            # 2. Build initial context
-            user_prompt = (
-                f"### TASK ASSIGNMENT ###\n"
-                f"Task Description: {task_description}\n"
-                f"Target File Path: {target_path} (Absolute: {abs_target_path})\n"
-                f"Context/Notes: {context_notes}\n\n"
-                f"INSTRUCTIONS:\n"
-                f"1. Read any necessary files or inspect data if needed.\n"
-                f"2. Write complete, well-commented Python code to '{target_path}'.\n"
-                f"3. Run 'check_python_syntax' on '{target_path}' to verify zero AST syntax errors.\n"
-                f"4. Run 'verify_file_exists' on '{target_path}' to verify disk file existence.\n"
-            )
-
-            messages = [
-                SystemMessage(content=CODING_SUBAGENT_PROMPT),
-                HumanMessage(content=user_prompt),
-            ]
-
-            syntax_verified = False
-            file_exists_verified = False
-            max_iters = 15
-
-            for i in range(max_iters):
-                try:
-                    response = await coding_llm.ainvoke(messages)
-                    messages.append(response)
-
-                    # Extract reasoning/thought
-                    thought = ""
-                    if "reasoning_content" in response.additional_kwargs:
-                        thought = response.additional_kwargs["reasoning_content"]
-                    elif response.content:
-                        thought = response.content
-
-                    if thought:
-                        await self.message_bus.publish_outbound(
-                            OutboundMessage(
-                                channel="gateway",
-                                session_id="coding_subagent",
-                                content=f"💻 [编程子智能体] {thought}",
-                                type="thought",
-                            )
-                        )
-
-                    if not response.tool_calls:
-                        break
-
-                    for tc in response.tool_calls:
-                        t_name = tc["name"]
-                        t_args = tc["args"]
-                        t_id = tc["id"]
-
-                        await self.message_bus.publish_outbound(
-                            OutboundMessage(
-                                channel="gateway",
-                                session_id="coding_subagent",
-                                content=f"💻 [编程子智能体] Invoking {t_name}...",
-                                type="tool_call",
-                                metadata={"tool": t_name, "args": t_args},
-                            )
-                        )
-
-                        if t_name in coding_tools_map:
-                            logger.info(f"Coding Sub-Agent Invoking Tool: {t_name} with {t_args}")
-                            output = await coding_tools_map[t_name].ainvoke(t_args)
-                            out_str = str(output)
-
-                            if t_name == "check_python_syntax" and "PASSED" in out_str:
-                                syntax_verified = True
-                            if t_name == "verify_file_exists" and "VERIFICATION_PASSED" in out_str:
-                                file_exists_verified = True
-
-                            messages.append(
-                                ToolMessage(tool_call_id=t_id, content=out_str, name=t_name)
-                            )
-                        else:
-                            messages.append(
-                                ToolMessage(
-                                    tool_call_id=t_id,
-                                    content=f"Error: Tool {t_name} not found.",
-                                    name=t_name,
-                                )
-                            )
-                except Exception as iter_err:
-                    logger.error(f"Error in coding sub-agent iteration {i}: {iter_err}")
-                    break
-
-            # Final physical verification check
-            final_exists = os.path.exists(abs_target_path) and os.path.getsize(abs_target_path) > 0
-
-            if final_exists and (syntax_verified or file_exists_verified):
-                report = (
-                    f"SUCCESS: Coding Sub-Agent completed task.\n"
-                    f"File Location: {target_path} (Absolute: {abs_target_path})\n"
-                    f"File Size: {os.path.getsize(abs_target_path)} bytes\n"
-                    f"AST Syntax Verified: {'YES' if syntax_verified else 'CHECKED_ON_DISK'}\n"
-                    f"Status: Code is saved and verified ready for resident execution."
-                )
-                logger.info(f"Coding Sub-Agent: Task completed successfully for {target_path}")
-                return report
-            elif final_exists:
-                try:
-                    import ast
-
-                    with open(abs_target_path, "r", encoding="utf-8") as f:
-                        ast.parse(f.read())
-                    report = (
-                        f"SUCCESS: Coding Sub-Agent completed task.\n"
-                        f"File Location: {target_path}\n"
-                        f"File Size: {os.path.getsize(abs_target_path)} bytes\n"
-                        f"AST Syntax Verified: YES (Fallback check passed)\n"
-                        f"Status: Code is saved and verified ready for resident execution."
+                    # 1. Initialize dedicated LLM with low temperature
+                    raw_coding_llm = ChatOpenAI(
+                        base_url=self.base_url,
+                        api_key=self.api_key,
+                        model=self.model,
+                        temperature=0.1,
                     )
-                    return report
-                except Exception as syn_e:
-                    return f"FAILED: Code file was created at {target_path} but failed AST syntax check: {syn_e}"
-            else:
-                return f"FAILED: Coding Sub-Agent did not generate a non-empty file at target path '{target_path}'."
+                    url_str = (self.base_url or "").lower()
+                    enable_parallel = "api.openai.com" in url_str or "aliyuncs.com" in url_str or "dashscope" in url_str
+                    if enable_parallel:
+                        coding_llm = raw_coding_llm.bind_tools(CODING_TOOLS)
+                    else:
+                        try:
+                            coding_llm = raw_coding_llm.bind_tools(CODING_TOOLS, parallel_tool_calls=False)
+                        except Exception:
+                            coding_llm = raw_coding_llm.bind_tools(CODING_TOOLS)
 
-        except Exception as e:
-            logger.error(f"Failed to run coding sub-agent: {e}")
-            return f"Error executing coding sub-agent: {e!s}"
+                    coding_tools_map = {t.name: t for t in CODING_TOOLS}
+
+                    # Ensure parent directory exists
+                    abs_target_path = os.path.abspath(target_path)
+                    os.makedirs(os.path.dirname(abs_target_path), exist_ok=True)
+
+                    # 2. Build initial context
+                    user_prompt = (
+                        f"### TASK ASSIGNMENT ###\n"
+                        f"Task Description: {task_description}\n"
+                        f"Target File Path: {target_path} (Absolute: {abs_target_path})\n"
+                        f"Context/Notes: {context_notes}\n\n"
+                        f"INSTRUCTIONS:\n"
+                        f"1. Read any necessary files or inspect data if needed.\n"
+                        f"2. Write complete, well-commented Python code to '{target_path}'.\n"
+                        f"3. Run 'check_python_syntax' on '{target_path}' to verify zero AST syntax errors.\n"
+                        f"4. Run 'verify_file_exists' on '{target_path}' to verify disk file existence.\n"
+                    )
+
+                    messages = [
+                        SystemMessage(content=CODING_SUBAGENT_PROMPT),
+                        HumanMessage(content=user_prompt),
+                    ]
+
+                    syntax_verified = False
+                    file_exists_verified = False
+                    max_iters = 15
+
+                    for i in range(max_iters):
+                        try:
+                            response = await coding_llm.ainvoke(messages)
+                            messages.append(response)
+
+                            # Extract reasoning/thought
+                            thought = ""
+                            if "reasoning_content" in response.additional_kwargs:
+                                thought = response.additional_kwargs["reasoning_content"]
+                            elif response.content:
+                                thought = response.content
+
+                            if thought:
+                                await self.message_bus.publish_outbound(
+                                    OutboundMessage(
+                                        channel="gateway",
+                                        session_id="coding_subagent",
+                                        content=f"💻 [编程子智能体] {thought}",
+                                        type="thought",
+                                    )
+                                )
+
+                            if not response.tool_calls:
+                                break
+
+                            for tc in response.tool_calls:
+                                t_name = tc["name"]
+                                t_args = tc["args"]
+                                t_id = tc["id"]
+
+                                await self.message_bus.publish_outbound(
+                                    OutboundMessage(
+                                        channel="gateway",
+                                        session_id="coding_subagent",
+                                        content=f"💻 [编程子智能体] Invoking {t_name}...",
+                                        type="tool_call",
+                                        metadata={"tool": t_name, "args": t_args},
+                                    )
+                                )
+
+                                if t_name in coding_tools_map:
+                                    logger.info(f"Coding Sub-Agent Invoking Tool: {t_name} with {t_args}")
+                                    meta = tool_registry.get_meta(t_name)
+                                    if meta:
+                                        output = await tool_registry.execute(t_name, target_file=target_path, **t_args)
+                                    else:
+                                        output = await coding_tools_map[t_name].ainvoke(t_args)
+                                    out_str = str(output)
+
+                                    if t_name == "check_python_syntax" and "PASSED" in out_str:
+                                        syntax_verified = True
+                                    if t_name == "verify_file_exists" and "VERIFICATION_PASSED" in out_str:
+                                        file_exists_verified = True
+
+                                    messages.append(
+                                        ToolMessage(tool_call_id=t_id, content=out_str, name=t_name)
+                                    )
+                                else:
+                                    messages.append(
+                                        ToolMessage(
+                                            tool_call_id=t_id,
+                                            content=f"Error: Tool {t_name} not found.",
+                                            name=t_name,
+                                        )
+                                    )
+
+                            # Update session checkpoint
+                            coding_fleet.update_checkpoint(
+                                session_id,
+                                checkpoint=f"iteration_{i+1}",
+                                created_files=[target_path] if os.path.exists(abs_target_path) else [],
+                                status="running"
+                            )
+
+                        except Exception as iter_err:
+                            logger.error(f"Error in coding sub-agent iteration {i}: {iter_err}")
+                            break
+
+                    # Final physical verification check
+                    final_exists = os.path.exists(abs_target_path) and os.path.getsize(abs_target_path) > 0
+
+                    if final_exists and (syntax_verified or file_exists_verified):
+                        coding_fleet.update_checkpoint(
+                            session_id,
+                            checkpoint="completed",
+                            created_files=[target_path],
+                            status="completed"
+                        )
+                        report = (
+                            f"SUCCESS: Coding Sub-Agent completed task.\n"
+                            f"File Location: {target_path} (Absolute: {abs_target_path})\n"
+                            f"File Size: {os.path.getsize(abs_target_path)} bytes\n"
+                            f"AST Syntax Verified: {'YES' if syntax_verified else 'CHECKED_ON_DISK'}\n"
+                            f"Status: Code is saved and verified ready for resident execution."
+                        )
+                        logger.info(f"Coding Sub-Agent: Task completed successfully for {target_path}")
+                        return report
+                    elif final_exists:
+                        try:
+                            import ast
+
+                            with open(abs_target_path, "r", encoding="utf-8") as f:
+                                ast.parse(f.read())
+                            coding_fleet.update_checkpoint(
+                                session_id,
+                                checkpoint="completed_ast_fallback",
+                                created_files=[target_path],
+                                status="completed"
+                            )
+                            report = (
+                                f"SUCCESS: Coding Sub-Agent completed task.\n"
+                                f"File Location: {target_path}\n"
+                                f"File Size: {os.path.getsize(abs_target_path)} bytes\n"
+                                f"AST Syntax Verified: YES (Fallback check passed)\n"
+                                f"Status: Code is saved and verified ready for resident execution."
+                            )
+                            return report
+                        except Exception as syn_e:
+                            coding_fleet.update_checkpoint(session_id, checkpoint="failed_ast", status="failed")
+                            return f"FAILED: Code file was created at {target_path} but failed AST syntax check: {syn_e}"
+                    else:
+                        coding_fleet.update_checkpoint(session_id, checkpoint="failed_no_file", status="failed")
+                        return f"FAILED: Coding Sub-Agent did not generate a non-empty file at target path '{target_path}'."
+
+                except Exception as e:
+                    coding_fleet.update_checkpoint(session_id, checkpoint=f"error_{e}", status="failed")
+                    logger.error(f"Failed to run coding sub-agent: {e}")
+                    return f"Error executing coding sub-agent: {e!s}"
 
     async def check_unhandled_messages(self):
         """Watchdog: Scan all active sessions for unhandled inbound messages older than 5 minutes."""
