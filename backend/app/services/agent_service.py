@@ -2394,7 +2394,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         await self.notify_resident(summary)
 
     async def run_literature_watcher(self):
-        """Periodic task to watch for new literature, evaluate quality, and share with community."""
+        """Periodic task to watch for new literature, evaluate quality, and share with community.
+        
+        Improvements (2026-08-02):
+        1. Split research_field by ';' into separate topics
+        2. Use semantic search for better matching
+        3. Merge and deduplicate results across topics
+        """
         logger.info(f"Starting Periodic Literature Watcher for topic: {self.research_field}")
         
         # 1. Initialize Skill Service (Dynamic Import)
@@ -2412,27 +2418,52 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             if self.resident_memory:
                 res_prefs = self.resident_memory.get_research_preferences()
 
-            # 2. Search for new papers (Sync wrapper for asyncio)
-            # We look back 7 days to catch any missed updates
-            new_papers = await asyncio.to_thread(
-                watcher.get_incremental_papers,
-                self.research_field,
-                interval_days=7,
-                positive_keywords=res_prefs.get("positive_keywords"),
-                negative_keywords=res_prefs.get("negative_keywords"),
-            )
+            # 2. Split research field into separate topics
+            raw_topics = [t.strip() for t in self.research_field.split(";") if t.strip()]
+            if not raw_topics:
+                raw_topics = [self.research_field]  # Fallback to single topic
             
-            if not new_papers:
+            logger.info(f"Literature Watcher: Searching {len(raw_topics)} topics: {raw_topics}")
+            
+            # 3. Search for new papers for EACH topic (using semantic search)
+            all_new_papers = []
+            seen_ids = set()  # For deduplication across topics
+            
+            for topic in raw_topics:
+                logger.info(f"Literature Watcher: Searching topic '{topic}'...")
+                try:
+                    # Use semantic search (already enabled in watcher_service.py)
+                    topic_papers = await asyncio.to_thread(
+                        watcher.get_incremental_papers,
+                        topic,
+                        interval_days=7,
+                        positive_keywords=res_prefs.get("positive_keywords"),
+                        negative_keywords=res_prefs.get("negative_keywords"),
+                    )
+                    
+                    # Deduplicate across topics
+                    for paper in topic_papers:
+                        paper_id = paper.get("id") or paper.get("doi") or paper.get("title", "")
+                        if paper_id and paper_id not in seen_ids:
+                            seen_ids.add(paper_id)
+                            all_new_papers.append(paper)
+                    
+                    logger.info(f"Literature Watcher: Found {len(topic_papers)} papers for topic '{topic}'")
+                except Exception as topic_err:
+                    logger.error(f"Literature Watcher: Failed to search topic '{topic}': {topic_err}")
+                    continue
+            
+            if not all_new_papers:
                 logger.info("No new literature found in this cycle.")
                 return
 
-            logger.info(f"Found {len(new_papers)} new candidate papers to evaluate.")
+            logger.info(f"Found {len(all_new_papers)} unique new papers across all topics.")
             
-            # 3. Evaluate and Act (using LLM)
+            # 4. Evaluate and Act (using LLM)
             high_quality_count = 0
             shared_count = 0
 
-            for paper in new_papers:
+            for paper in all_new_papers:
                 # Use LLM to decide quality and sharing, taking resident preferences into account
                 decision = await self._evaluate_and_share_paper(paper, research_prefs=res_prefs)
                 
