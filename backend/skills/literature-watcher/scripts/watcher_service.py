@@ -85,17 +85,110 @@ class WatcherService:
                 topics.append(t)
         return topics
 
+    # 主题到 OpenAlex 概念的映射（用于精确过滤）
+    TOPIC_CONCEPTS = {
+        # 神经科学/脑科学相关概念 ID
+        "neuroscience": "C154945302",  # Neuroscience
+        "brain": "C154945302",
+        "cognition": "C2771054173",  # Cognitive science
+        "instinct": "C154945302",  # 归入神经科学
+        
+        # AI/区块链相关概念 ID
+        "blockchain": "C208177563",  # Blockchain
+        "ai governance": "C154945302",  # 使用通用 AI 概念
+    }
+    
+    # 主题到 OpenAlex 主题的映射（更精确）
+    TOPIC_DOMAINS = {
+        "neural mechanism": ["T27704", "T27671"],  # Neuroscience, Cognitive Neuroscience
+        "instinct": ["T27704"],  # Neuroscience
+        "cognition": ["T27671", "T27704"],  # Cognitive Neuroscience, Neuroscience
+        "blockchain": ["T10101"],  # Blockchain (如果存在)
+        "ai governance": ["T11603"],  # Artificial Intelligence
+    }
+
     def search_openalex(self, topic, from_date=None, limit=20):
         """
         Searches OpenAlex for papers matching topic since from_date.
-        Uses SEMANTIC SEARCH (?search=) for fuzzy semantic matching
-        instead of keyword-only (display_name.search:).
         
-        OpenAlex semantic search uses GTE Large EN model to encode query
-        into 1024-dim vector and returns papers by cosine similarity.
+        Uses KEYWORD SEARCH (search=) with domain filtering (filter=) for precise results.
+        This avoids semantic search returning irrelevant papers
+        (e.g., AI papers for "neural" queries).
+        
+        OpenAlex API:
+        - search=: Full-text keyword search
+        - filter=: Domain/concept filtering
         """
+        # 使用 search 参数进行关键词搜索
         params = {
-            "search": topic,  # Semantic search (fuzzy, meaning-based)
+            "search": topic,  # 全文关键词搜索
+            "sort": "cited_by_count:desc",
+            "per_page": limit
+        }
+        
+        # 构建 filter 条件
+        filters = []
+        
+        # 添加领域过滤（根据主题自动选择）
+        domain_filter = self._get_domain_filter(topic)
+        if domain_filter:
+            filters.append(domain_filter)
+        
+        # 添加日期过滤
+        if from_date:
+            filters.append(f"from_publication_date:{from_date}")
+        
+        # 组合所有过滤条件
+        if filters:
+            params["filter"] = ",".join(filters)
+            
+        headers = {}
+        if self.email:
+            params["mailto"] = self.email
+            logger.info(f"Using polite pool with email: {self.email}")
+
+        logger.info(f"[Keyword Search] OpenAlex: search='{topic}', filter='{params.get('filter', 'none')}'")
+        
+        try:
+            response = requests.get(self.base_url, params=params, headers=headers, timeout=30, verify=False)
+            response.raise_for_status()
+            data = response.json()
+            results = data.get("results", [])
+            logger.info(f"[Keyword Search] Found {len(results)} results for '{topic}'")
+            return results
+        except Exception as e:
+            logger.error(f"OpenAlex keyword search failed: {e}")
+            # 降级到语义搜索
+            logger.info("Falling back to semantic search...")
+            return self._semantic_search_fallback(topic, from_date, limit)
+    
+    def _get_domain_filter(self, topic: str) -> str:
+        """根据主题获取领域过滤条件"""
+        topic_lower = topic.lower()
+        
+        # 检查是否匹配神经科学相关主题
+        neuro_keywords = ["neural", "brain", "cognition", "instinct", "neuroscience"]
+        if any(kw in topic_lower for kw in neuro_keywords):
+            # 使用 primary_topic.id 过滤到神经科学领域
+            # T10077: Neuroscience and Neuropharmacology Research
+            # T11601: Neuroscience and Neural Engineering
+            # T13106: Neuroscience, Education and Cognitive Function
+            return "primary_topic.id:T10077|T11601|T13106"
+        
+        # 检查是否匹配区块链主题
+        if "blockchain" in topic_lower:
+            return "concepts.id:C208177563"  # Blockchain
+        
+        # 检查是否匹配 AI 治理主题
+        if "ai" in topic_lower or "governance" in topic_lower:
+            return "concepts.id:C154945302"  # AI 相关
+        
+        return ""
+    
+    def _semantic_search_fallback(self, topic, from_date=None, limit=20):
+        """语义搜索降级方案"""
+        params = {
+            "search": topic,
             "sort": "cited_by_count:desc",
             "per_page": limit
         }
@@ -106,19 +199,14 @@ class WatcherService:
         headers = {}
         if self.email:
             params["mailto"] = self.email
-            logger.info(f"Using polite pool with email: {self.email}")
 
-        logger.info(f"[Semantic Search] OpenAlex for '{topic}' since {from_date or 'beginning of time'}...")
-        
         try:
             response = requests.get(self.base_url, params=params, headers=headers, timeout=30, verify=False)
             response.raise_for_status()
             data = response.json()
-            results = data.get("results", [])
-            logger.info(f"[Semantic Search] Found {len(results)} results for '{topic}'")
-            return results
+            return data.get("results", [])
         except Exception as e:
-            logger.error(f"OpenAlex semantic search failed: {e}")
+            logger.error(f"OpenAlex semantic search fallback failed: {e}")
             return []
 
     def get_incremental_papers(self, topic, interval_days=7, positive_keywords=None, negative_keywords=None):
