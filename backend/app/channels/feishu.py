@@ -284,24 +284,23 @@ class FeishuChannel(BaseChannel):
             .build()
         )
 
-        # Create event handler (register message receive and message read events)
-        event_handler = (
-            lark.EventDispatcherHandler.builder(
-                self.config.encrypt_key or "",
-                self.config.verification_token or "",
-            )
-            .register_p2_im_message_receive_v1(self._on_message_sync)
-            .register_p2_im_message_message_read_v1(self._on_message_read_sync)
-            .build()
-        )
-
-        # Create WebSocket client for long connection
-        self._ws_client = lark.ws.Client(
-            self.config.app_id,
-            self.config.app_secret,
-            event_handler=event_handler,
-            log_level=lark.LogLevel.INFO,
-        )
+        # [DEAD CODE] 以下代码创建但未使用，实际的 WebSocket 连接在子进程中运行
+        # 主进程只负责从 queue 读取消息并处理
+        # event_handler = (
+        #     lark.EventDispatcherHandler.builder(
+        #         self.config.encrypt_key or "",
+        #         self.config.verification_token or "",
+        #     )
+        #     .register_p2_im_message_receive_v1(self._on_message_sync)
+        #     .register_p2_im_message_message_read_v1(self._on_message_read_sync)
+        #     .build()
+        # )
+        # self._ws_client = lark.ws.Client(
+        #     self.config.app_id,
+        #     self.config.app_secret,
+        #     event_handler=event_handler,
+        #     log_level=lark.LogLevel.INFO,
+        # )
 
         # Start WebSocket client in a separate PROCESS to avoid event loop conflict
         self._ws_queue = multiprocessing.Queue()
