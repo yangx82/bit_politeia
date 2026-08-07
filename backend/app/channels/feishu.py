@@ -104,8 +104,7 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
         try:
             ws_logger.info(f"Feishu WebSocket connecting (attempt {attempts + 1})")
             # ws_client.start() 是阻塞调用，我们需要在另一个线程中监控 stop_event
-            # 使用 threading 来超时等待
-            import threading
+            # 使用 threading 来超时等待（threading 已在模块顶部导入）
             
             start_completed = threading.Event()
             start_exception = [None]
@@ -257,23 +256,9 @@ class FeishuChannel(BaseChannel):
             return
 
         self._running = True
-        try:
-            self._loop = asyncio.get_running_loop()
-        except RuntimeError:
-            logger.warning("No running event loop found for Feishu channel.")
-            # 延迟获取事件循环，避免消息丢失
-            def acquire_loop_later():
-                import time
-                for attempt in range(10):
-                    time.sleep(1)
-                    try:
-                        self._loop = asyncio.get_running_loop()
-                        logger.info("Successfully acquired event loop for Feishu channel")
-                        return
-                    except RuntimeError:
-                        continue
-                logger.error("Failed to acquire event loop after 10 attempts")
-            threading.Thread(target=acquire_loop_later, daemon=True).start()
+        # start() 是 async 方法，必然在事件循环中运行
+        self._loop = asyncio.get_running_loop()
+        logger.info("Feishu channel acquired event loop successfully")
 
         # Create Lark client for sending messages
         self._client = (
@@ -320,21 +305,33 @@ class FeishuChannel(BaseChannel):
         self._ws_process.start()
         logger.info(f"Feishu WebSocket worker process started (PID: {self._ws_process.pid})")
         
-        # Start queue processor to handle messages from worker
+        # Use asyncio.Queue as bridge from multiprocessing.Queue (avoids polling)
+        self._async_queue = asyncio.Queue()
+
+        def _bridge_mp_to_async():
+            """Background thread: reads from multiprocessing.Queue, puts into asyncio.Queue."""
+            while self._running:
+                try:
+                    item = self._ws_queue.get(timeout=1.0)
+                    self._loop.call_soon_threadsafe(self._async_queue.put_nowait, item)
+                except Exception:
+                    # queue.Empty or other transient error, continue
+                    pass
+
+        self._bridge_thread = threading.Thread(target=_bridge_mp_to_async, daemon=True)
+        self._bridge_thread.start()
+
         async def process_ws_queue():
             while self._running:
                 try:
-                    # Non-blocking queue get with timeout
-                    msg_type, data = self._ws_queue.get_nowait()
+                    msg_type, data = await self._async_queue.get()
                     if msg_type == "message":
-                        # Schedule message handling in main event loop
-                        if self._loop and self._loop.is_running():
-                            asyncio.run_coroutine_threadsafe(self._on_message(data), self._loop)
-                except Exception:
-                    # Queue empty or other error
-                    pass
-                await asyncio.sleep(0.1)
-        
+                        await self._on_message(data)
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error processing message from queue: {e}")
+
         self._queue_processor_task = asyncio.create_task(process_ws_queue())
         
         logger.info("Feishu bot started with WebSocket subprocess")
@@ -583,26 +580,26 @@ class FeishuChannel(BaseChannel):
         except Exception as e:
             logger.error(f"Error sending Feishu message: {e}")
 
-    def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:
-        """
-        Sync handler for incoming messages (called from WebSocket thread).
-        Schedules async handling in the main event loop.
-        """
-        # 重试机制：如果事件循环尚未就绪，延迟重试
-        if not self._loop or not self._loop.is_running():
-            logger.warning("Main event loop not ready, scheduling retry for Feishu message")
-            # 延迟重试机制
-            def retry_later():
-                import time
-                for attempt in range(5):
-                    time.sleep(0.5)
-                    if self._loop and self._loop.is_running():
-                        asyncio.run_coroutine_threadsafe(self._on_message(data), self._loop)
-                        return
-                logger.error("Failed to schedule Feishu message after 5 retries")
-            threading.Thread(target=retry_later, daemon=True).start()
-        else:
-            asyncio.run_coroutine_threadsafe(self._on_message(data), self._loop)
+    # [DEAD CODE] _on_message_sync is no longer used since event_handler was commented out.
+    # Messages are now handled via process_ws_queue() from the subprocess.
+    # def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:
+    #     """
+    #     Sync handler for incoming messages (called from WebSocket thread).
+    #     Schedules async handling in the main event loop.
+    #     """
+    #     if not self._loop or not self._loop.is_running():
+    #         logger.warning("Main event loop not ready, scheduling retry for Feishu message")
+    #         def retry_later():
+    #             import time
+    #             for attempt in range(5):
+    #                 time.sleep(0.5)
+    #                 if self._loop and self._loop.is_running():
+    #                     asyncio.run_coroutine_threadsafe(self._on_message(data), self._loop)
+    #                     return
+    #             logger.error("Failed to schedule Feishu message after 5 retries")
+    #         threading.Thread(target=retry_later, daemon=True).start()
+    #     else:
+    #         asyncio.run_coroutine_threadsafe(self._on_message(data), self._loop)
 
     def _on_message_read_sync(self, data: Any) -> None:
         """
@@ -632,9 +629,17 @@ class FeishuChannel(BaseChannel):
         if not response.success():
             raise Exception(f"Failed to get Feishu resource: {response.code} {response.msg}")
 
-        # 修复：空指针检查 - response.file 可能为 None
+        # Fix: Check for None or empty file content
         if response.file is None:
             raise Exception(f"Feishu response returned None file content for {file_key}")
+
+        file_data = (
+            response.file.getvalue() if hasattr(response.file, "getvalue") else response.file
+        )
+        
+        # Fix: Check for empty file content
+        if not file_data:
+            raise Exception(f"Feishu file content is empty for {file_key}")
 
         download_dir = Path("data/downloads")
         download_dir.mkdir(parents=True, exist_ok=True)
@@ -642,12 +647,6 @@ class FeishuChannel(BaseChannel):
         file_path = download_dir / f"fs_{message_id}_{file_name}"
 
         with open(file_path, "wb") as f:
-            # response.file may be a BytesIO object; get its bytes content
-            file_data = (
-                response.file.getvalue() if hasattr(response.file, "getvalue") else response.file
-            )
-            if not file_data:
-                raise Exception(f"Feishu file content is empty for {file_key}")
             f.write(file_data)
 
         return str(file_path.absolute())
