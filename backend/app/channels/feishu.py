@@ -637,8 +637,8 @@ class FeishuChannel(BaseChannel):
             response.file.getvalue() if hasattr(response.file, "getvalue") else response.file
         )
         
-        # Fix: Check for empty file content
-        if not file_data:
+        # Fix: Check for empty file content (handles empty BytesIO, empty bytes, etc.)
+        if not file_data or len(file_data) == 0:
             raise Exception(f"Feishu file content is empty for {file_key}")
 
         download_dir = Path("data/downloads")
