@@ -2,12 +2,25 @@
 
 import asyncio
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .events import InboundMessage, OutboundMessage
 
 logger = logging.getLogger(__name__)
+
+# 读取环境变量：是否只发送最终消息到通道
+# 从项目根目录加载 .env 文件
+from pathlib import Path
+_project_root = Path(__file__).parent.parent.parent.parent  # backend/app/bus/queue.py -> project root
+_env_file = _project_root / ".env"
+if _env_file.exists():
+    from dotenv import load_dotenv
+    load_dotenv(_env_file)
+CHANNEL_SEND_FINAL_ONLY = os.getenv("CHANNEL_SEND_FINAL_ONLY", "false").lower() == "true"
+if CHANNEL_SEND_FINAL_ONLY:
+    logger.info("CHANNEL_SEND_FINAL_ONLY is enabled - only final messages will be sent to channels")
 
 
 class MessageBus:
@@ -71,6 +84,12 @@ class MessageBus:
             try:
                 # Wait for next outbound message
                 msg = await self.outbound.get()
+
+                # 过滤逻辑：如果 CHANNEL_SEND_FINAL_ONLY=true，只发送 type='message' 的消息
+                if CHANNEL_SEND_FINAL_ONLY and msg.type != "message":
+                    logger.debug(f"Filtered out non-final message type='{msg.type}' to channel '{msg.channel}'")
+                    self.outbound.task_done()
+                    continue
 
                 subscribers = self._outbound_subscribers.get(msg.channel, [])
                 if not subscribers:

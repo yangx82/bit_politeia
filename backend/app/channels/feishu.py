@@ -23,6 +23,7 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
     避免与主进程的事件循环冲突。
     支持通过 stop_event 优雅退出。
     """
+    import atexit
     import lark_oapi as lark
     import signal
     import time
@@ -51,10 +52,24 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
     lark_ws_logger = logging.getLogger("lark")
     lark_ws_logger.addFilter(LarkWebSocketFilter())
     
+    # 注册退出清理函数
+    def cleanup():
+        ws_logger.info("Cleaning up worker resources...")
+        try:
+            # 关闭队列连接，防止信号量泄漏
+            if queue:
+                queue.close()
+        except Exception as e:
+            ws_logger.debug(f"Cleanup error: {e}")
+    
+    atexit.register(cleanup)
+    
     # 信号处理：捕获 SIGINT/SIGTERM 实现优雅退出
     def signal_handler(signum, frame):
         ws_logger.info(f"Received signal {signum}, setting stop event")
         stop_event.set()
+        cleanup()
+        sys.exit(0)
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -368,6 +383,25 @@ class FeishuChannel(BaseChannel):
             self._ws_thread.join(timeout=5.0)
             if self._ws_thread.is_alive():
                 logger.warning("Feishu WebSocket thread did not terminate within timeout")
+        
+        # 清理 multiprocessing 资源，防止信号量泄漏
+        if self._ws_queue:
+            try:
+                # 关闭队列，防止资源泄漏
+                self._ws_queue.close()
+                self._ws_queue.join_thread()
+                logger.debug("Feishu WebSocket queue closed")
+            except Exception as e:
+                logger.debug(f"Error closing queue: {e}")
+            self._ws_queue = None
+        
+        if self._ws_stop_event:
+            try:
+                # Event 不需要显式关闭，但确保引用被清理
+                self._ws_stop_event = None
+                logger.debug("Feishu WebSocket stop event cleaned up")
+            except Exception as e:
+                logger.debug(f"Error cleaning up stop event: {e}")
         
         logger.info("Feishu bot stopped")
 

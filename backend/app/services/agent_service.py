@@ -2455,6 +2455,14 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             
             if not all_new_papers:
                 logger.info("No new literature found in this cycle.")
+                # 即使没有新论文，也发送状态报告，让居民知道任务在正常运行
+                await self._send_literature_watcher_status_report(
+                    topics_searched=raw_topics,
+                    keywords_used=res_prefs,
+                    interval_days=7,
+                    papers_found=0,
+                    watcher=watcher,
+                )
                 return
 
             logger.info(f"Found {len(all_new_papers)} unique new papers across all topics.")
@@ -2580,6 +2588,67 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     await self.send_p2p_message(peer_id, share_content)
                 except Exception as e:
                     logger.warning(f"Failed to share paper with peer {peer_id}: {e}")
+
+    async def _send_literature_watcher_status_report(
+        self,
+        topics_searched: list,
+        keywords_used: dict,
+        interval_days: int,
+        papers_found: int,
+        watcher: Any = None,
+    ):
+        """Send a status report when no new papers are found, to confirm the task is running normally."""
+        from datetime import datetime, timezone
+        
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        
+        # Build keywords summary
+        pos_keywords = keywords_used.get("positive_keywords", [])
+        neg_keywords = keywords_used.get("negative_keywords", [])
+        
+        keywords_str = ""
+        if pos_keywords:
+            keywords_str += f"**正面关键词**: {', '.join(pos_keywords[:5])}{'...' if len(pos_keywords) > 5 else ''}\n"
+        if neg_keywords:
+            keywords_str += f"**排除关键词**: {', '.join(neg_keywords[:5])}{'...' if len(neg_keywords) > 5 else ''}\n"
+        if not keywords_str:
+            keywords_str = "未设置关键词过滤\n"
+        
+        # Get history stats if watcher is available
+        history_stats = ""
+        if watcher:
+            try:
+                history = watcher.get_history_stats()
+                if history:
+                    total = history.get("total_records", 0)
+                    last_check = history.get("last_check", "未知")
+                    history_stats = f"\n**历史记录**: 共 {total} 篇已处理论文"
+                    if last_check and last_check != "未知":
+                        history_stats += f"，上次检查: {last_check[:10]}"
+            except Exception:
+                pass
+        
+        report = f"""## 📊 文献监控状态报告
+
+**执行时间**: {now}
+**研究领域**: {'; '.join(topics_searched)}
+**回溯天数**: {interval_days} 天
+
+### 搜索结果
+- **找到新论文**: {papers_found} 篇
+- **关键词过滤**: 
+{keywords_str}{history_stats}
+
+### 状态
+✅ 文献监控任务正常运行
+
+---
+*下次执行时间: 明天 00:30 UTC*
+"""
+        
+        # Notify resident
+        await self.notify_resident(report)
+        logger.info("Literature Watcher: Status report sent to resident (no new papers found)")
 
     # 4. Ad-hoc Task: Periodic Participation Reward
     async def trigger_adhoc_task(self):
