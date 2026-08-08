@@ -38,6 +38,10 @@ services:
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-MemoryGraph2026}
       NEO4J_PLUGINS: '["apoc"]'
+      # 内存配置（31GB 系统，使用默认配置）
+      NEO4J_server_memory_heap_initial__size: "512m"
+      NEO4J_server_memory_heap_max__size: "1G"
+      NEO4J_server_memory_pagecache_size: "512m"
     ports:
       - "7474:7474"
       - "7687:7687"

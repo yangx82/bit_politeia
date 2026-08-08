@@ -15,18 +15,27 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Security: restrict file operations to the project root by default
-# In a real deployment, this should be strictly enforced.
+# Security: restrict file operations to project root and allowed workspace paths
 PROJECT_ROOT = Path(os.getcwd()).resolve()
 
+def _get_allowed_roots() -> list[Path]:
+    roots = [PROJECT_ROOT]
+    extra = os.getenv("ALLOWED_FS_PATHS", "")
+    if extra:
+        for p in extra.split(os.pathsep):
+            if p.strip():
+                roots.append(Path(p.strip()).expanduser().resolve())
+    return roots
 
 def _resolve_path(path: str) -> Path:
-    """Resolve path and enforce directory restriction (soft)."""
+    """Resolve path and strictly enforce directory boundary restrictions."""
     resolved = Path(path).expanduser().resolve()
-    # For now, we allow access to the whole drive if needed (agent on local machine),
-    # but we log warnings if outside project root.
-    if not str(resolved).startswith(str(PROJECT_ROOT)):
-        logger.warning(f"Agent accessing file outside project root: {resolved}")
+    allowed_roots = _get_allowed_roots()
+    
+    is_safe = any(str(resolved).startswith(str(root)) for root in allowed_roots)
+    if not is_safe:
+        logger.error(f"Security Alert: Path access blocked outside project root: {resolved}")
+        raise PermissionError(f"Access denied: path '{path}' is outside allowed directories.")
     return resolved
 
 

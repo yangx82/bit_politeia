@@ -12,9 +12,17 @@ import json
 import logging
 from typing import Optional
 
+try:
+    from langchain_core.tools import tool
+except ImportError:
+    def tool(func):
+        func.name = func.__name__
+        return func
+
 logger = logging.getLogger(__name__)
 
 
+@tool
 def list_archived_deliverables(
     task_id: Optional[str] = None,
     deliverable_type: Optional[str] = None
@@ -68,6 +76,7 @@ def list_archived_deliverables(
         return json.dumps({"status": "error", "message": str(e)})
 
 
+@tool
 def verify_deliverable_integrity(deliverable_id: str) -> str:
     """
     验证交付物完整性（检查文件是否存在且未被篡改）
@@ -96,6 +105,7 @@ def verify_deliverable_integrity(deliverable_id: str) -> str:
         return json.dumps({"status": "error", "message": str(e)})
 
 
+@tool
 def get_deliverable_store_stats() -> str:
     """
     获取成果物存储统计信息
@@ -119,6 +129,7 @@ def get_deliverable_store_stats() -> str:
         return json.dumps({"status": "error", "message": str(e)})
 
 
+@tool
 def read_archived_deliverable(deliverable_id: str) -> str:
     """
     读取已归档交付物的内容
@@ -156,6 +167,7 @@ def read_archived_deliverable(deliverable_id: str) -> str:
         return json.dumps({"status": "error", "message": str(e)})
 
 
+@tool
 def get_task_deliverables_summary(task_id: str) -> str:
     """
     获取指定任务的所有交付物摘要

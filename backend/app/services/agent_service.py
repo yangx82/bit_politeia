@@ -942,6 +942,17 @@ class AgentService:
             # We disable parallel tool calls by default to maximize compatibility, unless using official OpenAI or Aliyun Bailian endpoints.
             url_str = (base_url or "").lower()
             enable_parallel = "api.openai.com" in url_str or "aliyuncs.com" in url_str or "dashscope" in url_str
+            def _get_tool_name(t):
+                if hasattr(t, "name"):
+                    return t.name
+                if hasattr(t, "__name__"):
+                    try:
+                        t.name = t.__name__
+                    except Exception:
+                        pass
+                    return getattr(t, "name", t.__name__)
+                return str(t)
+
             if enable_parallel:
                 self.llm = raw_llm.bind_tools(all_tools)
             else:
@@ -950,7 +961,7 @@ class AgentService:
                 except Exception as bte:
                     logger.warning(f"Failed to bind tools with parallel_tool_calls=False, falling back to default: {bte}")
                     self.llm = raw_llm.bind_tools(all_tools)
-            self.tools_map = {t.name: t for t in all_tools}
+            self.tools_map = {_get_tool_name(t): t for t in all_tools}
 
             logger.info(f"Agent LLM Initialized. Active Tools: {list(self.tools_map.keys())}")
 

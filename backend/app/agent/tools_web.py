@@ -71,7 +71,33 @@ def _to_markdown(html_content: str) -> str:
     text = re.sub(r"</(p|div|section|article)>", "\n\n", text, flags=re.I)
     text = re.sub(r"<(br|hr)\s*/?>", "\n", text, flags=re.I)
 
-    return _normalize_text(_strip_tags(text))
+def _is_safe_url(url: str) -> tuple[bool, str]:
+    """Validate URL scheme and block private/loopback IP SSRF targets."""
+    import ipaddress
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False, f"Invalid scheme '{parsed.scheme}'. Only http and https are allowed."
+
+        hostname = parsed.hostname
+        if not hostname:
+            return False, "Invalid URL: missing hostname."
+
+        if hostname.lower() in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+            return False, f"SSRF Security Violation: Access to local host '{hostname}' is blocked."
+
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return False, f"SSRF Security Violation: Access to private IP '{hostname}' is blocked."
+        except ValueError:
+            pass  # Domain name
+
+        return True, ""
+    except Exception as e:
+        return False, f"URL validation error: {e}"
 
 
 @tool
@@ -84,6 +110,10 @@ async def fetch_web_page(url: str, extract_mode: str = "markdown") -> str:
         url: The URL to fetch.
         extract_mode: "markdown" (default) or "text" (plain text).
     """
+    is_safe, err_msg = _is_safe_url(url)
+    if not is_safe:
+        return f"Error: {err_msg}"
+
     try:
         from ..services.browser_service import browser_service
 
@@ -157,6 +187,10 @@ async def browser_fetch_page(url: str, wait_selector: str = None, extract_mode: 
         wait_selector: Optional CSS selector to wait for before extracting DOM (e.g. 'article', '.content').
         extract_mode: "markdown" (default) or "text".
     """
+    is_safe, err_msg = _is_safe_url(url)
+    if not is_safe:
+        return f"Error: {err_msg}"
+
     try:
         from ..services.browser_service import browser_service
 

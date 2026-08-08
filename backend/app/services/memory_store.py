@@ -29,6 +29,9 @@ class MemoryStore:
     """
 
     def __init__(self, workspace_root: str = None):
+        import threading
+        self._lock = threading.Lock()
+
         # Default to backend/memory if not specified
         if not workspace_root:
             # Assuming this file is in backend/app/services/
@@ -65,57 +68,64 @@ class MemoryStore:
 
     def read_today(self) -> str:
         """Read today's memory notes."""
-        today_file = self.get_today_file()
-        if today_file.exists():
-            return today_file.read_text(encoding="utf-8")
-        return ""
+        with self._lock:
+            today_file = self.get_today_file()
+            if today_file.exists():
+                return today_file.read_text(encoding="utf-8")
+            return ""
 
     def append_today(self, content: str) -> None:
         """Append content to today's memory notes."""
-        today_file = self.get_today_file()
+        with self._lock:
+            today_file = self.get_today_file()
 
-        if today_file.exists():
-            existing = today_file.read_text(encoding="utf-8")
-            content = existing + "\n" + content
-        else:
-            # Add header for new day
-            header = f"# {today_date()}\n\n"
-            content = header + content
+            if today_file.exists():
+                existing = today_file.read_text(encoding="utf-8")
+                content = existing + "\n" + content
+            else:
+                # Add header for new day
+                header = f"# {today_date()}\n\n"
+                content = header + content
 
-        today_file.write_text(content, encoding="utf-8")
-        self.invalidate_cache()
+            today_file.write_text(content, encoding="utf-8")
+            self.invalidate_cache()
 
     def read_long_term(self) -> str:
         """Read long-term memory (MEMORY.md)."""
-        if self.memory_file.exists():
-            return self.memory_file.read_text(encoding="utf-8")
-        return ""
+        with self._lock:
+            if self.memory_file.exists():
+                return self.memory_file.read_text(encoding="utf-8")
+            return ""
 
     def write_long_term(self, content: str) -> None:
         """Write to long-term memory (MEMORY.md)."""
-        self.memory_file.write_text(content, encoding="utf-8")
-        self.invalidate_cache()
+        with self._lock:
+            self.memory_file.write_text(content, encoding="utf-8")
+            self.invalidate_cache()
 
     def read_user_profile(self) -> str:
         """Read resident user profile (USER.md)."""
-        if self.user_file.exists():
-            return self.user_file.read_text(encoding="utf-8")
-        return ""
+        with self._lock:
+            if self.user_file.exists():
+                return self.user_file.read_text(encoding="utf-8")
+            return ""
 
     def write_user_profile(self, content: str) -> None:
         """Write resident user profile (USER.md)."""
-        self.user_file.write_text(content, encoding="utf-8")
-        self.invalidate_cache()
+        with self._lock:
+            self.user_file.write_text(content, encoding="utf-8")
+            self.invalidate_cache()
 
     def append_user_profile(self, content: str) -> None:
         """Append to resident user profile (USER.md)."""
-        existing = self.read_user_profile()
-        if existing:
-            new_content = existing.strip() + "\n\n" + content.strip()
-        else:
-            new_content = "# Resident User Profile & Directives\n\n" + content.strip()
-        self.user_file.write_text(new_content, encoding="utf-8")
-        self.invalidate_cache()
+        with self._lock:
+            existing = self.read_user_profile()
+            if existing:
+                new_content = existing.strip() + "\n\n" + content.strip()
+            else:
+                new_content = "# Resident User Profile & Directives\n\n" + content.strip()
+            self.user_file.write_text(new_content, encoding="utf-8")
+            self.invalidate_cache()
 
     def get_recent_memories(self, days: int = 7) -> str:
         """Get memories from the last N days."""

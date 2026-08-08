@@ -39,10 +39,12 @@ class CodingFleet:
     """
 
     def __init__(self, max_parallel: int = 3, storage_dir: Optional[str] = None):
+        import threading
         self.max_parallel = max_parallel
         self._semaphore = asyncio.Semaphore(max_parallel)
         self._file_locks: Dict[str, asyncio.Lock] = {}
         self._lock_mutex = asyncio.Lock()
+        self._session_lock = threading.Lock()
         
         # Session storage path
         if not storage_dir:
@@ -62,8 +64,9 @@ class CodingFleet:
             try:
                 with open(self.sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    for sid, s_data in data.items():
-                        self._sessions[sid] = AgentSession(**s_data)
+                    with self._session_lock:
+                        for sid, s_data in data.items():
+                            self._sessions[sid] = AgentSession(**s_data)
             except Exception as e:
                 logger.warning(f"[CodingFleet] Failed to load coding_sessions.json: {e}")
 
@@ -71,7 +74,8 @@ class CodingFleet:
         """Persist session metadata to disk."""
         try:
             temp_file = self.sessions_file.with_suffix(".tmp")
-            data = {sid: sess.to_dict() for sid, sess in self._sessions.items()}
+            with self._session_lock:
+                data = {sid: sess.to_dict() for sid, sess in self._sessions.items()}
             with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             os.replace(temp_file, self.sessions_file)
@@ -85,7 +89,8 @@ class CodingFleet:
             task_description=task_description,
             target_path=target_path,
         )
-        self._sessions[session_id] = session
+        with self._session_lock:
+            self._sessions[session_id] = session
         self._save_all_sessions()
 
         # Sync to NextGen MongoDB L3 store if available
@@ -98,7 +103,8 @@ class CodingFleet:
         return session
 
     def get_session(self, session_id: str) -> Optional[AgentSession]:
-        return self._sessions.get(session_id)
+        with self._session_lock:
+            return self._sessions.get(session_id)
 
     def update_checkpoint(
         self,
@@ -109,18 +115,19 @@ class CodingFleet:
         status: Optional[str] = None,
     ):
         """Update and persist session checkpoint for state restoration."""
-        session = self._sessions.get(session_id)
-        if not session:
-            return
+        with self._session_lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                return
 
-        session.checkpoint = checkpoint
-        session.updated_at = time.time()
-        if messages is not None:
-            session.messages = messages
-        if created_files is not None:
-            session.created_files = created_files
-        if status is not None:
-            session.status = status
+            session.checkpoint = checkpoint
+            session.updated_at = time.time()
+            if messages is not None:
+                session.messages = messages
+            if created_files is not None:
+                session.created_files = created_files
+            if status is not None:
+                session.status = status
 
         self._save_all_sessions()
 

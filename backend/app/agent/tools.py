@@ -542,6 +542,11 @@ async def pay_resident(
     """
     import app.services.agent_service
 
+    if amount <= 0:
+        return "Error: Payment amount must be strictly positive (> 0)."
+    if amount > 1000000:
+        return "Error: Payment amount exceeds maximum safety limit (1,000,000)."
+
     try:
         result = await app.services.agent_service.agent_service.transfer_funds(
             payee_id, amount, details, category=category, context_id=context_id, payer_id=payer_id

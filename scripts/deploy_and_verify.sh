@@ -11,9 +11,9 @@ echo "=== [Step 3] 等待数据库服务健康就绪 (Healthcheck Loop) ==="
 MAX_RETRIES=30
 RETRY=0
 
-until docker compose -f docker-compose.memory.yml ps | grep -q "healthy" || [ $RETRY -eq $MAX_RETRIES ]; do
-    echo "等待服务启动中... ($((RETRY+1))/$MAX_RETRIES)"
-    sleep 3
+until (docker exec agent-memory-redis redis-cli -a "${REDIS_PASSWORD:-MemoryRedis2026}" ping 2>/dev/null | grep -q "PONG" && curl -s -o /dev/null -w "%{http_code}" http://localhost:7474 | grep -q "200") || [ $RETRY -eq $MAX_RETRIES ]; do
+    echo "等待数据库基础设施全服务就绪中... ($((RETRY+1))/$MAX_RETRIES)"
+    sleep 2
     RETRY=$((RETRY+1))
 done
 

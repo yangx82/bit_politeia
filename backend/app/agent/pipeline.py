@@ -1,11 +1,7 @@
 import sys
 import site
 import os
-
-user_site = site.getusersitepackages()
-if user_site and user_site not in sys.path:
-    sys.path.insert(0, user_site)
-
+import asyncio
 import logging
 from datetime import datetime, timezone
 UTC = timezone.utc
@@ -374,6 +370,10 @@ class PlanStage(PipelineStage):
                     user_friendly_err = f"LLM 服务提示：请求参数验证失败（400 Bad Request）。若您使用的是 SGLang 部署的模型，请检查：1. 启动服务时是否指定了 --tool-call-parser 解析器；2. 当前模型是否支持工具调用（Function Calling）；3. 检查 SGLang 服务端的日志以获取具体参数报错信息。具体错误: {err_msg}"
                     context.continuation_req = False
                     context.continuation_reason = "FATAL_LLM_REQUEST_VALIDATION_ERROR"
+                elif ("connection error" in err_msg.lower() or "connect" in err_msg.lower() or "timeout" in err_msg.lower()):
+                    user_friendly_err = f"LLM 网络连接提示：无法连接至 LLM 服务端（{err_msg}）。请检查 LLM API 地址、网络代理连通性或本地 LLM 服务（如 LM Studio / SGLang / Ollama）是否已开启。"
+                    context.continuation_req = False
+                    context.continuation_reason = "FATAL_LLM_CONNECTION_FAILED"
                 else:
                     user_friendly_err = f"Error communicating with LLM. (Triggered Ralph Wiggum auto-heal if enabled: {err_msg})"
                     context.continuation_req = True

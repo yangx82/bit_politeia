@@ -50,7 +50,20 @@ def init_neo4j():
         neo4j_user = os.getenv("NEO4J_USER", "neo4j")
         neo4j_pass = os.getenv("NEO4J_PASSWORD", "MemoryGraph2026")
         
-        driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_pass), connection_timeout=3)
+        driver = None
+        last_err = None
+        for attempt in range(6):
+            try:
+                driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_pass), connection_timeout=5)
+                driver.verify_connectivity()
+                break
+            except Exception as conn_err:
+                last_err = conn_err
+                if attempt < 5:
+                    time.sleep(3)
+                else:
+                    raise last_err
+
         with driver.session() as session:
             session.run("CREATE CONSTRAINT entity_id_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.id IS UNIQUE")
             session.run("CREATE INDEX edge_valid_from IF NOT EXISTS FOR ()-[r:RELATION]-() ON (r.valid_from)")
