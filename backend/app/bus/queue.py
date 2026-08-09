@@ -85,8 +85,8 @@ class MessageBus:
                 # Wait for next outbound message
                 msg = await self.outbound.get()
 
-                # 过滤逻辑：如果 CHANNEL_SEND_FINAL_ONLY=true，只发送 type='message' 的消息
-                if CHANNEL_SEND_FINAL_ONLY and msg.type != "message":
+                # 过滤逻辑：如果 CHANNEL_SEND_FINAL_ONLY=true，除 gateway 外的外部通道只发送 type='message' 的消息
+                if CHANNEL_SEND_FINAL_ONLY and msg.channel != "gateway" and msg.type != "message":
                     logger.debug(f"Filtered out non-final message type='{msg.type}' to channel '{msg.channel}'")
                     self.outbound.task_done()
                     continue

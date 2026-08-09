@@ -142,34 +142,11 @@ async def websocket_gateway(websocket: WebSocket, token: str = Query(None)):
 
 async def stream_outbound_to_socket(websocket: WebSocket):
     """Subscribe to MessageBus and push events to WebSocket."""
-    # Check if we should only send final messages to channels
-    CHANNEL_SEND_FINAL_ONLY = os.getenv("CHANNEL_SEND_FINAL_ONLY", "false").lower() == "true"
-    if CHANNEL_SEND_FINAL_ONLY:
-        logger.info("Gateway: CHANNEL_SEND_FINAL_ONLY is enabled, filtering non-final messages")
-    """Subscribe to MessageBus and push events to WebSocket."""
-    # We define a unique channel ID for this socket or just subscribe to all "gateway" messages?
-    # For "Neural Gateway" pattern, the UI often wants to see EVERYTHING the agent says.
-    # So we subscribe to specific channels or a wildcard.
-    # For now, let's stream all messages intended for 'gateway' channel OR debug events.
-    # OR, we might want to stream *everything* if this is a "Control Plane".
-
-    # Since existing queue implementation is channel-based:
-    # We will subscribe this specific socket to a 'gateway' channel.
-    # If the Agent wants to speak to the UI/Node, it sends to 'gateway'.
-
-    # Limitation: This doesn't tap into 'telegram' messages unless we change the Bus to fan-out all messages.
-    # For now, we only stream messages explicitly sent to 'gateway' or 'debug'.
-
-    # Using the new Async Generator!
+    # Gateway channel receives all real-time events (thoughts, tool calls, messages) for UI monitoring
     channel_name = "gateway"
 
     async for msg in message_bus.subscribe_async_generator(channel_name):
         try:
-            # Apply CHANNEL_SEND_FINAL_ONLY filter
-            if CHANNEL_SEND_FINAL_ONLY and msg.type != "message":
-                logger.debug(f"Gateway: Filtered out non-final message type='{msg.type}'")
-                continue
-
             # Convert OutboundMessage to NodeProtocol Event
             # Map internal msg.type directly to event_type
             # msg.type defaults to 'message', but can be 'thought', 'tool_call', etc.
