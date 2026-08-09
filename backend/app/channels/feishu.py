@@ -75,10 +75,9 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
     signal.signal(signal.SIGTERM, signal_handler)
     
     reconnect_delay = 5
-    max_reconnect_delay = 60
-    max_attempts = 10
+    max_reconnect_delay = 15
     attempts = 0
-    
+
     # 创建事件处理器
     event_handler = (
         lark.EventDispatcherHandler.builder(
@@ -89,7 +88,7 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
         .register_p2_im_message_message_read_v1(lambda data: ws_logger.debug(f"Message read: {data}"))
         .build()
     )
-    
+
     # 创建 WebSocket 客户端
     ws_client = lark.ws.Client(
         app_id,
@@ -97,18 +96,17 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
         event_handler=event_handler,
         log_level=lark.LogLevel.INFO,
     )
-    
+
     ws_logger.info(f"Feishu WebSocket worker started (PID: {os.getpid()})")
-    
-    while attempts < max_attempts and not stop_event.is_set():
+
+    while not stop_event.is_set():
+        conn_start_time = time.time()
         try:
             ws_logger.info(f"Feishu WebSocket connecting (attempt {attempts + 1})")
             # ws_client.start() 是阻塞调用，我们需要在另一个线程中监控 stop_event
-            # 使用 threading 来超时等待（threading 已在模块顶部导入）
-            
             start_completed = threading.Event()
             start_exception = [None]
-            
+
             def start_ws():
                 try:
                     ws_client.start()
@@ -116,39 +114,46 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
                     start_exception[0] = e
                 finally:
                     start_completed.set()
-            
+
             ws_thread = threading.Thread(target=start_ws, daemon=True)
             ws_thread.start()
-            
+
             # 等待连接完成或收到停止信号
             while not start_completed.is_set() and not stop_event.is_set():
                 start_completed.wait(timeout=1.0)
-            
+
             if stop_event.is_set():
                 ws_logger.info("Stop event detected, exiting worker loop")
                 break
-            
-            # 如果 start() 返回，说明连接断开
-            if start_exception[0]:
-                attempts += 1
-                ws_logger.error(f"Feishu WebSocket error (attempt {attempts}): {start_exception[0]}")
+
+            conn_duration = time.time() - conn_start_time
+            if conn_duration > 10 and not start_exception[0]:
+                # 成功运行 10 秒以上：重置重连计数器与延迟
+                attempts = 0
+                reconnect_delay = 5
+                ws_logger.info(f"Feishu WebSocket ran for {conn_duration:.1f}s, reset reconnect counters.")
             else:
                 attempts += 1
-                ws_logger.warning(f"Feishu WebSocket disconnected, reconnecting in {reconnect_delay}s...")
+
+            # 如果 start() 返回，说明连接断开
+            if start_exception[0]:
+                ws_logger.error(f"Feishu WebSocket error (attempt {attempts}): {start_exception[0]}")
+            else:
+                ws_logger.warning(f"Feishu WebSocket disconnected (ran {conn_duration:.1f}s), reconnecting in {reconnect_delay}s...")
         except Exception as e:
             attempts += 1
             ws_logger.error(f"Feishu WebSocket error (attempt {attempts}): {e}")
-        
-        if attempts >= max_attempts or stop_event.is_set():
+
+        if stop_event.is_set():
             break
-            
+
         # 在等待重连时也检查停止信号
         for _ in range(int(reconnect_delay)):
             if stop_event.is_set():
                 break
             time.sleep(1)
         reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
-    
+
     ws_logger.info(f"Feishu WebSocket worker exiting (attempts={attempts}, stopped={stop_event.is_set()})")
 
 
@@ -483,7 +488,24 @@ class FeishuChannel(BaseChannel):
             return
 
         try:
-            if msg.session_id.startswith("oc_"):
+            loop = asyncio.get_running_loop()
+
+            # Resolve target Feishu chat/open ID
+            target_id = msg.metadata.get("original_session_id") or msg.session_id
+            if not target_id.startswith(("oc_", "ou_", "on_")):
+                try:
+                    from ..services.identity_service import identity_manager
+                    bound_id = None
+                    for k, v in identity_manager.identity_map.items():
+                        if k.startswith("feishu:") and v == target_id:
+                            bound_id = k.split("feishu:", 1)[1]
+                            break
+                    if bound_id:
+                        target_id = bound_id
+                except Exception as ie:
+                    logger.debug(f"Identity lookup error for {target_id}: {ie}")
+
+            if target_id.startswith("oc_"):
                 receive_id_type = "chat_id"
             else:
                 receive_id_type = "open_id"
@@ -496,7 +518,7 @@ class FeishuChannel(BaseChannel):
                     .receive_id_type(receive_id_type)
                     .request_body(
                         CreateMessageRequestBody.builder()
-                        .receive_id(msg.session_id)
+                        .receive_id(target_id)
                         .msg_type("text")
                         .content(content)
                         .build()
@@ -504,10 +526,10 @@ class FeishuChannel(BaseChannel):
                     .build()
                 )
 
-                response = self._client.im.v1.message.create(request)
+                response = await loop.run_in_executor(None, self._client.im.v1.message.create, request)
                 if not response.success():
                     logger.error(
-                        f"Failed to send Feishu text: code={response.code}, msg={response.msg}"
+                        f"Failed to send Feishu text to {target_id}: code={response.code}, msg={response.msg}"
                     )
             elif not msg.media:
                 # 如果既没有文本也没有附件，发送默认提示
@@ -517,17 +539,17 @@ class FeishuChannel(BaseChannel):
                     .receive_id_type(receive_id_type)
                     .request_body(
                         CreateMessageRequestBody.builder()
-                        .receive_id(msg.session_id)
+                        .receive_id(target_id)
                         .msg_type("text")
                         .content(content)
                         .build()
                     )
                     .build()
                 )
-                response = self._client.im.v1.message.create(request)
+                response = await loop.run_in_executor(None, self._client.im.v1.message.create, request)
                 if not response.success():
                     logger.error(
-                        f"Failed to send Feishu text: code={response.code}, msg={response.msg}"
+                        f"Failed to send Feishu text to {target_id}: code={response.code}, msg={response.msg}"
                     )
 
             # 2. Send media files
@@ -762,7 +784,8 @@ class FeishuChannel(BaseChannel):
                     "message_id": message_id,
                     "chat_type": chat_type,
                     "msg_type": msg_type,
-                    "username": sender.sender_id.user_id,  # No username in public event usually, just IDs
+                    "username": sender.sender_id.user_id if sender.sender_id else "unknown",
+                    "original_session_id": session_id,
                 },
             )
 

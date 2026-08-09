@@ -1871,12 +1871,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             and str(response_text).strip()
             and response_text != "No response generated."
         ):
+            target_transport_id = msg.metadata.get("original_session_id") or msg.session_id
             out_msg = OutboundMessage(
                 channel=msg.channel,
-                session_id=raw_session_id,  # Must use RAW ID for transport
+                session_id=target_transport_id,  # Must use RAW platform ID for transport (e.g. oc_xxx for Feishu)
                 content=response_text,
                 reply_to=msg.metadata.get("message_id"),
-                metadata={"message_id": reply_id},
+                metadata={"message_id": reply_id, "original_session_id": target_transport_id},
                 is_final=True,  # Mark as final response for channel filtering
             )
             await self.message_bus.publish_outbound(out_msg)
