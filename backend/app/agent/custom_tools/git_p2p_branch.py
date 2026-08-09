@@ -73,6 +73,21 @@ def execute(args_str=""):
         "message": "",
     }
 
+    import re
+
+    def _is_safe_name(name: str) -> bool:
+        if not name or ".." in name or "/" in name or "\\" in name:
+            return False
+        return bool(re.match(r"^[a-zA-Z0-9_\-\.]+$", name))
+
+    # Validate branch name inputs if present
+    for bname in (branch_name, old_name, new_name):
+        if bname and not _is_safe_name(bname):
+            return json.dumps({
+                "success": False,
+                "message": f"Error: Invalid or insecure branch name '{bname}'."
+            }, indent=2)
+
     # Validate repository
     if not git_dir.exists():
         result["message"] = f"Error: Not a git-p2p repository: {repo}"

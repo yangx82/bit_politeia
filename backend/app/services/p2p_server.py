@@ -32,10 +32,11 @@ PUBLIC_IP = os.getenv("BOOTSTRAP_PUBLIC_IP", "127.0.0.1")
 from contextlib import asynccontextmanager
 
 # Enable CORS for frontend communication
+cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=False if "*" in cors_origins else True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -182,22 +183,7 @@ async def register_node(registration: dict = Body(...)) -> dict[str, bool]:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.delete("/nodes/{node_id}")
-async def unregister_node(node_id: str) -> dict[str, bool]:
-    """Manually unregister a node from the bootstrap server."""
-    allow_removal = os.getenv("BOOTSTRAP_ALLOW_NODE_REMOVAL", "false").lower() == "true"
 
-    if not allow_removal:
-        raise HTTPException(
-            status_code=403,
-            detail="Node removal is disabled. Set BOOTSTRAP_ALLOW_NODE_REMOVAL=true to enable.",
-        )
-
-    success = bootstrap_service.unregister_node(node_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Node not found.")
-
-    return {"success": success}
 
 
 @app.get("/groups/{group_id}/pending")

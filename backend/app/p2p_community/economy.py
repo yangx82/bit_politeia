@@ -37,6 +37,8 @@ class Transaction:
 
 class Ledger:
     def __init__(self, storage_path: str | None = None):
+        import threading
+        self._lock = threading.Lock()
         self.balances: dict[str, float] = {}
         self.transactions: list[Transaction] = []
         self.storage_path = storage_path
@@ -54,7 +56,8 @@ class Ledger:
         self._event_callback = callback
 
     def get_balance(self, node_id: str) -> float:
-        return self.balances.get(node_id, 0.0)
+        with self._lock:
+            return self.balances.get(node_id, 0.0)
 
     def get_transaction_by_context(self, context_id: str, category: str = None) -> Transaction | None:
         """Find an existing transaction by context_id and optionally category.
@@ -69,17 +72,19 @@ class Ledger:
         Returns:
             Transaction if found, None otherwise
         """
-        for tx in self.transactions:
-            if tx.context_id == context_id:
-                if category is None or tx.category == category:
-                    return tx
-        return None
+        with self._lock:
+            for tx in self.transactions:
+                if tx.context_id == context_id:
+                    if category is None or tx.category == category:
+                        return tx
+            return None
 
     def credit(self, node_id: str, amount: float):
         if amount < 0:
             raise ValueError("Cannot credit negative amount")
-        self.balances[node_id] = self.balances.get(node_id, 0.0) + amount
-        self.save_state()
+        with self._lock:
+            self.balances[node_id] = self.balances.get(node_id, 0.0) + amount
+            self.save_state()
 
     def verify_transaction(self, tx: Transaction) -> bool:
         if tx.amount <= 0:
@@ -100,31 +105,32 @@ class Ledger:
         return True
 
     def record_transaction(self, tx: Transaction) -> bool:
-        if not self.verify_transaction(tx):
-            return False
-
-        # === IDEMPOTENCY CHECK ===
-        # Prevent duplicate transactions for the same context_id + category
-        if tx.context_id:
-            existing = self.get_transaction_by_context(tx.context_id, tx.category)
-            if existing:
-                logger.warning(
-                    f"Duplicate transaction blocked: context_id={tx.context_id}, category={tx.category} "
-                    f"(existing tx: {existing.transaction_id})"
-                )
+        with self._lock:
+            if not self.verify_transaction(tx):
                 return False
 
-        # Execute Transfer
-        if tx.payer_id != "system":
-            self.balances[tx.payer_id] = self.balances.get(tx.payer_id, 0.0) - tx.amount
-        self.balances[tx.payee_id] = self.balances.get(tx.payee_id, 0.0) + tx.amount
+            # === IDEMPOTENCY CHECK ===
+            # Prevent duplicate transactions for the same context_id + category
+            if tx.context_id:
+                existing = self.get_transaction_by_context(tx.context_id, tx.category)
+                if existing:
+                    logger.warning(
+                        f"Duplicate transaction blocked: context_id={tx.context_id}, category={tx.category} "
+                        f"(existing tx: {existing.transaction_id})"
+                    )
+                    return False
 
-        self.transactions.append(tx)
-        logger.info(
-            f"Transaction recorded: {tx.transaction_id} [{tx.category}] from {tx.payer_id[:8]} to {tx.payee_id[:8]} amount {tx.amount}"
-        )
+            # Execute Transfer
+            if tx.payer_id != "system":
+                self.balances[tx.payer_id] = self.balances.get(tx.payer_id, 0.0) - tx.amount
+            self.balances[tx.payee_id] = self.balances.get(tx.payee_id, 0.0) + tx.amount
 
-        self.save_state()
+            self.transactions.append(tx)
+            logger.info(
+                f"Transaction recorded: {tx.transaction_id} [{tx.category}] from {tx.payer_id[:8]} to {tx.payee_id[:8]} amount {tx.amount}"
+            )
+
+            self.save_state()
 
         # === BROADCAST TRANSACTION EVENT ===
         if self._event_callback:

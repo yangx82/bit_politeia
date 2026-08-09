@@ -371,7 +371,7 @@ class WebRTCManager:
                     nested = json.loads(sdp_data["sdp"])
                     sdp_data = nested
                     logger.info(f"[{peer_id}] Unwrapped nested JSON SDP in Offer.")
-                except:
+                except (json.JSONDecodeError, KeyError, TypeError):
                     pass
 
             # Normalize SDP input
@@ -465,7 +465,7 @@ class WebRTCManager:
                     nested = json.loads(sdp_data["sdp"])
                     sdp_data = nested
                     logger.info(f"[{peer_id}] Unwrapped nested JSON SDP in Answer.")
-                except:
+                except (json.JSONDecodeError, KeyError, TypeError):
                     pass
 
             if isinstance(sdp_data, str):

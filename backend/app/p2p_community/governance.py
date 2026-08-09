@@ -311,6 +311,8 @@ class GovernanceManager:
     """Manages elections and proposals for a node."""
 
     def __init__(self, node_id: str, storage_path: str = "backend/data/governance_store.json"):
+        import threading
+        self._lock = threading.Lock()
         self.node_id = node_id
         self.storage_path = Path(storage_path)
 
@@ -626,22 +628,25 @@ class GovernanceManager:
         - If enough evaluations collected → payout_status = "pending" (rewards will be distributed)
         - If not enough evaluations → payout_status = "insufficient_evaluations" (no rewards)
         """
-        now = datetime.now(UTC)
-        expired_ids = []
-        for eid, e in self.active_elections.items():
-            end_time = e.end_time
-            # Ensure timezone-aware comparison
-            if end_time.tzinfo is None:
-                end_time = end_time.replace(tzinfo=UTC)
-            if now > end_time:
-                expired_ids.append(eid)
+        with self._lock:
+            now = datetime.now(UTC)
+            expired_ids = []
+            for eid, e in list(self.active_elections.items()):
+                end_time = e.end_time
+                # Ensure timezone-aware comparison
+                if end_time.tzinfo is None:
+                    end_time = end_time.replace(tzinfo=UTC)
+                if now > end_time:
+                    expired_ids.append(eid)
 
-        if not expired_ids:
-            return []
+            if not expired_ids:
+                return []
 
-        for eid in expired_ids:
-            election = self.active_elections.pop(eid)
-            election.status = "finished"
+            for eid in expired_ids:
+                election = self.active_elections.pop(eid, None)
+                if not election:
+                    continue
+                election.status = "finished"
             
             # Special handling for RESEARCH_EVALUATION elections
             if election.election_type == ElectionType.RESEARCH_EVALUATION:
