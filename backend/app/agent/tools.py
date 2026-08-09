@@ -841,12 +841,29 @@ async def send_file_to_resident(file_path: str, description: str = "") -> str:
 
         msg_text = description if description else f"Here is the file: {file_name}"
 
-        # Pass media as kwargs to notify_resident
-        await agent_service.notify_resident(content=msg_text, media=media_payload)
+        # Pass media as kwargs to notify_resident with broadcast=True
+        await agent_service.notify_resident(content=msg_text, media=media_payload, broadcast=True)
 
         return f"Successfully sent {file_name} to the resident."
     except Exception as e:
         return f"Error sending file to resident: {e!s}"
+
+
+@tool
+async def send_message_to_resident(content: str) -> str:
+    """
+    Send a text message directly to the local resident (human user) across all connected notification bridges (Feishu/Telegram/Web Gateway).
+    Use this tool whenever you are requested to send a message or notification to the resident's Feishu or Telegram channel.
+    Args:
+        content: The text message to send to the resident.
+    """
+    try:
+        from app.services.agent_service import agent_service
+
+        await agent_service.notify_resident(content=content, broadcast=True)
+        return "Successfully sent message to resident across connected channels (Feishu/Telegram/Gateway)."
+    except Exception as e:
+        return f"Error sending message to resident: {e!s}"
 
 
 @tool
@@ -965,6 +982,7 @@ AGENT_TOOLS = [
     send_file,
     ask_resident,
     send_file_to_resident,
+    send_message_to_resident,
     get_my_status,
     read_community_rules,
     update_system_parameter,

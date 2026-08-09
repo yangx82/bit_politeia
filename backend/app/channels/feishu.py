@@ -152,7 +152,7 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
             if stop_event.is_set():
                 break
             time.sleep(1)
-        reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+        reconnect_delay = min(reconnect_delay * 2, 5)
 
     ws_logger.info(f"Feishu WebSocket worker exiting (attempts={attempts}, stopped={stop_event.is_set()})")
 
@@ -500,10 +500,17 @@ class FeishuChannel(BaseChannel):
                         if k.startswith("feishu:") and v == target_id:
                             bound_id = k.split("feishu:", 1)[1]
                             break
+                    if not bound_id:
+                        from ..services.agent_service import agent_service
+                        bound_id = agent_service.resident_bridges.get("feishu")
                     if bound_id:
                         target_id = bound_id
                 except Exception as ie:
                     logger.debug(f"Identity lookup error for {target_id}: {ie}")
+
+            if not target_id.startswith(("oc_", "ou_", "on_")):
+                logger.error(f"Cannot send Feishu message: Target ID '{target_id}' is not a valid Feishu chat/open ID.")
+                return
 
             if target_id.startswith("oc_"):
                 receive_id_type = "chat_id"
