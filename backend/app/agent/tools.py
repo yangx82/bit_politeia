@@ -860,7 +860,8 @@ async def send_message_to_resident(content: str) -> str:
     try:
         from app.services.agent_service import agent_service
 
-        await agent_service.notify_resident(content=content, broadcast=True)
+        # 使用 type="message" 确保消息不会被 CHANNEL_SEND_FINAL_ONLY 过滤
+        await agent_service.notify_resident(content=content, type="message", broadcast=True)
         return "Successfully sent message to resident across connected channels (Feishu/Telegram/Gateway)."
     except Exception as e:
         return f"Error sending message to resident: {e!s}"
