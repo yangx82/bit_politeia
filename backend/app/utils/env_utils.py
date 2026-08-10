@@ -8,6 +8,7 @@ if user_site and user_site not in sys.path:
 import io
 import logging
 import os
+from pathlib import Path
 
 try:
     from dotenv import find_dotenv
@@ -27,6 +28,16 @@ def load_dotenv_safe(dotenv_path: str = None, **kwargs):
     """
     # Use find_dotenv() to mirror standard load_dotenv behavior if no path given
     path = dotenv_path or find_dotenv()
+    
+    # If find_dotenv() failed, try to find .env in project root directory
+    if not path:
+        # From backend/app/utils/ go up 3 levels to project root
+        current_file = Path(__file__).resolve()
+        project_root = current_file.parent.parent.parent.parent
+        env_file = project_root / '.env'
+        if env_file.exists():
+            path = str(env_file)
+            logger.info(f"[SafeDotenv] Found .env at project root: {path}")
 
     if path and os.path.exists(path):
         try:

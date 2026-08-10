@@ -490,6 +490,17 @@ class FeishuChannel(BaseChannel):
         try:
             loop = asyncio.get_running_loop()
 
+            # 清洗消息内容：移除 <thinking> 标签
+            if msg.content:
+                import re
+                # 移除 <thinking>...</thinking> 标签及其内容
+                cleaned_content = re.sub(r'<thinking>.*?</thinking>', '', msg.content, flags=re.DOTALL)
+                # 移除多余的空白行
+                cleaned_content = re.sub(r'\n\s*\n\s*\n', '\n\n', cleaned_content).strip()
+                if cleaned_content != msg.content:
+                    logger.debug(f"Cleaned <thinking> tags from message (removed {len(msg.content) - len(cleaned_content)} chars)")
+                msg.content = cleaned_content
+
             # Resolve target Feishu chat/open ID
             target_id = msg.metadata.get("original_session_id") or msg.session_id
             if not target_id.startswith(("oc_", "ou_", "on_")):
