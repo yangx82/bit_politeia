@@ -1961,12 +1961,17 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             # Fallback: If feishu is not yet recorded in resident_bridges, check identity_manager for any known feishu session ID
             if "feishu" not in bridges_to_notify:
                 try:
-                    for k in identity_manager.identity_map.keys():
-                        if k.startswith("feishu:"):
+                    for k, v in identity_manager.identity_map.items():
+                        if k.startswith("feishu:") and v == "resident":
                             raw_feishu_id = k.split("feishu:", 1)[1]
                             bridges_to_notify["feishu"] = raw_feishu_id
                             self.resident_bridges["feishu"] = raw_feishu_id
                             break
+                    if "feishu" not in bridges_to_notify:
+                        default_feishu_id = os.getenv("FEISHU_DEFAULT_CHAT_ID") or os.getenv("FEISHU_DEFAULT_RECEIVE_ID")
+                        if default_feishu_id:
+                            bridges_to_notify["feishu"] = default_feishu_id
+                            self.resident_bridges["feishu"] = default_feishu_id
                 except Exception as fe_err:
                     logger.debug(f"Feishu fallback lookup error: {fe_err}")
         else:
