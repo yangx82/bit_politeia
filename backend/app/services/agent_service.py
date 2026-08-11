@@ -455,7 +455,7 @@ class AgentService:
         # For now, we rely on core active sessions in memory
 
         now = datetime.now(UTC)
-        cooldown_seconds = 300
+        cooldown_seconds = int(os.getenv("AGENT_P2P_COOLDOWN_SECONDS", getattr(self, "p2p_cooldown_seconds", 300)))
 
         flushed_count = 0
         for session in sessions_to_check:
@@ -743,6 +743,7 @@ class AgentService:
         name: str = None,
         personality: str = None,
         p2p_reply_delay: int = 5,
+        p2p_cooldown_seconds: int = 300,
         agent_language: str = "中文",
         ralph_wiggum_mode: bool = False,
         llm_timeout: float = 300.0,
@@ -766,6 +767,7 @@ class AgentService:
             self.personality = personality
             self.status.personality = personality
         self.p2p_reply_delay = p2p_reply_delay
+        self.p2p_cooldown_seconds = p2p_cooldown_seconds
         self.agent_language = agent_language
         self.ralph_wiggum_mode = ralph_wiggum_mode
         self.llm_timeout = llm_timeout
@@ -1059,6 +1061,7 @@ class AgentService:
         personality = os.getenv("AGENT_PERSONALITY", "Professional, helpful, and humorous")
         research_field = os.getenv("AGENT_RESEARCH_FIELD", "AI Governance")
         p2p_reply_delay = int(os.getenv("AGENT_P2P_REPLY_DELAY", "5"))
+        p2p_cooldown_seconds = int(os.getenv("AGENT_P2P_COOLDOWN_SECONDS", "300"))
         agent_language = os.getenv("AGENT_LANGUAGE", "中文")
         ralph_wiggum_mode = os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true"
         llm_timeout = max(180.0, float(os.getenv("AGENT_LLM_TIMEOUT", "180.0")))
@@ -1077,6 +1080,7 @@ class AgentService:
                 "name": name,
                 "personality": personality,
                 "p2p_reply_delay": p2p_reply_delay,
+                "p2p_cooldown_seconds": p2p_cooldown_seconds,
                 "agent_language": agent_language,
                 "ralph_wiggum_mode": ralph_wiggum_mode,
                 "llm_timeout": llm_timeout,
@@ -1263,6 +1267,7 @@ class AgentService:
             "bootstrap_url": os.getenv("AGENT_BOOTSTRAP_URL"),
             "bootstrap_verify": os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true",
             "p2p_reply_delay": int(os.getenv("AGENT_P2P_REPLY_DELAY", "5")),
+            "p2p_cooldown_seconds": int(os.getenv("AGENT_P2P_COOLDOWN_SECONDS", "300")),
             "agent_language": os.getenv("AGENT_LANGUAGE", "中文"),
             "ralph_wiggum_mode": os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true",
             "verbose_llm": os.getenv("AGENT_VERBOSE_LLM", "true").lower() == "true",
@@ -3299,7 +3304,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         # Initialize throttle state variables to avoid UnboundLocalError in return/log paths
         elapsed = 0
-        cooldown_seconds = 300
+        cooldown_seconds = int(os.getenv("AGENT_P2P_COOLDOWN_SECONDS", getattr(self, "p2p_cooldown_seconds", 300)))
         is_in_cooldown = False
 
         if not p2p_service._initialized:
