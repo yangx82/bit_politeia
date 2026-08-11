@@ -761,26 +761,33 @@ class GovernanceManager:
         """
         try:
             if event_type == "proposal":
-                # Check for election data in proposal message
-                election_data = content.get("election")
-                proposal_data = content.get("proposal")
-
-                if not election_data or not proposal_data:
-                    logger.warning("Governance P2P: Malformed proposal/election message.")
+                # Proposal content can be wrapped in {"proposal": ..., "election": ...} or be a raw proposal dict
+                if isinstance(content, dict) and "proposal" in content and isinstance(content["proposal"], dict):
+                    proposal_data = content["proposal"]
+                    election_data = content.get("election")
+                elif isinstance(content, dict) and "proposal_id" in content:
+                    proposal_data = content
+                    election_data = content.get("election")
+                else:
+                    logger.warning(f"Governance P2P: Malformed proposal message (missing proposal dict): {content}")
                     return False
 
-                election_id = election_data.get("election_id")
-                if election_id in self.active_elections:
-                    logger.debug(f"Governance P2P: Election {election_id} already exists locally.")
-                    return True
+                if not proposal_data:
+                    logger.warning("Governance P2P: Malformed proposal message.")
+                    return False
 
                 # Ingest Proposal
                 proposal = Proposal.from_dict(proposal_data)
                 self.proposals[proposal.proposal_id] = proposal
 
-                # Ingest Election
-                election = Election.from_dict(election_data)
-                self.active_elections[election.election_id] = election
+                # Ingest Election if attached and not already known
+                if election_data and isinstance(election_data, dict):
+                    election_id = election_data.get("election_id")
+                    if election_id and election_id in self.active_elections:
+                        logger.debug(f"Governance P2P: Election {election_id} already exists locally.")
+                    elif election_id:
+                        election = Election.from_dict(election_data)
+                        self.active_elections[election.election_id] = election
 
                 logger.info(
                     f"Governance P2P: Successfully ingested remote proposal {proposal.proposal_id}"
