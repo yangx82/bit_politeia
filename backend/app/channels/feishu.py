@@ -600,7 +600,7 @@ class FeishuChannel(BaseChannel):
                                 .receive_id_type(receive_id_type)
                                 .request_body(
                                     CreateMessageRequestBody.builder()
-                                    .receive_id(msg.session_id)
+                                    .receive_id(target_id)
                                     .msg_type(file_type)
                                     .content(media_content)
                                     .build()
@@ -608,10 +608,12 @@ class FeishuChannel(BaseChannel):
                                 .build()
                             )
 
-                            media_resp = self._client.im.v1.message.create(media_request)
+                            media_resp = await loop.run_in_executor(
+                                None, self._client.im.v1.message.create, media_request
+                            )
                             if not media_resp.success():
                                 logger.error(
-                                    f"Failed to send Feishu media: code={media_resp.code}, msg={media_resp.msg}"
+                                    f"Failed to send Feishu media to {target_id}: code={media_resp.code}, msg={media_resp.msg}"
                                 )
 
                         except Exception as upload_err:
