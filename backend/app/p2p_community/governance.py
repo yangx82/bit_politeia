@@ -14,6 +14,54 @@ class ElectionType(Enum):
     CORE_NODE = "core_node_election"
     PROPOSAL_VOTE = "proposal_vote"
     RESEARCH_EVALUATION = "research_evaluation"
+    ARCHITECTURE_EVOLUTION = "architecture_evolution"
+
+
+@dataclass
+class AIPProposal:
+    aip_id: str
+    initiator_id: str
+    title: str
+    description: str
+    target_files: list[str] = field(default_factory=list)
+    proposed_diff: str = ""
+    research_sources: list[str] = field(default_factory=list)
+    sandbox_results: dict[str, Any] = field(default_factory=dict)
+    status: str = "draft"  # draft, proposed, debating, voting, sandbox_passed, pr_submitted, merged, rejected
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def to_dict(self) -> dict:
+        return {
+            "aip_id": self.aip_id,
+            "initiator_id": self.initiator_id,
+            "title": self.title,
+            "description": self.description,
+            "target_files": self.target_files,
+            "proposed_diff": self.proposed_diff,
+            "research_sources": self.research_sources,
+            "sandbox_results": self.sandbox_results,
+            "status": self.status,
+            "timestamp": self.timestamp.isoformat()
+            if isinstance(self.timestamp, datetime)
+            else self.timestamp,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        return cls(
+            aip_id=data["aip_id"],
+            initiator_id=data["initiator_id"],
+            title=data.get("title", ""),
+            description=data.get("description", ""),
+            target_files=data.get("target_files", []),
+            proposed_diff=data.get("proposed_diff", ""),
+            research_sources=data.get("research_sources", []),
+            sandbox_results=data.get("sandbox_results", {}),
+            status=data.get("status", "draft"),
+            timestamp=datetime.fromisoformat(data["timestamp"])
+            if isinstance(data.get("timestamp"), str)
+            else data.get("timestamp", datetime.now(UTC)),
+        )
 
 
 @dataclass

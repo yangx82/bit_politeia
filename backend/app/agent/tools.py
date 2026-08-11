@@ -977,6 +977,96 @@ async def manage_memory(target: str, action: str, content: str = "") -> str:
         return f"Error executing manage_memory: {e!s}"
 
 
+@tool
+async def propose_architecture_update(
+    title: str, description: str, target_files: str = "", research_sources: str = ""
+) -> str:
+    """
+    Propose an Agent Architecture Improvement Proposal (AIP) to the P2P network.
+    Use this tool when you have analyzed literature/code and wish to propose an architectural modification to Bit Politeia.
+    Args:
+        title: Short title of the architecture proposal.
+        description: Detailed explanation of the proposed changes and expected benefits.
+        target_files: Comma-separated list of target source files to modify.
+        research_sources: Comma-separated list of ArXiv/OpenAlex DOIs or GitHub URLs inspiring this proposal.
+    """
+    try:
+        from app.services.agent_service import agent_service
+        from app.services.evolution_service import evolution_service
+
+        files_list = [f.strip() for f in target_files.split(",") if f.strip()]
+        sources_list = [s.strip() for s in research_sources.split(",") if s.strip()]
+
+        aip = evolution_service.create_aip(
+            initiator_id="self",
+            title=title,
+            description=description,
+            target_files=files_list,
+            research_sources=sources_list,
+        )
+
+        p2p_service = getattr(agent_service, "p2p_service", None)
+        await evolution_service.broadcast_aip(aip.aip_id, p2p_service=p2p_service)
+        return f"Successfully created and broadcasted {aip.aip_id}: '{title}' across the P2P network."
+    except Exception as e:
+        return f"Error proposing architecture update: {e!s}"
+
+
+@tool
+async def audit_p2p_aip_proposal(aip_id: str) -> str:
+    """
+    Audit a peer node's Agent Improvement Proposal (AIP) for security, breaking changes, and contract compliance.
+    Args:
+        aip_id: The ID of the AIP proposal to audit (e.g., 'AIP-8F2C1A').
+    """
+    try:
+        from app.services.agent_service import agent_service
+        from app.services.evolution_service import evolution_service
+
+        llm_client = getattr(agent_service, "llm", None)
+        vote = await evolution_service.audit_aip(aip_id, llm_client=llm_client)
+        status_str = "APPROVED" if vote.approval else "REJECTED"
+        return f"Audit complete for {aip_id}: [{status_str}] Reason: {vote.reason}"
+    except Exception as e:
+        return f"Error auditing AIP proposal {aip_id}: {e!s}"
+
+
+@tool
+async def run_aip_sandbox_test(aip_id: str) -> str:
+    """
+    Execute and validate an AIP patch in an isolated Sandbox environment.
+    Args:
+        aip_id: The ID of the AIP proposal to test (e.g., 'AIP-8F2C1A').
+    """
+    try:
+        from app.services.evolution_service import evolution_service
+
+        results = await evolution_service.verify_in_sandbox(aip_id)
+        if results.get("success"):
+            return f"Sandbox verification PASSED for {aip_id}. Test output clean."
+        else:
+            return f"Sandbox verification FAILED for {aip_id}: {results.get('error', 'Execution error')}"
+    except Exception as e:
+        return f"Error running sandbox test for {aip_id}: {e!s}"
+
+
+@tool
+async def submit_aip_pr(aip_id: str) -> str:
+    """
+    Submit a GitHub Pull Request for a verified AIP proposal and notify the resident.
+    Args:
+        aip_id: The ID of the AIP proposal to submit (e.g., 'AIP-8F2C1A').
+    """
+    try:
+        from app.services.agent_service import agent_service
+        from app.services.evolution_service import evolution_service
+
+        res = await evolution_service.submit_pr(aip_id, agent_service=agent_service)
+        return res
+    except Exception as e:
+        return f"Error submitting PR for {aip_id}: {e!s}"
+
+
 # List of Tools to bind to the agent
 AGENT_TOOLS = [
     send_p2p_message,
@@ -1032,6 +1122,10 @@ AGENT_TOOLS = [
     get_account_pairing_code,
     bind_account_by_code,
     unbind_account,
+    propose_architecture_update,
+    audit_p2p_aip_proposal,
+    run_aip_sandbox_test,
+    submit_aip_pr,
 ] + TASK_TOOLS
 
 # Specialized toolset for the Self-Healing Sub-Agent

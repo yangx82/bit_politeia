@@ -188,6 +188,16 @@ class AgentService:
                     id="periodic_literature_watcher_job",
                     replace_existing=True,
                 )
+                if os.getenv("AGENT_AUTO_EVOLUTION_ENABLED", "false").lower() == "true":
+                    interval_hours = int(os.getenv("AGENT_AUTO_EVOLUTION_INTERVAL_HOURS", "24"))
+                    self.scheduler.add_job(
+                        "app.services.agent_service:run_evolution_watcher_proxy",
+                        "interval",
+                        hours=interval_hours,
+                        misfire_grace_time=3600,
+                        id="periodic_evolution_watcher_job",
+                        replace_existing=True,
+                    )
                 self.scheduler.add_job(
                     "app.services.agent_service:process_network_inbox_proxy",
                     "interval",
@@ -2424,7 +2434,23 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             summary = "Agent offline."
 
         # Push to history/frontend AND broadcast to bridges
-        await self.notify_resident(summary)
+    async def run_evolution_watcher(self):
+        """Periodic task for the Autonomous Self-Evolving Agent Collective.
+        Evaluates system performance, checks for architecture proposals, and audits active AIPs.
+        """
+        logger.info("[EvolutionWatcher] Running periodic self-evolution cycle...")
+        try:
+            from app.services.evolution_service import evolution_service
+
+            # Audit active draft AIPs
+            for aip_id, aip in list(evolution_service.aips.items()):
+                if aip.status == "draft":
+                    logger.info(f"[EvolutionWatcher] Auditing draft proposal {aip_id}...")
+                    vote = await evolution_service.audit_aip(aip_id, llm_client=self.llm)
+                    if vote.approval:
+                        await evolution_service.verify_in_sandbox(aip_id)
+        except Exception as e:
+            logger.error(f"[EvolutionWatcher] Error in self-evolution cycle: {e}")
 
     async def run_literature_watcher(self):
         """Periodic task to watch for new literature, evaluate quality, and share with community.
@@ -5055,6 +5081,12 @@ async def run_literature_watcher_proxy():
     """Proxy for agent_service.run_literature_watcher"""
     if agent_service:
         await agent_service.run_literature_watcher()
+
+
+async def run_evolution_watcher_proxy():
+    """Proxy for agent_service.run_evolution_watcher"""
+    if agent_service:
+        await agent_service.run_evolution_watcher()
 
 
 async def compress_history_proxy():
