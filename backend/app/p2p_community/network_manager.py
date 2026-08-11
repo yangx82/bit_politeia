@@ -795,9 +795,16 @@ class NetworkManager:
                     if prop.group_id == group_id:
                         election = gm.active_elections.get(pid)
                         vote_count = len(election.votes) if election else 0
+                        local_proposal_data = prop.to_dict()
+                        local_election_data = election.to_dict() if election else None
+                        local_data_hash = compute_data_hash({
+                            "proposal": local_proposal_data,
+                            "election": local_election_data,
+                        })
                         known_proposals[pid] = {
                             "status": prop.status,
                             "vote_count": vote_count,
+                            "data_hash": local_data_hash,
                         }
         except Exception as e:
             logger.debug(f"[StateSync] Failed to gather local proposals for sync request: {e}")
@@ -930,7 +937,7 @@ class NetworkManager:
                 await self.route_message(sync_msg, gossip_forward=False)
                 synced_count += 1
                 
-                logger.info(
+                logger.debug(
                     f"[StateSync] Synced proposal {proposal.proposal_id[:8]}... to {requester_id[:8]}... "
                     f"(hash: {local_data_hash[:8]})"
                 )
