@@ -47,35 +47,87 @@ except ImportError:
 
 
 def _load_env_file():
-    """Load .env file from current directory, parent directories, or package directory."""
+    """Load .env file from skill directory, current directory, parent directories, or package directory.
+    
+    Priority: skill directory > current working directory > parent directories > package directory
+    """
     try:
         from dotenv import load_dotenv
+        has_dotenv = True
     except ImportError:
-        return False
+        has_dotenv = False
     
-    # Try current working directory first
+    def parse_env_content(content):
+        """Simple manual parser for .env files."""
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip("'").strip('"')
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    
+    # Priority 1: Skill directory (highest priority)
+    skill_dir = Path(__file__).resolve().parent.parent  # scripts/ -> scientific-slides/
+    env_path = skill_dir / ".env"
+    if env_path.exists():
+        if has_dotenv:
+            load_dotenv(dotenv_path=env_path, override=False)
+        else:
+            try:
+                with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                    parse_env_content(f.read())
+            except Exception:
+                pass
+        return True
+    
+    # Priority 2: Current working directory
     env_path = Path.cwd() / ".env"
     if env_path.exists():
-        load_dotenv(dotenv_path=env_path, override=False)
+        if has_dotenv:
+            load_dotenv(dotenv_path=env_path, override=False)
+        else:
+            try:
+                with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                    parse_env_content(f.read())
+            except Exception:
+                pass
         return True
         
-    # Try parent directories (up to 5 levels)
+    # Priority 3: Parent directories (up to 5 levels)
     cwd = Path.cwd()
     for _ in range(5):
+        cwd = cwd.parent
         env_path = cwd / ".env"
         if env_path.exists():
-            load_dotenv(dotenv_path=env_path, override=False)
+            if has_dotenv:
+                load_dotenv(dotenv_path=env_path, override=False)
+            else:
+                try:
+                    with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                        parse_env_content(f.read())
+                except Exception:
+                    pass
             return True
-        cwd = cwd.parent
         if cwd == cwd.parent:
             break
     
-    # Try the package's parent directory
+    # Priority 4: Package parent directory
     script_dir = Path(__file__).resolve().parent
     for _ in range(5):
         env_path = script_dir / ".env"
         if env_path.exists():
-            load_dotenv(dotenv_path=env_path, override=False)
+            if has_dotenv:
+                load_dotenv(dotenv_path=env_path, override=False)
+            else:
+                try:
+                    with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                        parse_env_content(f.read())
+                except Exception:
+                    pass
             return True
         script_dir = script_dir.parent
         if script_dir == script_dir.parent:
@@ -175,6 +227,64 @@ STYLE:
             api_key: OpenRouter API key (or use OPENROUTER_API_KEY env var)
             verbose: Print detailed progress information
         """
+        # Check if using Vertex AI (Gemini Enterprise Agent Platform)
+        self.use_vertex = os.getenv("GOOGLE_GENAI_USE_ENTERPRISE", "true").lower() in ("true", "1", "yes")
+        
+        if self.use_vertex:
+            self._init_vertex(verbose)
+        else:
+            self._init_openrouter(api_key, verbose)
+    
+    def _init_vertex(self, verbose: bool):
+        """Initialize for Vertex AI (Gemini Enterprise Agent Platform)."""
+        self.verbose = verbose
+        self._last_error = None
+        
+        # Vertex AI configuration
+        self.project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("VERTEX_PROJECT_ID")
+        self.location = os.getenv("GOOGLE_CLOUD_LOCATION") or os.getenv("VERTEX_LOCATION", "global")
+        
+        if not self.project_id:
+            raise ValueError(
+                "Vertex AI requires GOOGLE_CLOUD_PROJECT or VERTEX_PROJECT_ID environment variable.\n"
+                "For Gemini Enterprise Agent Platform, set:\n"
+                "  export GOOGLE_CLOUD_PROJECT=your-project-id\n"
+                "  export GOOGLE_CLOUD_LOCATION=global\n"
+                "  export GOOGLE_GENAI_USE_ENTERPRISE=true\n"
+                "Or use OpenRouter by setting:\n"
+                "  export OPENROUTER_API_KEY=your_api_key\n"
+                "  export GOOGLE_GENAI_USE_ENTERPRISE=false"
+            )
+        
+        # Vertex AI models
+        self.image_model = "gemini-3.1-flash-image"
+        self.review_model = "gemini-3.1-pro"
+        
+        # Import google-genai SDK
+        try:
+            from google import genai
+            from google.genai import types
+            self._genai = genai
+            self._types = types
+            self._has_genai = True
+        except ImportError:
+            self._has_genai = False
+            raise ImportError(
+                "google-genai SDK not installed for Vertex AI.\n"
+                "Install with: pip install google-genai"
+            )
+        
+        # Create Vertex AI client
+        self._client = self._genai.Client(
+            vertexai=True,
+            project=self.project_id,
+            location=self.location,
+        )
+        
+        self._log(f"Initialized Vertex AI client (project: {self.project_id}, location: {self.location})")
+    
+    def _init_openrouter(self, api_key: Optional[str], verbose: bool):
+        """Initialize for OpenRouter (Google AI Studio)."""
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
         
         if not self.api_key:
@@ -187,11 +297,16 @@ STYLE:
                 "  1. Set the OPENROUTER_API_KEY environment variable\n"
                 "  2. Add OPENROUTER_API_KEY to your .env file\n"
                 "  3. Pass api_key parameter to the constructor\n"
-                "Get your API key from: https://openrouter.ai/keys"
+                "Get your API key from: https://openrouter.ai/keys\n"
+                "\nOr use Vertex AI (Gemini Enterprise Agent Platform) by setting:\n"
+                "  export GOOGLE_CLOUD_PROJECT=your-project-id\n"
+                "  export GOOGLE_CLOUD_LOCATION=global\n"
+                "  export GOOGLE_GENAI_USE_ENTERPRISE=true"
             )
         
         self.verbose = verbose
         self._last_error = None
+        self.use_vertex = False
         self.base_url = "https://openrouter.ai/api/v1"
         # Nano Banana Pro for image generation
         self.image_model = "google/gemini-3-pro-image-preview"
@@ -324,7 +439,7 @@ STYLE:
     
     def generate_image(self, prompt: str, attachments: Optional[List[str]] = None) -> Optional[bytes]:
         """
-        Generate an image using Nano Banana Pro.
+        Generate an image using Nano Banana Pro or Vertex AI.
         
         Args:
             prompt: Text description of the image to generate
@@ -335,6 +450,59 @@ STYLE:
         """
         self._last_error = None
         
+        if self.use_vertex:
+            return self._generate_image_vertex(prompt, attachments)
+        else:
+            return self._generate_image_openrouter(prompt, attachments)
+    
+    def _generate_image_vertex(self, prompt: str, attachments: Optional[List[str]] = None) -> Optional[bytes]:
+        """Generate image using Vertex AI (Gemini Enterprise Agent Platform)."""
+        try:
+            self._log(f"Using Vertex AI with model: {self.image_model}")
+            
+            # Build model name for Vertex AI
+            model_name = f"publishers/google/models/{self.image_model}"
+            
+            # Configure image generation
+            config = self._types.GenerateContentConfig(
+                response_modalities=["IMAGE"],
+            )
+            
+            # Generate image using streaming API
+            last_image_data = None
+            chunk_count = 0
+            
+            for chunk in self._client.models.generate_content_stream(
+                model=model_name,
+                contents=[prompt],
+                config=config,
+            ):
+                if chunk.parts is None:
+                    continue
+                
+                for part in chunk.parts:
+                    if part.inline_data is not None:
+                        chunk_count += 1
+                        last_image_data = part.inline_data.data
+            
+            if last_image_data:
+                self._log(f"✓ Generated image via Vertex AI ({len(last_image_data)} bytes, {chunk_count} chunks)")
+                return last_image_data
+            else:
+                self._last_error = "No image data in Vertex AI response"
+                self._log(f"✗ {self._last_error}")
+                return None
+                
+        except Exception as e:
+            self._last_error = f"Vertex AI generation failed: {str(e)}"
+            self._log(f"✗ {self._last_error}")
+            import traceback
+            if self.verbose:
+                traceback.print_exc()
+            return None
+    
+    def _generate_image_openrouter(self, prompt: str, attachments: Optional[List[str]] = None) -> Optional[bytes]:
+        """Generate image using OpenRouter."""
         # Build content with text and optional image attachments
         content = []
         

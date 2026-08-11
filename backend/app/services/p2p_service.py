@@ -1,30 +1,50 @@
-import logging
 import asyncio
 import datetime
-from typing import Dict, Any, Optional, List
+import logging
+from typing import Any
 
-from .crypto_service import crypto_service
-from ..p2p_community.network_manager import NetworkManager
 from ..p2p_community.message_protocol import MessageProtocol, MessageType
 from ..p2p_community.models import Node
+from ..p2p_community.network_manager import NetworkManager
+from .crypto_service import crypto_service
 from .webrtc_service import WebRTCManager
 
 logger = logging.getLogger(__name__)
+
+
+def safe_create_task(coro, name: str = "unnamed"):
+    """Wrapper for asyncio.create_task with exception logging."""
+    async def _wrapped():
+        try:
+            await coro
+        except asyncio.CancelledError:
+            pass  # Normal cancellation, not an error
+        except Exception as e:
+            logger.error(f"[Task:{name}] Unhandled exception: {e}", exc_info=True)
+
+    return asyncio.create_task(_wrapped())
+
 
 class P2PService:
     """
     Service layer for P2P network operations.
     Wraps the NetworkManager and provides high-level API for other services.
     """
-    
+
     def __init__(self):
         self.message_protocol = MessageProtocol(crypto_service)
         self.network_manager = NetworkManager(self.message_protocol)
-        self.local_node: Optional[Node] = None
-        self.processed_signaling_ids: set[str] = set() # Store message_ids of sdp/ice messages
-        self.early_messages: List[Dict[str, Any]] = [] # Buffer for messages before initialization
+        self.local_node: Node | None = None
+        self.processed_signaling_ids: set[str] = set()  # Store message_ids of sdp/ice messages
+        self.early_messages: list[dict[str, Any]] = []  # Buffer for messages before initialization
         self._initialized = False
-        
+
+        # Heartbeat mechanism for connection health monitoring
+        self._heartbeat_task: asyncio.Task | None = None
+        self._heartbeat_interval = 60  # seconds
+        self._heartbeat_timeout = 30  # seconds
+        self._peer_last_seen: dict[str, float] = {}  # peer_id -> last message timestamp
+
         # Initialize WebRTC Manager
         self.webrtc_manager = WebRTCManager(self.send_signaling_message, self.handle_webrtc_message)
 
@@ -37,87 +57,96 @@ class P2PService:
 
         # Capture async loop for WebRTC callbacks
         import asyncio
+
         try:
             loop = asyncio.get_running_loop()
             self.webrtc_manager.set_loop(loop)
         except RuntimeError:
             logger.warning("P2P initialize called without running loop?")
 
-        # Initialize network manager (sync topology)
-        await self.network_manager.initialize()
-        
         # Create and register local node
         public_key = crypto_service.get_public_key_string()
-        
+
         # Consistent Node ID should be the Hex ID (SHA256 of Public Key)
         # We avoid UUID5 for Node ID to maintain consistency with message protocol and file system.
         hex_node_id = crypto_service.get_node_id()
-        
+
         # Use provided node_id if it looks like a valid Hex ID, else default to hex_node_id
         if not node_id or len(node_id) != 64:
-             node_id = hex_node_id
+            node_id = hex_node_id
+
+        # Initialize network manager (sync topology) with node_id for tunnel fallback
+        await self.network_manager.initialize(node_id=node_id)
 
         self.local_node = Node(
-            node_id=node_id, 
-            network_manager=self.network_manager,
-            public_key=public_key,
-            name=name
+            node_id=node_id, network_manager=self.network_manager, public_key=public_key, name=name
         )
         if node_url:
             self.local_node.endpoint = node_url
-        
+
         # Pass name to network manager registration if needed?
         # Actually network_manager.register_node just adds to local dict.
         # But we need to ensure when we call bootstrap_client.register_node that we pass the name.
-        # NetworkManager.register_node calls bootstrap_client.register_node? 
+        # NetworkManager.register_node calls bootstrap_client.register_node?
         # No, NetworkManager.register_node seems to be local.
         # I need to check where the actual bootstrap registration happens.
         # It happens in `await self.network_manager.register_node(self.local_node)` line 54?
         # Let's check NetworkManager code.
-        
+
         await self.network_manager.register_node(self.local_node)
-        
+
         # Register Signaling Handler
         self.local_node.set_message_handler(self.handle_p2p_message)
-        
+
         self._initialized = True
         logger.info(f"P2PService initialized for Node {node_id} at {node_url}")
-        
+
         # Process buffered messages
         if self.early_messages:
             logger.info(f"Processing {len(self.early_messages)} buffered early messages...")
             for msg in self.early_messages:
-                asyncio.create_task(self.local_node.receive_message(msg))
+                safe_create_task(self.local_node.receive_message(msg), name="early_message")
             self.early_messages.clear()
 
-    async def send_signaling_message(self, recipient_id: str, msg_type: str, content: Dict[str, Any]):
+        # Start heartbeat monitoring
+        self._start_heartbeat()
+
+    async def send_signaling_message(
+        self, recipient_id: str, msg_type: str, content: dict[str, Any]
+    ):
         """Callback for WebRTCManager to send signaling via Relay/HTTP."""
         await self.send_message(recipient_id, content, msg_type)
 
     async def handle_webrtc_message(self, peer_id: str, message: str):
         """Callback: Handle message received via WebRTC Data Channel."""
-        import uuid
         import datetime
-        
+        import time
+        import uuid
+
+        # Update peer last seen timestamp for heartbeat monitoring
+        self._peer_last_seen[peer_id] = time.time()
+
         # Try parse JSON if message looks like standard P2P payload
         incoming_id = None
         content = None
         try:
             import json
+
             content = json.loads(message)
             if isinstance(content, dict):
-                 incoming_id = content.get('message_id')
+                incoming_id = content.get("message_id")
         except:
             pass
 
         # Wrap as generic message structure so `agent_service` logs it to history.
         msg_data = {
-            "message_id": incoming_id or str(uuid.uuid4()), # Use incoming ID or fallback to new UUID
+            "message_id": incoming_id
+            or str(uuid.uuid4()),  # Use incoming ID or fallback to new UUID
             "sender_id": peer_id,
             "recipient_id": self.local_node.node_id if self.local_node else "unknown",
-            "message_type": MessageType.DIRECT.value, # Default to DIRECT
+            "message_type": MessageType.DIRECT.value,  # Default to DIRECT
             "content": {"text": message},
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
         }
         if isinstance(content, dict):
             # Extract top-level protocol fields if they were packed into the JSON
@@ -132,116 +161,161 @@ class P2PService:
 
             if "text" in content or "data" in content:
                 msg_data["content"] = content
-            
-            
-        if self.local_node:
-             # Standardize: Always use Hex Node ID for sender_id if it's a 64-char string
-             # (NetworkManager/MessageProtocol handle normalization, but we want it clean here)
-             
-             # Call receive_message directly puts it in inbox.jsonl
-             await self.local_node.receive_message(msg_data)
-             
-             # CRITICAL: Also publish to the P2P channel on the message bus immediately!
-             # This allows agent_service to pick it up without waiting for the 30s scheduler.
-             from ..bus.queue import message_bus
-             from ..bus.events import InboundMessage
-             
-             # Determine effective session_id (Group vs Direct)
-             effective_session_id = peer_id
-             m_type = str(msg_data.get("message_type")).lower()
-             if m_type == "group":
-                 effective_session_id = msg_data.get("recipient_id") or peer_id
-             
-             inbound = InboundMessage(
-                 channel="p2p",
-                 sender_id=peer_id,
-                 session_id=effective_session_id, # Target for replies/session grouping
-                 content=message,
-                 metadata=msg_data
-             )
-             await message_bus.publish_inbound(inbound)
-             logger.info(f"WebRTC message from {peer_id[:8]} dispatched to bus.")
-        else:
-             logger.warning(f"P2PService: Node not ready. Buffering message from {peer_id[:8]}")
-             self.early_messages.append(msg_data)
 
-    async def handle_p2p_message(self, message: Dict[str, Any]) -> bool:
+        if self.local_node:
+            # Standardize: Always use Hex Node ID for sender_id if it's a 64-char string
+            # (NetworkManager/MessageProtocol handle normalization, but we want it clean here)
+
+            # Call receive_message directly puts it in inbox.jsonl
+            await self.local_node.receive_message(msg_data)
+
+            # CRITICAL: Also publish to the P2P channel on the message bus immediately!
+            # This allows agent_service to pick it up without waiting for the 30s scheduler.
+            from ..bus.events import InboundMessage
+            from ..bus.queue import message_bus
+
+            # Determine effective session_id (Group vs Direct)
+            effective_session_id = peer_id
+            m_type = str(msg_data.get("message_type")).lower()
+            if m_type == "group":
+                effective_session_id = msg_data.get("recipient_id") or peer_id
+
+            inbound = InboundMessage(
+                channel="p2p",
+                sender_id=peer_id,
+                session_id=effective_session_id,  # Target for replies/session grouping
+                content=message,
+                metadata=msg_data,
+            )
+            await message_bus.publish_inbound(inbound)
+            logger.info(f"WebRTC message from {peer_id[:8]} dispatched to bus.")
+        else:
+            logger.warning(f"P2PService: Node not ready. Buffering message from {peer_id[:8]}")
+            self.early_messages.append(msg_data)
+
+    async def handle_p2p_message(self, message: dict[str, Any]) -> bool:
         """
-        Intercept P2P messages for WebRTC signaling.
+        Intercept P2P messages for WebRTC signaling and Governance.
         Returns True if handled, False otherwise.
         """
+        import time
+
         msg_type = message.get("message_type")
         sender_id = message.get("sender_id")
-        content = message.get("content", {})
         message_id = message.get("message_id")
-        
+
+        # Update peer last seen timestamp for heartbeat monitoring
+        if sender_id:
+            self._peer_last_seen[sender_id] = time.time()
+
         # 1. Deduplication for signaling messages
         if message_id:
             if message_id in self.processed_signaling_ids:
                 logger.debug(f"P2P Signaling: Ignoring duplicate message {message_id}")
-                return True # Already handled
-            
-            # Only track signaling types in this specific set
-            if msg_type in [MessageType.SDP_OFFER.value, MessageType.SDP_ANSWER.value, MessageType.ICE_CANDIDATE.value]:
-                self.processed_signaling_ids.add(message_id)
-                # Keep set size manageable
-                if len(self.processed_signaling_ids) > 1000:
-                     self.processed_signaling_ids.clear() 
+                return True  # Already handled
 
-        # 2. Dispatch by Message Type
+            # Only track signaling types in this specific set
+            if msg_type in [
+                MessageType.SDP_OFFER.value,
+                MessageType.SDP_ANSWER.value,
+                MessageType.ICE_CANDIDATE.value,
+            ]:
+                self.processed_signaling_ids.add(message_id)
+                # Keep set size manageable - remove oldest half instead of clearing all
+                # This prevents race condition where messages processed during clear() are lost
+                if len(self.processed_signaling_ids) > 1000:
+                    # Convert to list, keep only the most recent 500
+                    ids_list = list(self.processed_signaling_ids)
+                    self.processed_signaling_ids = set(ids_list[500:])
+                    logger.debug(f"[Dedup] Trimmed cache from 1000 to {len(self.processed_signaling_ids)}")
+
+        # 2. SECURITY: For governance messages, verify signature before processing
+        gov_msg_types = [
+            MessageType.PROPOSAL.value,
+            MessageType.VOTE.value,
+            MessageType.ELECTION.value,
+        ]
+
+        if msg_type in gov_msg_types:
+            from ..p2p_community.message_protocol import SignedMessage
+
+            try:
+                msg_obj = SignedMessage.from_dict(message)
+                
+                # Resolve Public Key from sender_id (which is a Hex Node ID)
+                public_key = sender_id
+                if self.network_manager and sender_id in self.network_manager.nodes:
+                    public_key = self.network_manager.nodes[sender_id].public_key
+                elif self.local_node and sender_id == self.local_node.node_id:
+                    public_key = self.local_node.public_key
+
+                if not self.message_protocol.verify_message(msg_obj, public_key):
+                    logger.warning(
+                        f"[Security] Rejected unverified {msg_type} from {sender_id[:8]}..."
+                    )
+                    return True  # Handled (by rejection)
+
+                # Signature valid, proceed to governance manager
+                from .agent_service import agent_service
+
+                if agent_service and agent_service.governance_manager:
+                    event_type = msg_type.lower()
+                    agent_service.governance_manager.receive_p2p_event(
+                        event_type, msg_obj.content
+                    )
+
+                    # GOSSIP FORWARD: Ensure propagation
+                    recipient_id = message.get("recipient_id")
+                    if recipient_id and recipient_id in self.network_manager.groups:
+                        safe_create_task(
+                            self._forward_governance_message(msg_obj, event_type), name=f"gossip_{event_type}"
+                        )
+                return True
+            except Exception as e:
+                logger.error(f"Error validating governance message: {e}")
+                return True  # Handled (error)
+
+        # 3. Dispatch remaining by Message Type
         if msg_type == MessageType.SDP_OFFER.value:
             if self.webrtc_manager:
-                asyncio.create_task(self.webrtc_manager.handle_offer(sender_id, content))
+                safe_create_task(
+                    self.webrtc_manager.handle_offer(sender_id, message.get("content", {})), name=f"sdp_offer_{sender_id[:8]}"
+                )
             return True
-        
+
         elif msg_type == MessageType.SDP_ANSWER.value:
             if self.webrtc_manager:
-                asyncio.create_task(self.webrtc_manager.handle_answer(sender_id, content))
+                safe_create_task(
+                    self.webrtc_manager.handle_answer(sender_id, message.get("content", {})), name=f"sdp_answer_{sender_id[:8]}"
+                )
             return True
-        
+
         elif msg_type == MessageType.ICE_CANDIDATE.value:
             if self.webrtc_manager:
-                asyncio.create_task(self.webrtc_manager.handle_candidate(sender_id, content))
+                safe_create_task(
+                    self.webrtc_manager.handle_candidate(sender_id, message.get("content", {})), name=f"ice_candidate_{sender_id[:8]}"
+                )
             return True
 
         elif msg_type == "SYSTEM_ERROR":
             # Asynchronous delivery failure from the relay
             m_id = message.get("message_id")
             if m_id:
-                logger.warning(f"P2P Delivery Failure for message {m_id}: {content}")
+                logger.warning(
+                    f"P2P Delivery Failure for message {m_id}: {message.get('content')}"
+                )
                 from .agent_service import agent_service
-                asyncio.create_task(agent_service.handle_remote_delivery_error(m_id, content))
+
+                safe_create_task(
+                    agent_service.handle_remote_delivery_error(m_id, message.get("content")), name=f"delivery_error_{m_id[:8]}"
+                )
             return True
 
-        elif msg_type == MessageType.PROPOSAL.value:
-            # Import here to avoid circular dependency
-            from .agent_service import agent_service
-            if agent_service.governance_manager:
-                agent_service.governance_manager.receive_p2p_event("proposal", content)
-                
-                # GOSSIP FORWARD: Forward to other group members to ensure propagation
-                # This implements the "rumor mongering" phase of the Gossip protocol
-                recipient_id = message.get("recipient_id")
-                if recipient_id and recipient_id in self.network_manager.groups:
-                    asyncio.create_task(self._forward_governance_message(message, "proposal"))
-            return True
-            
-        elif msg_type == MessageType.VOTE.value:
-            from .agent_service import agent_service
-            if agent_service.governance_manager:
-                agent_service.governance_manager.receive_p2p_event("vote", content)
-                
-                # GOSSIP FORWARD: Forward votes as well
-                recipient_id = message.get("recipient_id")
-                if recipient_id and recipient_id in self.network_manager.groups:
-                    asyncio.create_task(self._forward_governance_message(message, "vote"))
-            return True
-            
         elif msg_type == MessageType.SYNC.value:
             # Handle state synchronization requests
             content = message.get("content", {})
             if content.get("sync_type") == "state_request":
-                asyncio.create_task(self.network_manager.handle_state_sync_request(message))
+                safe_create_task(self.network_manager.handle_state_sync_request(message), name="state_sync")
             return True
 
         return False
@@ -252,23 +326,93 @@ class P2PService:
         This ensures eventual consistency even if some members missed the original broadcast.
         """
         try:
-            import json
-            from ..p2p_community.message_protocol import SignedMessage, MessageType
-            
+            from ..p2p_community.message_protocol import SignedMessage
+
             # Convert dict back to SignedMessage if needed
             if isinstance(message, dict):
                 msg_obj = SignedMessage.from_dict(message)
             else:
                 msg_obj = message
-            
+
             group_id = msg_obj.recipient_id
             sender_id = msg_obj.sender_id
-            
+
             # Forward to group members (excluding original sender and self)
             await self.network_manager._gossip_broadcast(msg_obj, group_id, exclude_sender=True)
-            
+
         except Exception as e:
             logger.debug(f"[Gossip] Failed to forward {event_type} message: {e}")
+
+    def _start_heartbeat(self):
+        """Start the heartbeat monitoring task for connection health."""
+        if self._heartbeat_task is None or self._heartbeat_task.done():
+            self._heartbeat_task = asyncio.create_task(
+                self._heartbeat_loop(), name="p2p_heartbeat"
+            )
+            logger.info(f"Heartbeat started: interval={self._heartbeat_interval}s, timeout={self._heartbeat_timeout}s")
+
+    async def _heartbeat_loop(self):
+        """
+        Periodically check peer connection health.
+        - Update last-seen timestamps when messages arrive
+        - Remove peers that haven't been seen within timeout
+        """
+        import time
+        logger.info("Heartbeat loop running")
+        while True:
+            try:
+                await asyncio.sleep(self._heartbeat_interval)
+                now = time.time()
+                dead_peers = []
+
+                # Create a snapshot to avoid concurrent modification issues
+                peer_snapshot = list(self._peer_last_seen.items())
+                for peer_id, last_seen in peer_snapshot:
+                    elapsed = now - last_seen
+                    if elapsed > self._heartbeat_timeout:
+                        dead_peers.append(peer_id)
+                        logger.warning(
+                            f"[Heartbeat] Peer {peer_id[:8]}... timed out "
+                            f"(last seen {elapsed:.0f}s ago)"
+                        )
+
+                # Remove dead peers
+                for peer_id in dead_peers:
+                    self._peer_last_seen.pop(peer_id, None)
+                    # Also disconnect from network manager if connected
+                    if peer_id in self.network_manager.nodes:
+                        try:
+                            await self.network_manager.disconnect_peer(peer_id)
+                            logger.info(f"[Heartbeat] Disconnected dead peer {peer_id[:8]}...")
+                        except Exception as e:
+                            logger.debug(f"[Heartbeat] Error disconnecting {peer_id[:8]}: {e}")
+
+                if dead_peers:
+                    logger.info(f"[Heartbeat] Cleaned up {len(dead_peers)} dead peer(s)")
+
+            except asyncio.CancelledError:
+                logger.info("Heartbeat loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"[Heartbeat] Error in heartbeat loop: {e}", exc_info=True)
+                await asyncio.sleep(5)  # Brief pause before retry
+
+    async def shutdown(self):
+        """Stop heartbeat and cleanup resources."""
+        logger.info("[P2PService] Shutting down...")
+        
+        # Stop heartbeat
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
+            logger.info("[P2PService] Heartbeat stopped")
+        
+        logger.info("[P2PService] Shutdown complete")
+
 
     async def warmup_webrtc(self, peer_id: str):
         """
@@ -276,38 +420,53 @@ class P2PService:
         """
         if not self._initialized or not self.webrtc_manager:
             return
-            
+
         # Standardize ID
-        peer_id = peer_id.lower() if hasattr(peer_id, 'lower') else str(peer_id).lower()
-        
+        peer_id = peer_id.lower() if hasattr(peer_id, "lower") else str(peer_id).lower()
+
         # Guard: Don't warmup if it's ourselves
         if self.local_node and peer_id == self.local_node.node_id:
             return
 
         logger.info(f"ICE Warmup: Proactively initiating WebRTC connection with {peer_id}")
-        asyncio.create_task(self.webrtc_manager.initiate_connection(peer_id))
+        safe_create_task(self.webrtc_manager.initiate_connection(peer_id), name=f"warmup_{peer_id[:8]}")
 
-    async def send_message(self, recipient_id: str, content: Dict[str, Any], msg_type: str = MessageType.DIRECT.value, message_id: Optional[str] = None, timestamp: Optional[datetime.datetime] = None):
+    async def send_message(
+        self,
+        recipient_id: str,
+        content: dict[str, Any],
+        msg_type: str = MessageType.DIRECT.value,
+        message_id: str | None = None,
+        timestamp: datetime.datetime | None = None,
+    ):
         """
         Send a message to a recipient (Node or Group).
         """
         if not self.local_node:
             raise RuntimeError("P2PService not initialized")
-            
-        return await self.local_node.send_message(recipient_id, content, msg_type, message_id=message_id, timestamp=timestamp)
 
-    async def broadcast_to_group(self, group_id: str, text: str, subject: Optional[str] = None, message_id: Optional[str] = None, timestamp: Optional[datetime.datetime] = None):
+        return await self.local_node.send_message(
+            recipient_id, content, msg_type, message_id=message_id, timestamp=timestamp
+        )
+
+    async def broadcast_to_group(
+        self,
+        group_id: str,
+        text: str,
+        subject: str | None = None,
+        message_id: str | None = None,
+        timestamp: datetime.datetime | None = None,
+    ):
         """
         Helper to broadcast to a specific group.
         """
         if not self.local_node:
             raise RuntimeError("P2PService not initialized")
-            
-        content = {
-            "text": text,
-            "subject": subject
-        }
-        return await self.local_node.send_message(group_id, content, MessageType.GROUP.value, message_id=message_id, timestamp=timestamp)
+
+        content = {"text": text, "subject": subject}
+        return await self.local_node.send_message(
+            group_id, content, MessageType.GROUP.value, message_id=message_id, timestamp=timestamp
+        )
 
     async def broadcast_governance_event(self, group_id: str, event_type: str, data: dict):
         """
@@ -315,24 +474,31 @@ class P2PService:
         Uses Gossip protocol to ensure eventual consistency across all group members.
         """
         if not self.local_node:
-             raise RuntimeError("P2PService not initialized")
-             
-        msg_type = MessageType.PROPOSAL if event_type == "proposal" else MessageType.VOTE
-        
+            raise RuntimeError("P2PService not initialized")
+
+        if event_type == "proposal":
+            msg_type = MessageType.PROPOSAL
+        elif event_type == "election":
+            msg_type = MessageType.ELECTION
+        else:
+            msg_type = MessageType.VOTE
+
         # Create the message
         message = self.message_protocol.create_message(
             sender_id=self.local_node.node_id,
             recipient_id=group_id,
             message_type=msg_type,
-            content=data
+            content=data,
         )
-        
+
         # Route with Gossip forwarding enabled
         # This ensures the message propagates to all group members even if not in local topology
-        logger.info(f"[Governance] Broadcasting {event_type} to group {group_id} with Gossip protocol")
+        logger.info(
+            f"[Governance] Broadcasting {event_type} to group {group_id} with Gossip protocol"
+        )
         return await self.network_manager.route_message(message, gossip_forward=True)
 
-    def get_network_status(self) -> Dict[str, Any]:
+    def get_network_status(self) -> dict[str, Any]:
         return self.network_manager.get_network_structure()
 
     async def update_node_info(self, name: str = None):
@@ -340,29 +506,32 @@ class P2PService:
         if not self.local_node:
             logger.warning("Cannot update node info: P2PService not initialized")
             return
-            
+
         if name:
             self.local_node.name = name
-            
+
         # Re-register with bootstrap to update metadata
         await self.network_manager.register_node(self.local_node)
-        logger.info(f"Updated node info for {self.local_node.node_id}: name='{self.local_node.name}'")
+        logger.info(
+            f"Updated node info for {self.local_node.node_id}: name='{self.local_node.name}'"
+        )
 
-    def get_my_groups(self) -> List[str]:
+    def get_my_groups(self) -> list[str]:
         if self.local_node:
             return list(self.local_node.group_ids)
         return []
 
-    def get_groups(self) -> List[Dict[str, Any]]:
+    def get_groups(self) -> list[dict[str, Any]]:
         """
         Get all known groups with details.
         """
         if not self._initialized:
             return []
-            
+
         groups_data = []
         for gid, group in self.network_manager.groups.items():
             groups_data.append(group.to_dict())
         return groups_data
+
 
 p2p_service = P2PService()

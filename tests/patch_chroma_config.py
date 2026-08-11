@@ -1,9 +1,8 @@
 import re
-import os
 
 target_file = r"C:\Users\yangx\AppData\Roaming\Python\Python314\site-packages\chromadb\config.py"
 
-with open(target_file, "r", encoding="utf-8") as f:
+with open(target_file, encoding="utf-8") as f:
     content = f.read()
 
 # Pattern to match: : Optional[...] = None

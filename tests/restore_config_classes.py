@@ -1,5 +1,3 @@
-import re
-
 target_file = r"C:\Users\yangx\AppData\Roaming\Python\Python314\site-packages\chromadb\config.py"
 
 missing_block = """
@@ -32,7 +30,7 @@ class RoutingMode(Enum):
     ID = "id"
 """
 
-with open(target_file, "r", encoding="utf-8") as f:
+with open(target_file, encoding="utf-8") as f:
     content = f.read()
 
 # Insert before class Settings if not present
@@ -40,7 +38,7 @@ if "class APIVersion" not in content:
     # Use simple string replacement or regex
     # We replaced imports up to class Settings, so class Settings should be there
     content = content.replace("class Settings", missing_block + "\n\nclass Settings")
-    
+
     with open(target_file, "w", encoding="utf-8") as f:
         f.write(content)
     print("Restored APIVersion and RoutingMode")

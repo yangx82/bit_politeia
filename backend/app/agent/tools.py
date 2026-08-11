@@ -1,20 +1,28 @@
+import json
 import logging
-from typing import Optional
-from langchain_core.tools import tool
+import os
+
+try:
+    from langchain_core.tools import tool
+except ImportError:
+    def tool(func):
+        return func
+
 from ..services.p2p_service import p2p_service
 
 logger = logging.getLogger(__name__)
+
 
 @tool
 async def send_p2p_message(recipient_id: str, content: str, message_type: str = "DIRECT") -> str:
     """
     Send a P2P message to another node or group in the network.
-    
+
     IMPORTANT SAFETY RULES:
     - NEVER use this tool to ask your Resident (human user) for advice or instructions. Use 'ask_resident' instead.
     - If you are in a GROUP CONVERSATION (check your system prompt context), use the Group ID as the 'recipient_id' and 'GROUP' as the 'message_type' to reply to all members.
     - Only use 'DIRECT' if you want to send a private message to a specific node.
-    
+
     Args:
         recipient_id: The UUID of the target Node or Group.
         content: The text content of the message.
@@ -24,18 +32,19 @@ async def send_p2p_message(recipient_id: str, content: str, message_type: str = 
         # print(f"[DEBUG-TOOL] send_p2p_message invoked for {recipient_id}")
         # Use AgentService wrapper to ensure consistent logging and WebRTC fallback logic
         from app.services.agent_service import agent_service
-        
+
         result = await agent_service.send_p2p_message(recipient_id, content)
-        
+
         if result.get("success"):
-             mode = result.get("mode", "unknown")
-             return f"Message sent to {recipient_id} via {mode}: SUCCESS"
+            mode = result.get("mode", "unknown")
+            return f"Message sent to {recipient_id} via {mode}: SUCCESS"
         else:
-             return f"Failed to send message: {result.get('error')}"
-             
+            return f"Failed to send message: {result.get('error')}"
+
     except Exception as e:
         logger.error(f"Tool Error sending message: {e}")
-        return f"Error sending message: {str(e)}"
+        return f"Error sending message: {e!s}"
+
 
 @tool
 async def send_file(recipient_id: str, file_path: str, description: str = "File") -> str:
@@ -48,64 +57,66 @@ async def send_file(recipient_id: str, file_path: str, description: str = "File"
     """
     import base64
     import os
-    
+
     if not os.path.exists(file_path):
         return f"Error: File not found at {file_path}"
-        
+
     try:
         file_name = os.path.basename(file_path)
         with open(file_path, "rb") as f:
             file_data = f.read()
-            
-        encoded_data = base64.b64encode(file_data).decode('utf-8')
-        
+
+        encoded_data = base64.b64encode(file_data).decode("utf-8")
+
         payload = {
             "text": f"Sending file: {file_name} - {description}",
             "info": file_name,
             "data": encoded_data,
-            "mime": "application/octet-stream" # Simplified
+            "mime": "application/octet-stream",  # Simplified
         }
-        
+
         # We need to manually specify the 'file' message type.
         # Ideally p2p_service.send_message should support 'file' string mapping to MessageType.FILE
         # Since we modified MessageType enum, we can pass "file" or MessageType.FILE.value
-        
+
         from app.services.agent_service import agent_service
+
         # Note: we pass 'file' as the message_type parameter to agent_service.send_p2p_message
-        result = await agent_service.send_p2p_message(recipient_id, payload, message_type='file')
-        success = result.get('success', False)
-        
+        result = await agent_service.send_p2p_message(recipient_id, payload, message_type="file")
+        success = result.get("success", False)
+
         if success:
             # Tell the agent exactly where it was sent from or how it was sent
             return f"Successfully queued file {file_name} for {recipient_id}"
         else:
             return "Failed to send file (Network Error)"
-            
+
     except Exception as e:
-        return f"Error sending file: {str(e)}"
+        return f"Error sending file: {e!s}"
+
 
 @tool
 async def submit_code_fix(file_path: str, new_content: str, explanation: str) -> str:
     """
-    Submits a code fix for self-repair. 
+    Submits a code fix for self-repair.
     The fix will be validated by a background supervisor and applied if tests pass.
     Note: Provide the FULL content for 'new_content'. file_path should be relative to project root.
-    
+
     Args:
         file_path: Relative path to the file to modify (e.g., 'backend/app/services/agent_service.py').
         new_content: The complete new content for the file.
         explanation: Why this fix is being applied and what it fixes.
     """
-    import os
     import json
+    import os
     from datetime import datetime
     from pathlib import Path
-    
+
     # Absolute path: project_root/backend/data/code_updates/pending.json
     PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
     WATCH_SETTING = str(PROJECT_ROOT / "data" / "code_updates" / "pending.json")
     STALE_TIMEOUT_SECONDS = 60
-    
+
     if os.path.exists(WATCH_SETTING):
         # Check if the file is stale (older than 60 seconds)
         try:
@@ -117,23 +128,24 @@ async def submit_code_fix(file_path: str, new_content: str, explanation: str) ->
                 os.remove(WATCH_SETTING)
         except Exception:
             os.remove(WATCH_SETTING)
-        
+
     try:
         os.makedirs(os.path.dirname(WATCH_SETTING), exist_ok=True)
-        
+
         request = {
             "file_path": file_path,
             "new_content": new_content,
             "explanation": explanation,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
         }
-        
+
         with open(WATCH_SETTING, "w", encoding="utf-8") as f:
             json.dump(request, f, indent=4)
-            
+
         return f"SUCCESS: Code fix for {file_path} submitted to supervisor. It will be validated and applied shortly."
     except Exception as e:
-        return f"Error submitting code fix: {str(e)}"
+        return f"Error submitting code fix: {e!s}"
+
 
 @tool
 async def repair_code(issue_description: str) -> str:
@@ -141,29 +153,119 @@ async def repair_code(issue_description: str) -> str:
     Delegate a code repair task to the specialized Self-Healing Sub-Agent.
     Use this if you or the resident identify a bug, a logic flaw, or a needed improvement in the backend code.
     The sub-agent will analyze the codebase and attempt to submit a fix.
-    
+
     Args:
         issue_description: Detailed description of the bug or the expected change.
     """
     try:
-        from app.services.agent_service import agent_service
         import asyncio
         import os
-        
-        if not os.environ.get("ENABLE_SELF_HEALING", "false").lower() in ("true", "1", "yes"):
+
+        from app.services.agent_service import agent_service
+
+        if os.environ.get("ENABLE_SELF_HEALING", "false").lower() not in ("true", "1", "yes"):
             return "Error: Self-healing is currently disabled in system settings (ENABLE_SELF_HEALING=false)."
-            
+
         # Launch the sub-agent task
         asyncio.create_task(agent_service._run_autonomous_repair_subagent(issue_description))
-        
+
         return f"Task delegated to System Repair Specialist: {issue_description}. Monitor 'system_health' thought stream for progress."
     except Exception as e:
-        return f"Error delegating repair task: {str(e)}"
+        return f"Error delegating repair task: {e!s}"
+
+
+@tool
+async def check_python_syntax(file_path: str) -> str:
+    """
+    Check a Python file for AST and compilation syntax errors.
+    Use this tool after writing or editing a Python script to verify its validity.
+
+    Args:
+        file_path: Relative or absolute path to the Python file (e.g. data/resident/script.py).
+    """
+    try:
+        abs_path = os.path.abspath(file_path)
+        if not os.path.exists(abs_path):
+            return f"Error: File '{file_path}' does not exist."
+
+        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+            code_content = f.read()
+
+        import ast
+        import py_compile
+
+        # 1. AST Parse Check
+        try:
+            ast.parse(code_content, filename=abs_path)
+        except SyntaxError as syn_err:
+            return f"SYNTAX_ERROR: Line {syn_err.lineno}: {syn_err.msg}\nCode context: '{syn_err.text}'"
+
+        # 2. PyCompile Check
+        try:
+            py_compile.compile(abs_path, doraise=True)
+        except Exception as compile_err:
+            return f"COMPILE_ERROR: {compile_err}"
+
+        return f"PASSED: File '{file_path}' passed AST parsing and py_compile checks cleanly."
+    except Exception as e:
+        return f"Error checking python syntax: {e!s}"
+
+
+@tool
+async def verify_file_exists(file_path: str) -> str:
+    """
+    Verify that a file physically exists on disk and is non-empty.
+
+    Args:
+        file_path: Path to the target file.
+    """
+    try:
+        abs_path = os.path.abspath(file_path)
+        if not os.path.exists(abs_path):
+            return f"VERIFICATION_FAILED: File '{file_path}' does not exist."
+
+        size = os.path.getsize(abs_path)
+        if size == 0:
+            return f"VERIFICATION_FAILED: File '{file_path}' exists but is 0 bytes (empty)."
+
+        return f"VERIFICATION_PASSED: File '{file_path}' exists on disk ({size} bytes)."
+    except Exception as e:
+        return f"Error verifying file: {e!s}"
+
+
+@tool
+async def delegate_coding_task(
+    task_description: str, target_filename: str, context_notes: str | None = None
+) -> str:
+    """
+    Delegate a programming/coding task to the dedicated Coding Sub-Agent.
+    The sub-agent will write the Python code, perform AST syntax checks, save it under data/resident/, and return an automated QA report.
+
+    Args:
+        task_description: Detailed requirements for the code/script to be created or modified.
+        target_filename: Desired target file name under data/resident/ (e.g. metabolic_cage_analysis.py).
+        context_notes: Optional background context, data schema details, or initial directory paths.
+    """
+    try:
+        from app.services.agent_service import agent_service
+
+        clean_filename = os.path.basename(target_filename)
+        rel_target_path = os.path.join("data", "resident", clean_filename)
+
+        result = await agent_service.run_coding_subagent(
+            task_description=task_description,
+            target_path=rel_target_path,
+            context_notes=context_notes or "",
+        )
+        return result
+    except Exception as e:
+        return f"Error delegating coding task: {e!s}"
+
 
 @tool
 async def get_my_status() -> str:
     """
-    Get the current status of the agent, including Node ID, Group memberships, 
+    Get the current status of the agent, including Node ID, Group memberships,
     and the full network topology (groups and nodes).
     """
     # 1. Local Identity
@@ -171,19 +273,22 @@ async def get_my_status() -> str:
     my_id = local_node.node_id if local_node else "Not Initialized"
     my_name = local_node.name if local_node else "Unknown"
     my_groups = list(local_node.group_ids) if local_node else []
-    
+
     # 2. Network Topology
     info = p2p_service.get_network_status()
-    
+
     status_report = f"--- My Status ---\nName: {my_name}\nNode ID: {my_id}\nGroups: {my_groups}\n\n--- Network Topology ---\n{json.dumps(info, indent=2)}"
     return status_report
+
 
 import json
 
 from app.services.community_config import community_config
+
 # Note: In a real app, we'd avoid circular imports. AgentService usually holds the governance manager.
 # For tools to access it, we might need a global accessor or pass it via state.
 # Assuming agent_service instance is globally available or we can access via a getter.
+
 
 @tool
 async def read_community_rules() -> str:
@@ -192,6 +297,7 @@ async def read_community_rules() -> str:
     Useful for checking election criteria, group sizes, etc.
     """
     return community_config.get_all_rules_text()
+
 
 @tool
 async def update_system_parameter(parameter_path: str, value: str) -> str:
@@ -203,24 +309,25 @@ async def update_system_parameter(parameter_path: str, value: str) -> str:
     """
     # Simple type inference
     try:
-        if value.lower() == 'true':
+        if value.lower() == "true":
             parsed_value = True
-        elif value.lower() == 'false':
+        elif value.lower() == "false":
             parsed_value = False
-        elif '.' in value and value.replace('.', '', 1).isdigit():
+        elif "." in value and value.replace(".", "", 1).isdigit():
             parsed_value = float(value)
         elif value.isdigit():
             parsed_value = int(value)
         else:
             parsed_value = value
-            
+
         success = community_config.update_parameter(parameter_path, parsed_value)
         if success:
             return f"Successfully updated {parameter_path} to {parsed_value}"
         else:
             return f"Failed to update {parameter_path}"
     except Exception as e:
-        return f"Error updating parameter: {str(e)}"
+        return f"Error updating parameter: {e!s}"
+
 
 @tool
 async def propose_election(group_id: str, candidate_ids: str) -> str:
@@ -232,19 +339,115 @@ async def propose_election(group_id: str, candidate_ids: str) -> str:
     """
     try:
         import app.services.agent_service
-        candidates = [c.strip() for c in candidate_ids.split(',')]
+
+        candidates = [c.strip() for c in candidate_ids.split(",")]
         # Access global service (pattern used in this file for p2p_service)
-        result = await app.services.agent_service.agent_service.start_election(group_id, candidates)
+        # FIX: AgentService uses initiate_election, not start_election
+        result = await app.services.agent_service.agent_service.initiate_election(
+            group_id, candidates
+        )
         return f"Election initiated: {result}"
     except Exception as e:
-        return f"Failed to start election: {str(e)}"
+        return f"Failed to start election: {e!s}"
+
+
+@tool
+async def update_group_core_nodes(group_id: str, node_ids: str) -> str:
+    """
+    Update the core nodes (leadership list) for a group.
+    This tool synchronizes the change with the bootstrap server AND the P2P network.
+
+    Args:
+        group_id: The UUID of the group.
+        node_ids: Comma-separated list of Node IDs (UUID/Hex) that should be the NEW core nodes.
+    """
+    try:
+        from ..services.group_service import group_service
+
+        id_list = [i.strip() for i in node_ids.split(",")]
+
+        success = await group_service.update_core_nodes(group_id, id_list)
+        if success:
+            return f"Successfully updated core nodes for group {group_id}. Propagation initiated."
+        else:
+            return "Failed to update core nodes. Check permissions or network connection to bootstrap server."
+    except Exception as e:
+        logger.error(f"Tool Error updating core nodes: {e}")
+        return f"Error: {e!s}"
+
+
+@tool
+async def apply_to_join_group(group_id: str, reason: str = "") -> str:
+    """
+    Apply to join a specific group.
+
+    Args:
+        group_id: The UUID of the group you wish to join.
+        reason: Optional reason or introduction for your application.
+    """
+    try:
+        from ..services.group_service import group_service
+
+        success = await group_service.apply_to_join(group_id, reason)
+        if success:
+            return f"Successfully submitted application to join group {group_id}. Waiting for approval from core nodes."
+        else:
+            return "Failed to submit application. Group might be full or bootstrap server is unreachable."
+    except Exception as e:
+        return f"Error: {e!s}"
+
+
+@tool
+async def list_pending_join_requests(group_id: str) -> str:
+    """
+    List nodes waiting to join the group. (Only works if you are a CORE NODE).
+
+    Args:
+        group_id: The UUID of the group to check.
+    """
+    try:
+        from ..services.group_service import group_service
+
+        pending = await group_service.get_pending_requests(group_id)
+        if not pending:
+            return "No pending join requests for this group."
+
+        output = f"Pending join requests for group {group_id}:\n"
+        for req in pending:
+            output += f"- Node: {req.get('node_id')} (Name: {req.get('name', 'N/A')})\n"
+            output += f"  Reason: {req.get('reason', 'None provided')}\n"
+        return output
+    except Exception as e:
+        return f"Error: {e!s}"
+
+
+@tool
+async def approve_join_request(group_id: str, node_id: str) -> str:
+    """
+    Approve a pending join request. (Only works if you are a CORE NODE).
+
+    Args:
+        group_id: The UUID of the group.
+        node_id: The Node ID (UUID) of the applicant to approve.
+    """
+    try:
+        from ..services.group_service import group_service
+
+        success = await group_service.approve_member(group_id, node_id)
+        if success:
+            return f"Successfully approved node {node_id} to join group {group_id}. Network propagation initiated."
+        else:
+            return "Failed to approve member. Check if you are a core node and if the bootstrap server is online."
+    except Exception as e:
+        return f"Error: {e!s}"
+
 
 @tool
 async def search_chat_history(peer_name_or_id: str, limit: int = 10) -> str:
     """
     Search and retrieve persistent chat history with a specific peer.
     Use this when the resident asks about past conversations or when you need to recall context from previous sessions.
-    
+
     Args:
         peer_name_or_id: The Name or Node ID (UUID/Hex) of the peer.
         limit: Number of recent messages to retrieve (default 10).
@@ -252,31 +455,38 @@ async def search_chat_history(peer_name_or_id: str, limit: int = 10) -> str:
     try:
         from ..services.agent_service import agent_service
         from ..services.p2p_service import p2p_service
-        
+
         target_id = peer_name_or_id.strip()
-        
+
         # 1. Try to resolve by name using local topology
         network_status = p2p_service.get_network_status()
         resolved_id = None
-        
+
         if network_status and "nodes" in network_status:
             for node_id, node_data in network_status["nodes"].items():
                 if node_data.get("name", "").lower() == target_id.lower():
                     resolved_id = node_id
                     break
-        
+
+        if not resolved_id and network_status and "groups" in network_status:
+            for group_id, group_data in network_status["groups"].items():
+                if group_data.get("name", "").lower() == target_id.lower():
+                    resolved_id = group_id
+                    break
+
         if resolved_id:
             target_id = resolved_id
-            
+
         result = await agent_service.get_chat_history_with_peer(target_id, limit)
         return result
     except Exception as e:
-        return f"Failed to retrieve chat history: {str(e)}"
+        return f"Failed to retrieve chat history: {e!s}"
+
 
 @tool
 async def submit_proposal(group_id: str, content: str) -> str:
     """
-    Submit a proposal for the group. 
+    Submit a proposal for the group.
     The proposal will be voted on.
     Args:
         group_id: UUID of the group.
@@ -284,10 +494,12 @@ async def submit_proposal(group_id: str, content: str) -> str:
     """
     try:
         import app.services.agent_service
+
         result = await app.services.agent_service.agent_service.submit_proposal(group_id, content)
         return result
     except Exception as e:
-        return f"Failed to submit proposal: {str(e)}"
+        return f"Failed to submit proposal: {e!s}"
+
 
 @tool
 async def publish_research(group_id: str, content: str, pdf_hash: str) -> str:
@@ -300,26 +512,49 @@ async def publish_research(group_id: str, content: str, pdf_hash: str) -> str:
     """
     try:
         import app.services.agent_service
-        result = await app.services.agent_service.agent_service.publish_research(group_id, content, pdf_hash)
+
+        result = await app.services.agent_service.agent_service.publish_research(
+            group_id, content, pdf_hash
+        )
         return result
     except Exception as e:
-        return f"Failed to publish research: {str(e)}"
+        return f"Failed to publish research: {e!s}"
+
 
 @tool
-async def pay_resident(payee_id: str, amount: float, details: str = "Payment") -> str:
+async def pay_resident(
+    payee_id: str,
+    amount: float,
+    details: str = "Payment",
+    category: str = "TRANSFER",
+    context_id: str = None,
+    payer_id: str = None,
+) -> str:
     """
     Transfer funds to another resident (node).
     Args:
         payee_id: The public key/Node ID of the recipient.
         amount: Amount to transfer (must be positive).
         details: Reason or description for the payment.
+        category: Optional category (e.g., TRANSFER, REWARD, GOVERNANCE).
+        context_id: Optional related ID (e.g., Proposal ID / Election ID).
+        payer_id: Optional payer ID (defaults to own node ID, set to 'system' for community rewards/payouts).
     """
-    import app.services.agent_service 
+    import app.services.agent_service
+
+    if amount <= 0:
+        return "Error: Payment amount must be strictly positive (> 0)."
+    if amount > 1000000:
+        return "Error: Payment amount exceeds maximum safety limit (1,000,000)."
+
     try:
-        result = await app.services.agent_service.agent_service.transfer_funds(payee_id, amount, details)
+        result = await app.services.agent_service.agent_service.transfer_funds(
+            payee_id, amount, details, category=category, context_id=context_id, payer_id=payer_id
+        )
         return result
     except Exception as e:
-        return f"Payment failed: {str(e)}"
+        return f"Payment failed: {e!s}"
+
 
 @tool
 async def check_my_balance() -> str:
@@ -330,10 +565,55 @@ async def check_my_balance() -> str:
     """
     try:
         import app.services.agent_service
+
         balance = await app.services.agent_service.agent_service.get_balance()
         return f"Current Balance: {balance}"
     except Exception as e:
-        return f"Failed to check balance: {str(e)}"
+        return f"Failed to check balance: {e!s}"
+
+
+@tool
+async def list_transactions(limit: int = 20) -> str:
+    """
+    List recent ledger transactions (income/expense).
+    Args:
+        limit: Max number of recent transactions to return.
+    """
+    try:
+        import app.services.agent_service
+
+        ledger = app.services.agent_service.agent_service.ledger
+        if not ledger:
+            return "Ledger not available."
+
+        recent = ledger.transactions[-limit:] if ledger.transactions else []
+        if not recent:
+            return "No transactions found in history."
+
+        lines = ["--- 近期賬本交易紀錄 ---"]
+        for tx in reversed(recent):
+            symbol = (
+                "➕" if tx.amount > 0 else "➖"
+            )  # Fixed logic needed if we want to show relative to self, but for now we show raw
+            # Actually since this is the local ledger, we show payer vs payee
+            me = (
+                app.services.agent_service.agent_service.governance_manager.node_id
+                if app.services.agent_service.agent_service.governance_manager
+                else "self"
+            )
+
+            direction = "📤 支出" if tx.payer_id == me else "📥 收入"
+            target = tx.payee_id[:8] if tx.payer_id == me else tx.payer_id[:8]
+
+            line = f"{tx.timestamp.strftime('%Y-%m-%d %H:%M:%S')} | {direction} | 金額: {tx.amount:.2f} | 對象: {target} | 類型: {tx.category} | 描述: {tx.details}"
+            if tx.context_id:
+                line += f" | 關聯: {tx.context_id[:8]}"
+            lines.append(line)
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to list transactions: {e!s}"
+
 
 @tool
 async def cast_ballot(election_id: str, ballot_json: str) -> str:
@@ -341,35 +621,61 @@ async def cast_ballot(election_id: str, ballot_json: str) -> str:
     Cast a full ballot in an active election or proposal vote.
     Args:
         election_id: The UUID of the election/proposal vote.
-        ballot_json: JSON string representing a list of votes. 
+        ballot_json: JSON string representing a list of votes.
                      Format for Election: '[{"candidate_id": "c1", "approve": true}, ...]'
                      Format for Proposal: '[{"approve": true, "reason": "My reasoning..."}, ...]'
                      Format for Research: '[{"reward_amount": 100.0, "reason": "Good work"}, ...]'
     """
     try:
         import json
+
         votes_data = json.loads(ballot_json)
         if not isinstance(votes_data, list):
             return "Error: ballot_json must be a list"
-        
-        import app.services.agent_service  
-        result = await app.services.agent_service.agent_service.vote_election(election_id, votes_data)
+
+        import app.services.agent_service
+
+        result = await app.services.agent_service.agent_service.vote_election(
+            election_id, votes_data
+        )
         return f"Ballot cast result: {result}"
     except Exception as e:
-        return f"Failed to vote: {str(e)}"
+        return f"Failed to vote: {e!s}"
+
 
 @tool
-async def get_election_status(election_id: str) -> str:
+async def get_election_status(election_id: str, include_content: bool = True) -> str:
     """
     Get the status and current tally of an election.
+    If include_content is True, it will also return the full text of the proposal.
     """
     try:
         import app.services.agent_service
-        status = await app.services.agent_service.agent_service.get_election_info(election_id)
+
+        status = await app.services.agent_service.agent_service.get_election_info(
+            election_id, include_content=include_content
+        )
         return str(status)
     except Exception as e:
-        return f"Error getting status: {str(e)}"
-        
+        return f"Error getting status: {e!s}"
+
+
+@tool
+async def list_elections(status: str = "all", limit: int = 20) -> str:
+    """
+    List all governance elections and proposal votes.
+    Status can be 'active', 'finished', or 'all'.
+    Returns a list of IDs and summaries.
+    """
+    try:
+        from app.services.agent_service import agent_service
+
+        result = await agent_service.get_governance_list(limit=limit, status=status)
+        return result
+    except Exception as e:
+        return f"Error listing elections: {e!s}"
+
+
 @tool
 async def generate_archive() -> str:
     """
@@ -378,10 +684,12 @@ async def generate_archive() -> str:
     """
     try:
         import app.services.agent_service
+
         result = await app.services.agent_service.agent_service.run_archiving()
         return result
     except Exception as e:
-        return f"Archiving failed: {str(e)}"
+        return f"Archiving failed: {e!s}"
+
 
 @tool
 async def get_latest_block() -> str:
@@ -390,10 +698,12 @@ async def get_latest_block() -> str:
     """
     try:
         import app.services.agent_service
+
         report = await app.services.agent_service.agent_service.get_latest_archive_report()
         return str(report)
     except Exception as e:
-        return f"Failed to get block: {str(e)}"
+        return f"Failed to get block: {e!s}"
+
 
 @tool
 async def search_web(query: str) -> str:
@@ -403,9 +713,11 @@ async def search_web(query: str) -> str:
     """
     try:
         from app.services.knowledge_base import knowledge_base
+
         return knowledge_base.web_researcher.search(query)
     except Exception as e:
-        return f"Search failed: {str(e)}"
+        return f"Search failed: {e!s}"
+
 
 @tool
 async def read_skill_guide(skill_name: str) -> str:
@@ -415,16 +727,20 @@ async def read_skill_guide(skill_name: str) -> str:
     """
     try:
         from app.services.skill_manager import skill_manager
+
         # Ensure latest skills are loaded or just read from cache
         # skill_manager.load_skills() # Optional: reload if needed
         return skill_manager.get_skill_instruction(skill_name)
     except Exception as e:
-        return f"Failed to read skill guide: {str(e)}"
+        return f"Failed to read skill guide: {e!s}"
+
 
 @tool
-async def delegate_task(recipient_id: str, task: str, context: Optional[str] = None, inputs_json: Optional[str] = None) -> str:
+async def delegate_task(
+    recipient_id: str, task: str, context: str | None = None, inputs_json: str | None = None
+) -> str:
     """
-    Delegate a structured task to another agent. 
+    Delegate a structured task to another agent.
     Use this for multi-agent collaboration or offloading complex sub-tasks.
     Args:
         recipient_id: Node ID of the target agent.
@@ -434,54 +750,70 @@ async def delegate_task(recipient_id: str, task: str, context: Optional[str] = N
     """
     try:
         inputs = json.loads(inputs_json) if inputs_json else {}
-        # We'll use p2p_service to route this. 
+        # We'll use p2p_service to route this.
         # The receiver's AgentService should have a handler for 'task_handoff'.
-        
+
         # Unique Handoff ID
         import uuid
+
         handoff_id = str(uuid.uuid4())
-        
+
         payload = {
             "type": "task_handoff",
             "handoff_id": handoff_id,
             "task": task,
             "context": context,
-            "inputs": inputs
+            "inputs": inputs,
         }
-        
+
         from app.services.agent_service import agent_service
+
         await agent_service.send_p2p_message(recipient_id, payload)
         return f"Task delegated to {recipient_id}. Handoff ID: {handoff_id}. Awaiting result..."
-        
+
     except Exception as e:
         logger.error(f"Failed to delegate task: {e}")
-        return f"Error: {str(e)}"
+        return f"Error: {e!s}"
+
 
 # Import execution tool
+from ..agent.tools_cron import (
+    cancel_reminder,
+    get_scheduler_status,
+    list_reminders,
+    schedule_reminder,
+    start_scheduler,
+)
 from ..agent.tools_exec import execute_shell_command
-from ..agent.tools_fs import list_dir, read_file, write_file, edit_file, copy_files, move_files
-from ..agent.tools_web import fetch_web_page
-from ..agent.tools_cron import schedule_reminder, list_reminders, cancel_reminder, start_scheduler, get_scheduler_status
+from ..agent.tools_fs import copy_files, edit_file, list_dir, move_files, read_file, write_file
 from ..agent.tools_task import TASK_TOOLS
+from ..agent.tools_web import academic_research, browser_fetch_page, fetch_web_page
+from ..agent.tools_identity import get_account_pairing_code, bind_account_by_code, unbind_account
+
 
 @tool
 async def ask_resident(question: str) -> str:
     """
-    Ask the local resident (human user) for advice, instructions, or approval.
-    The question will appear in the resident's chat window.
+    Ask your human Resident/Owner for help, clarification, or permission.
+
+    IMPORTANT PRIVACY RULE:
+    - This is the ONLY private and secure bridge to your human owner.
+    - If you are currently in a P2P or Group conversation and need to report a governance crisis or ask for instructions, you **MUST** use this tool.
+    - Your 'Final Answer' in P2P mode is public to the network; this tool is private to the resident.
+
+    Args:
+        question: The specific question or report for the Resident.
     """
     try:
         from app.services.agent_service import agent_service
-        from app.models.schemas import Message
-        from datetime import datetime
-        import uuid
-        
+
         # Use proactive notification helper (Broadcasts to all bridges)
         await agent_service.notify_resident(question)
-        
+
         return f"Question sent to resident: {question}"
     except Exception as e:
-        return f"Error asking resident: {str(e)}"
+        return f"Error asking resident: {e!s}"
+
 
 @tool
 async def send_file_to_resident(file_path: str, description: str = "") -> str:
@@ -493,31 +825,70 @@ async def send_file_to_resident(file_path: str, description: str = "") -> str:
     """
     try:
         import os
+
         from app.services.agent_service import agent_service
-        
+
         if not os.path.exists(file_path):
             return f"Error: File not found at {file_path}"
-            
+
         file_name = os.path.basename(file_path)
-        ext = file_name.lower().split('.')[-1]
-        
+        ext = file_name.lower().split(".")[-1]
+
         # Simple type inference
         file_type = "image" if ext in ["jpg", "jpeg", "png", "gif"] else "file"
-        
-        media_payload = [{
-            "type": file_type,
-            "path": os.path.abspath(file_path),
-            "name": file_name
-        }]
-        
+
+        media_payload = [{"type": file_type, "path": os.path.abspath(file_path), "name": file_name}]
+
         msg_text = description if description else f"Here is the file: {file_name}"
-        
-        # Pass media as kwargs to notify_resident
-        await agent_service.notify_resident(content=msg_text, media=media_payload)
-        
+
+        # Pass media as kwargs to notify_resident with broadcast=True
+        await agent_service.notify_resident(content=msg_text, media=media_payload, broadcast=True)
+
         return f"Successfully sent {file_name} to the resident."
     except Exception as e:
-        return f"Error sending file to resident: {str(e)}"
+        return f"Error sending file to resident: {e!s}"
+
+
+@tool
+async def send_message_to_resident(content: str) -> str:
+    """
+    Send a text message directly to the local resident (human user) across all connected notification bridges (Feishu/Telegram/Web Gateway).
+    Use this tool whenever you are requested to send a message or notification to the resident's Feishu or Telegram channel.
+    Args:
+        content: The text message to send to the resident.
+    """
+    try:
+        from app.services.agent_service import agent_service
+
+        # 使用 type="message" 确保消息不会被 CHANNEL_SEND_FINAL_ONLY 过滤
+        await agent_service.notify_resident(content=content, type="message", broadcast=True)
+        return "Successfully sent message to resident across connected channels (Feishu/Telegram/Gateway)."
+    except Exception as e:
+        return f"Error sending message to resident: {e!s}"
+
+
+@tool
+async def restart_node(reason: str) -> str:
+    """
+    Restart the agent's backend process.
+    Use this if the system is behaving unexpectedly, if you've applied critical configuration
+    changes that require a reboot, or if the resident requests a refresh.
+
+    MANDATORY AUTHORIZATION RULE:
+    - You MUST call 'ask_resident' first and receive explicit permission to restart.
+    - Restarting without resident approval is a severe protocol violation.
+
+    Args:
+        reason: Brief explanation of why the restart is necessary.
+    """
+    try:
+        from app.services.agent_service import agent_service
+
+        await agent_service.trigger_system_restart(reason)
+        return f"Restart signal sent for reason: {reason}. The system will go offline and reboot in a few seconds."
+    except Exception as e:
+        return f"Failed to trigger restart: {e!s}"
+
 
 @tool
 async def update_core_memory(content: str) -> str:
@@ -528,16 +899,18 @@ async def update_core_memory(content: str) -> str:
     """
     try:
         from app.services.memory_store import memory_store
+
         # Read existing
         existing = memory_store.read_long_term()
         if existing and not existing.endswith("\n"):
             existing += "\n"
-            
+
         new_content = existing + content if existing else content
         memory_store.write_long_term(new_content)
         return "Successfully appended to core long-term memory."
     except Exception as e:
-        return f"Error updating core memory: {str(e)}"
+        return f"Error updating core memory: {e!s}"
+
 
 @tool
 async def append_daily_note(content: str) -> str:
@@ -547,27 +920,149 @@ async def append_daily_note(content: str) -> str:
     """
     try:
         from app.services.memory_store import memory_store
+
         memory_store.append_today(content)
         return "Successfully appended to today's daily note."
     except Exception as e:
-        return f"Error appending to daily note: {str(e)}"
+        return f"Error appending to daily note: {e!s}"
+
+
+@tool
+async def manage_memory(target: str, action: str, content: str = "") -> str:
+    """
+    Actively read or update persistent Agent Memory (MEMORY.md) or Resident User Profile (USER.md).
+
+    Use this tool whenever:
+    - You learn a critical permanent rule, operating instruction, or lesson -> target='agent', action='append'/'update'
+    - You learn a resident preference, directive, or persona habit (e.g., '用户希望用MATLAB') -> target='user', action='append'/'update'
+    - You want to inspect current memory or user directives -> target='agent'/'user', action='read'
+
+    Args:
+        target: 'agent' for MEMORY.md (agent rules) or 'user' for USER.md (resident profile & directives).
+        action: 'read' (view memory), 'append' (append new lines), or 'update' (overwrite content).
+        content: The text content to write or append (ignored if action='read').
+    """
+    from ..services.memory_store import memory_store
+
+    try:
+        tgt = target.lower().strip()
+        act = action.lower().strip()
+
+        if tgt == "agent":
+            if act == "read":
+                res = memory_store.read_long_term()
+                return f"=== MEMORY.md (Agent Memory) ===\n{res or '(Empty)'}"
+            elif act == "append":
+                existing = memory_store.read_long_term()
+                new_text = (existing.strip() + "\n\n" + content.strip()) if existing else content.strip()
+                memory_store.write_long_term(new_text)
+                return "Successfully appended to MEMORY.md"
+            elif act == "update":
+                memory_store.write_long_term(content)
+                return "Successfully updated MEMORY.md"
+        elif tgt == "user":
+            if act == "read":
+                res = memory_store.read_user_profile()
+                return f"=== USER.md (Resident User Profile) ===\n{res or '(Empty)'}"
+            elif act == "append":
+                memory_store.append_user_profile(content)
+                return "Successfully appended directive/preference to USER.md"
+            elif act == "update":
+                memory_store.write_user_profile(content)
+                return "Successfully updated USER.md"
+
+        return "Invalid parameters. target must be 'agent' or 'user', action must be 'read', 'append', or 'update'."
+    except Exception as e:
+        logger.error(f"Error in manage_memory tool: {e}")
+        return f"Error executing manage_memory: {e!s}"
+
 
 # List of Tools to bind to the agent
 AGENT_TOOLS = [
-    send_p2p_message, send_file, ask_resident, send_file_to_resident, get_my_status, read_community_rules, update_system_parameter, 
-    search_chat_history, update_core_memory, append_daily_note,
-    propose_election, submit_proposal, publish_research, cast_ballot, get_election_status, 
-    pay_resident, check_my_balance, generate_archive, get_latest_block, search_web, 
-    read_skill_guide, execute_shell_command,
-    list_dir, read_file, write_file, edit_file, copy_files, move_files,
+    send_p2p_message,
+    send_file,
+    ask_resident,
+    send_file_to_resident,
+    send_message_to_resident,
+    get_my_status,
+    read_community_rules,
+    update_system_parameter,
+    search_chat_history,
+    update_core_memory,
+    append_daily_note,
+    manage_memory,
+    propose_election,
+    submit_proposal,
+    publish_research,
+    update_group_core_nodes,
+    cast_ballot,
+    get_election_status,
+    list_elections,
+    apply_to_join_group,
+    list_pending_join_requests,
+    approve_join_request,
+    pay_resident,
+    check_my_balance,
+    list_transactions,
+    generate_archive,
+    get_latest_block,
+    search_web,
+    read_skill_guide,
+    execute_shell_command,
+    list_dir,
+    read_file,
+    write_file,
+    edit_file,
+    copy_files,
+    move_files,
     fetch_web_page,
-    schedule_reminder, list_reminders, cancel_reminder,
-    start_scheduler, get_scheduler_status,
-    delegate_task, repair_code,
+    browser_fetch_page,
+    academic_research,
+    schedule_reminder,
+    list_reminders,
+    cancel_reminder,
+    start_scheduler,
+    get_scheduler_status,
+    delegate_task,
+    repair_code,
+    delegate_coding_task,
+    check_python_syntax,
+    verify_file_exists,
+    restart_node,
+    get_account_pairing_code,
+    bind_account_by_code,
+    unbind_account,
 ] + TASK_TOOLS
 
 # Specialized toolset for the Self-Healing Sub-Agent
 REPAIR_TOOLS = [
-    list_dir, read_file, write_file, edit_file, # Exploration & Basic Edit
-    submit_code_fix # The actual repair submission
+    list_dir,
+    read_file,
+    write_file,
+    edit_file,  # Exploration & Basic Edit
+    submit_code_fix,  # The actual repair submission
 ]
+
+# Specialized toolset for the Coding Sub-Agent
+CODING_TOOLS = [
+    read_file,
+    write_file,
+    edit_file,
+    list_dir,
+    check_python_syntax,
+    verify_file_exists,
+]
+
+# Auto-register tools into ToolRegistry
+from .tool_registry import tool_registry, ToolCapability, ToolRiskLevel, ApprovalRequirement
+
+tool_registry.register("read_file", read_file, description="Read text file contents", capabilities=[ToolCapability.READ_ONLY], risk_level=ToolRiskLevel.LOW)
+tool_registry.register("list_dir", list_dir, description="List directory contents", capabilities=[ToolCapability.READ_ONLY], risk_level=ToolRiskLevel.LOW)
+tool_registry.register("verify_file_exists", verify_file_exists, description="Verify if file exists", capabilities=[ToolCapability.READ_ONLY], risk_level=ToolRiskLevel.LOW)
+tool_registry.register("check_python_syntax", check_python_syntax, description="Check Python AST syntax", capabilities=[ToolCapability.READ_ONLY], risk_level=ToolRiskLevel.LOW)
+
+tool_registry.register("write_file", write_file, description="Write or overwrite file", capabilities=[ToolCapability.WRITES_FILES], risk_level=ToolRiskLevel.MEDIUM)
+tool_registry.register("edit_file", edit_file, description="Edit file content", capabilities=[ToolCapability.WRITES_FILES], risk_level=ToolRiskLevel.MEDIUM)
+tool_registry.register("submit_code_fix", submit_code_fix, description="Submit code fix", capabilities=[ToolCapability.WRITES_FILES], risk_level=ToolRiskLevel.MEDIUM)
+tool_registry.register("execute_shell_command", execute_shell_command, description="Execute shell command", capabilities=[ToolCapability.EXECUTES_CODE, ToolCapability.NETWORK], risk_level=ToolRiskLevel.HIGH, approval=ApprovalRequirement.REQUIRED)
+

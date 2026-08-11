@@ -7,18 +7,61 @@ import Profile from './pages/Profile'
 import Contacts from './pages/Contacts'
 import Governance from './pages/Governance'
 import Archive from './pages/Archive'
+import { CryptoService } from './services/crypto'
 
 function App() {
     const [hasOnboarded, setHasOnboarded] = useState(false)
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {
-        const onboarded = localStorage.getItem('bp_onboarded') === 'true'
-        setHasOnboarded(onboarded)
-        setLoading(false)
+        const checkStatus = async () => {
+            const onboarded = localStorage.getItem('bp_onboarded') === 'true'
+            if (onboarded) {
+                // Ensure operator keys exist even if onboarded flag is present
+                if (!localStorage.getItem('bp_public_key')) {
+                    try { await CryptoService.generateKeyPair() } catch (e) {}
+                }
+                setHasOnboarded(true)
+                setLoading(false)
+                return
+            }
+
+            // Fallback: If backend is already configured (e.g. after data import), auto-pass onboarding
+            try {
+                const { default: api } = await import('./services/api')
+                const response = await api.get('/api/v1/status')
+                const statusData = response.data
+
+                // If backend is running and initialized with identity/name/model
+                if (statusData && (statusData.node_id || statusData.model || statusData.name)) {
+                    console.log("Detected active backend agent node. Auto-hydrating frontend state...", statusData)
+                    
+                    localStorage.setItem('bp_onboarded', 'true')
+                    localStorage.setItem('bp_api_url', localStorage.getItem('bp_api_url') || 'http://localhost:8100')
+                    if (statusData.name) localStorage.setItem('bp_name', statusData.name)
+                    if (statusData.personality) localStorage.setItem('bp_personality', statusData.personality)
+                    if (statusData.model) localStorage.setItem('bp_model', statusData.model)
+                    if (statusData.base_url) localStorage.setItem('bp_llm_base_url', statusData.base_url)
+
+                    // Ensure local browser crypto identity is generated
+                    try {
+                        await CryptoService.generateKeyPair()
+                    } catch (cryptoErr) {
+                        console.warn("Crypto keypair auto-generation warning:", cryptoErr)
+                    }
+
+                    setHasOnboarded(true)
+                }
+            } catch (err) {
+                console.error('Failed to check backend status during onboarding verification:', err)
+            } finally {
+                setLoading(false)
+            }
+        }
+        checkStatus()
     }, [])
 
-    if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>
+    if (loading) return <div className="flex items-center justify-center h-screen bg-slate-50 text-slate-500 font-medium">Loading Bit Politeia Console...</div>
 
     return (
         <Router>

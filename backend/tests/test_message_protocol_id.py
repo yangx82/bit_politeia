@@ -1,6 +1,8 @@
 import unittest
-from backend.app.p2p_community.message_protocol import MessageProtocol, MessageType
 from unittest.mock import MagicMock
+
+from backend.app.p2p_community.message_protocol import MessageProtocol, MessageType
+
 
 class TestMessageProtocolID(unittest.TestCase):
     def setUp(self):
@@ -15,7 +17,7 @@ class TestMessageProtocolID(unittest.TestCase):
             recipient_id="recipient",
             message_type=MessageType.DIRECT,
             content={"text": "hello"},
-            message_id=custom_id
+            message_id=custom_id,
         )
         self.assertEqual(msg.message_id, custom_id)
 
@@ -24,9 +26,10 @@ class TestMessageProtocolID(unittest.TestCase):
             sender_id="sender",
             recipient_id="recipient",
             message_type=MessageType.DIRECT,
-            content={"text": "hello"}
+            content={"text": "hello"},
         )
         self.assertTrue(msg.message_id.startswith("sender"))
+
 
 if __name__ == "__main__":
     unittest.main()

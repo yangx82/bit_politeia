@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const API_URL = localStorage.getItem('bp_api_url') || 'http://localhost:8000'
+const API_URL = localStorage.getItem('bp_api_url') || 'http://localhost:8100'
 
 const api = axios.create({
     baseURL: API_URL,

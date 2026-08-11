@@ -1,0 +1,341 @@
+# =============================================================================
+# Bit-Politeia Python 项目配置
+# =============================================================================
+# 包含: 构建配置、工具配置、元数据
+# =============================================================================
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bit-politeia"
+version = "0.1.0"
+description = "Bit-Politeia: A P2P Scientific Community Platform"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Bit-Politeia Team", email = "team@bit-politeia.org"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+requires-python = ">=3.10"
+dependencies = [
+    # 核心依赖
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "pydantic>=2.5.0",
+    "python-multipart>=0.0.6",
+    
+    # P2P 网络
+    "websockets>=12.0",
+    "aiohttp>=3.9.0",
+    "aiofiles>=23.2.0",
+    
+    # 数据库
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    
+    # 工具
+    "python-dotenv>=1.0.0",
+    "pydantic-settings>=2.1.0",
+    "typer>=0.9.0",
+    "rich>=13.7.0",
+    
+    # 安全
+    "cryptography>=42.0.0",
+    "bcrypt>=4.1.0",
+    "pyjwt>=2.12.0",
+    
+    # 日志
+    "structlog>=24.1.0",
+    "loguru>=0.7.0",
+    "requests>=2.33.0",
+    "pypdf>=6.10.0",
+    "pyopenssl>=26.0.0",
+    "pygments>=2.20.0",
+    "pillow>=12.1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    # 测试框架
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "pytest-xdist>=3.5.0",
+    "pytest-html>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "pytest-randomly>=3.15.0",
+    "hypothesis>=6.98.0",
+    
+    # 代码质量
+    "black>=24.2.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
+    "bandit>=1.7.8",
+    "pre-commit>=3.6.0",
+    
+    # 类型检查
+    "types-requests>=2.33.0",
+    "types-python-dateutil>=2.8.0",
+    
+    # 文档
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.5.0",
+    
+    # 调试
+    "ipdb>=0.13.0",
+    "icecream>=2.1.0",
+]
+
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.5.0",
+    "mkdocstrings[python]>=0.24.0",
+]
+
+# =============================================================================
+# 工具配置
+# =============================================================================
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+include = ["app*"]
+exclude = ["tests*"]
+
+# -----------------------------------------------------------------------------
+# Black 配置
+# -----------------------------------------------------------------------------
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311', 'py312']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | node_modules
+)/
+'''
+
+# -----------------------------------------------------------------------------
+# Ruff 配置
+# -----------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # Pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "W",    # pycodestyle warnings
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+    "TID",  # flake8-tidy-imports
+    "Q",    # flake8-quotes
+    "PT",   # flake8-pytest-style
+    "RUF",  # Ruff-specific rules
+]
+ignore = [
+    "E501",  # Line too long (handled by black)
+    "B008",  # Do not perform function calls in argument defaults
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+# -----------------------------------------------------------------------------
+# MyPy 配置
+# -----------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+show_error_codes = true
+show_column_numbers = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = [
+    "tests.*",
+]
+disallow_untyped_defs = false
+
+# -----------------------------------------------------------------------------
+# Bandit 安全配置
+# -----------------------------------------------------------------------------
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "venv", "node_modules"]
+skips = ["B101", "B601"]  # assert_used, paramiko_calls
+
+# -----------------------------------------------------------------------------
+# Pytest 配置
+# -----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+    "--color=yes",
+    "--cov=backend/app",
+    "--cov-report=term-missing",
+    "--cov-report=html:coverage-html",
+    "--cov-report=xml:coverage.xml",
+]
+markers = [
+    # 测试类型标记
+    "unit: Unit tests - fast, isolated",
+    "integration: Integration tests - test component interactions",
+    "e2e: End-to-end tests - test full workflows",
+    "regression: Regression tests - prevent known bugs from recurring",
+    
+    # 关键级别标记
+    "critical: Critical tests - failure blocks deployment",
+    "high: High priority tests",
+    "medium: Medium priority tests",
+    "low: Low priority tests",
+    
+    # 功能域标记
+    "pipeline: Pipeline-related tests",
+    "p2p: P2P network tests",
+    "agent: Agent behavior tests",
+    "security: Security-related tests",
+    "performance: Performance tests",
+    
+    # 特定 Bug 回归标记
+    "p2p_msg_status: P2P message status bug (2026-03-11)",
+    "pipeline_ordering: Pipeline stage ordering bug",
+]
+
+# 测试发现
+norecursedirs = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    "dist",
+    "build",
+    "*.egg",
+]
+
+# 异步测试
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+# 覆盖率
+[tool.coverage.run]
+source = ["backend/app"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "*/__pycache__/*",
+    "*/venv/*",
+    "*/.venv/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+fail_under = 80
+show_missing = true
+skip_covered = false
+
+[tool.coverage.html]
+directory = "coverage-html"
+
+# -----------------------------------------------------------------------------
+# Commitizen 配置
+# -----------------------------------------------------------------------------
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+tag_format = "v$version"
+version_files = [
+    "pyproject.toml:version",
+    "backend/app/__init__.py:__version__",
+]
+style = [
+    ["qmark", "fg:#ff9d00 bold"],
+    ["question", "bold"],
+    ["answer", "fg:#ff9d00 bold"],
+    ["pointer", "fg:#ff9d00 bold"],
+    ["highlighted", "fg:#ff9d00 bold"],
+    ["selected", "fg:#cc5454"],
+    ["separator", "fg:#cc5454"],
+    ["instruction", ""],
+    ["text", ""],
+    ["disabled", "fg:#858585 italic"]
+]
+
+# -----------------------------------------------------------------------------
+# Hypothesis 配置 (属性测试)
+# -----------------------------------------------------------------------------
+[tool.hypothesis]
+deadline = 500  # ms
+max_examples = 100
+print_blob = true
+derandomize = true
+
+# =============================================================================
+# 项目脚本
+# =============================================================================
+[project.scripts]
+bit-politeia = "app.cli:main"
+
+# =============================================================================
+# 项目 URL
+# =============================================================================
+[project.urls]
+Homepage = "https://github.com/bit-politeia/bit-politeia"
+Documentation = "https://bit-politeia.readthedocs.io"
+Repository = "https://github.com/bit-politeia/bit-politeia"
+Issues = "https://github.com/bit-politeia/bit-politeia/issues"

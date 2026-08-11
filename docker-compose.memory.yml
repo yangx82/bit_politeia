@@ -1,0 +1,95 @@
+services:
+  # L2: 短期记忆 Redis
+  redis-memory:
+    image: redis:7-alpine
+    container_name: agent-memory-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-MemoryRedis2026}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-MemoryRedis2026}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # L3: 中期任务与错题存储 MongoDB
+  mongo-memory:
+    image: mongo:6.0
+    container_name: agent-memory-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-MemoryMongo2026}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # L4: 时序知识图谱 Neo4j
+  neo4j-temporal-kg:
+    image: neo4j:5.15-community
+    container_name: agent-memory-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-MemoryGraph2026}
+      NEO4J_PLUGINS: '["apoc"]'
+      # 内存配置（31GB 系统，使用默认配置）
+      NEO4J_server_memory_heap_initial__size: "512m"
+      NEO4J_server_memory_heap_max__size: "1G"
+      NEO4J_server_memory_pagecache_size: "512m"
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # L4: 长期向量数据库 Qdrant
+  qdrant-vector:
+    image: qdrant/qdrant:v1.7.4
+    container_name: agent-memory-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 大日志与原始 Tool Payload 存储 MinIO
+  minio-payloads:
+    image: minio/minio:RELEASE.2024-01-16T16-07-38Z
+    container_name: agent-memory-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-minioadmin2026}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis_data:
+  mongo_data:
+  neo4j_data:
+  qdrant_data:
+  minio_data:

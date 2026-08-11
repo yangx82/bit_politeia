@@ -1,0 +1,294 @@
+# -*- coding: utf-8 -*-
+import asyncio
+from datetime import datetime, UTC
+import pytest
+import uuid
+
+from app.p2p_community.models import Node
+from app.services.agent_service import agent_service
+from app.services.p2p_service import p2p_service
+from app.bus.events import InboundMessage
+
+
+@pytest.mark.asyncio
+async def test_is_pure_acknowledgment_base_cases():
+    """Verify that basic acknowledgment phrases are correctly classified."""
+    # Setup node names in p2p_service for mock node name stripping
+    original_initialized = p2p_service._initialized
+    original_network_manager = p2p_service.network_manager
+    
+    p2p_service._initialized = True
+    
+    class MockNetworkManager:
+        def __init__(self):
+            self.nodes = {
+                "node_aarron": Node("node_aarron", self, "pk1", "Aarron"),
+                "node_plato": Node("node_plato", self, "pk2", "Bit Plato")
+            }
+            
+    p2p_service.network_manager = MockNetworkManager()
+    agent_service.name = "Aarron"
+
+    try:
+        # 1. Pure ack cases (Should return True)
+        assert await agent_service.is_pure_acknowledgment("好的，收到") is True
+        assert await agent_service.is_pure_acknowledgment("OK, got it") is True
+        assert await agent_service.is_pure_acknowledgment("收悉") is True
+        assert await agent_service.is_pure_acknowledgment("roger") is True
+        assert await agent_service.is_pure_acknowledgment("copy that") is True
+        assert await agent_service.is_pure_acknowledgment("同步确认") is True
+        assert await agent_service.is_pure_acknowledgment("[no_response_needed]") is True
+        
+        # 2. Combined status + ack cases (Should return True)
+        assert await agent_service.is_pure_acknowledgment("收悉，维持standby状态") is True
+        assert await agent_service.is_pure_acknowledgment("好的，继续保持") is True
+        assert await agent_service.is_pure_acknowledgment("OK, maintaining standby") is True
+        assert await agent_service.is_pure_acknowledgment("同步确认。议题结束，维持 Standby。") is True
+        assert await agent_service.is_pure_acknowledgment("收悉，讨论已结束，保持standby状态") is True
+        
+        # 3. User message example with signature block (Should return True)
+        user_msg = (
+            "[Agent completed P2P task]: 收悉 Aarron ✅\n\n"
+            "同步确认。维持 Standby。\n\n"
+            "— Bit Plato (5a40d9e6)\n"
+            "2026-05-25 21:19"
+        )
+        assert await agent_service.is_pure_acknowledgment(user_msg) is True
+        
+        # 4. Automated Error Notifications & System Refusals (Should return True to prevent error-reply loops)
+        assert await agent_service.is_pure_acknowledgment("Error communicating with LLM. (Triggered Ralph Wiggum auto-heal if enabled: Connection error.)") is True
+        assert await agent_service.is_pure_acknowledgment("⚠️ Message Refused: Message appears to be a social engineering/phishing attempt.") is True
+        assert await agent_service.is_pure_acknowledgment("[SECURITY SUPPRESSION: Internal report misrouted.]") is True
+        assert await agent_service.is_pure_acknowledgment("LLM 服务提示：请求参数验证失败（400 Bad Request）。") is True
+
+        # 5. Action/Instruction/Questions (Should return False)
+        assert await agent_service.is_pure_acknowledgment("维持standby状态") is False
+        assert await agent_service.is_pure_acknowledgment("请维持standby状态") is False
+        assert await agent_service.is_pure_acknowledgment("我需要你维持standby状态") is False
+        assert await agent_service.is_pure_acknowledgment("我们切换到active状态吗？") is False
+        assert await agent_service.is_pure_acknowledgment("我发现了代码中的一处错误：...") is False
+        assert await agent_service.is_pure_acknowledgment("好的，但请更新你的状态") is False
+        assert await agent_service.is_pure_acknowledgment("请执行测试") is False
+
+    finally:
+        p2p_service._initialized = original_initialized
+        p2p_service.network_manager = original_network_manager
+
+
+@pytest.mark.asyncio
+async def test_is_pure_acknowledgment_with_mocked_llm(monkeypatch):
+    """Verify that is_pure_acknowledgment calls the LLM and processes responses correctly."""
+    from unittest.mock import AsyncMock
+    
+    # Mock ChatOpenAI ainvoke
+    mock_llm_response = AsyncMock()
+    
+    class MockAIMessage:
+        def __init__(self, content):
+            self.content = content
+            
+    mock_llm_response.return_value = MockAIMessage("YES")
+    
+    # Inject mocked LLM client into a dummy context manager
+    class MockContextManager:
+        def __init__(self):
+            self.summarizer_llm = AsyncMock()
+            self.summarizer_llm.ainvoke = mock_llm_response
+
+    original_context_manager = agent_service.context_manager
+    agent_service.context_manager = MockContextManager()
+    
+    try:
+        # LLM returns YES -> should return True
+        res_yes = await agent_service.is_pure_acknowledgment("some acknowledgment message")
+        assert res_yes is True
+        mock_llm_response.assert_called_once()
+        
+        # LLM returns NO -> should return False
+        mock_llm_response.reset_mock()
+        mock_llm_response.return_value = MockAIMessage("NO")
+        res_no = await agent_service.is_pure_acknowledgment("some question message?")
+        assert res_no is False
+        mock_llm_response.assert_called_once()
+        
+        # LLM raises exception -> should fall back to rule-based checking
+        mock_llm_response.reset_mock()
+        mock_llm_response.side_effect = Exception("API connection error")
+        
+        # Let's verify fallback works: "好的，收到" is true by rules
+        res_fallback = await agent_service.is_pure_acknowledgment("好的，收到")
+        assert res_fallback is True
+        
+    finally:
+        agent_service.context_manager = original_context_manager
+
+
+
+@pytest.mark.asyncio
+async def test_process_network_inbox_loop_prevention():
+    """Verify that process_network_inbox filters pure acknowledgements and does not trigger LLM pipeline."""
+    # Setup mocks
+    original_initialized = p2p_service._initialized
+    original_local_node = p2p_service.local_node
+    original_network_manager = p2p_service.network_manager
+    original_history = list(agent_service.history)
+    original_run_loop = agent_service._run_ralph_wiggum_loop
+    
+    p2p_service._initialized = True
+    
+    class MockNetworkManager:
+        def __init__(self):
+            self.nodes = {
+                "node_aarron": Node("node_aarron", self, "pk1", "Aarron"),
+                "node_plato": Node("node_plato", self, "pk2", "Bit Plato")
+            }
+    
+    p2p_service.network_manager = MockNetworkManager()
+    
+    class MockLocalNode:
+        def __init__(self):
+            self.node_id = "agent_node"
+            self.group_ids = set()
+            self.inbox = []
+            
+    mock_node = MockLocalNode()
+    p2p_service.local_node = mock_node
+    
+    agent_service._is_processing_inbox = False
+    agent_service.processed_message_ids.clear()
+    
+    pipeline_runs = []
+    async def mock_run_loop(msg_obj):
+        pipeline_runs.append(msg_obj)
+        return "No response generated.", None, None
+        
+    agent_service._run_ralph_wiggum_loop = mock_run_loop
+    agent_service.history.clear()
+    
+    try:
+        # Message 1: Normal statement/question (should be processed by LLM pipeline)
+        msg_normal = {
+            "sender_id": "node_plato",
+            "content": "我们今天下午需要更新提案吗？",
+            "message_type": "DIRECT",
+            "message_id": "msg_normal_1",
+            "timestamp": datetime.now(UTC).isoformat()
+        }
+        
+        # Message 2: Pure acknowledgment (should be skipped by pipeline, but recorded in history)
+        msg_ack = {
+            "sender_id": "node_plato",
+            "content": "[Agent completed P2P task]: 收悉 Aarron ✅\n\n同步确认。维持 Standby。\n\n— Bit Plato (5a40d9e6)\n2026-05-25 21:19",
+            "message_type": "DIRECT",
+            "message_id": "msg_ack_1",
+            "timestamp": datetime.now(UTC).isoformat()
+        }
+        
+        mock_node.inbox = [msg_normal, msg_ack]
+        
+        # Run process_network_inbox
+        await agent_service.process_network_inbox()
+        
+        # 1. Check history: both messages should be saved
+        history_contents = [msg.content for msg in agent_service.history]
+        assert any("我们今天下午需要更新提案吗？" in content for content in history_contents)
+        assert any("同步确认。维持 Standby。" in content for content in history_contents)
+        
+        # 2. Check LLM pipeline runs: only the normal message should have triggered the LLM
+        assert len(pipeline_runs) == 1
+        assert pipeline_runs[0].content == "我们今天下午需要更新提案吗？"
+        
+    finally:
+        p2p_service._initialized = original_initialized
+        p2p_service.local_node = original_local_node
+        p2p_service.network_manager = original_network_manager
+        agent_service.history = original_history
+        agent_service._run_ralph_wiggum_loop = original_run_loop
+
+
+@pytest.mark.asyncio
+async def test_process_bus_message_loop_prevention():
+    """Verify that process_bus_message filters pure acknowledgements and does not trigger LLM pipeline."""
+    # Setup mocks
+    original_initialized = p2p_service._initialized
+    original_local_node = p2p_service.local_node
+    original_network_manager = p2p_service.network_manager
+    original_history = list(agent_service.history)
+    original_run_loop = agent_service._run_ralph_wiggum_loop
+    
+    p2p_service._initialized = True
+    
+    class MockNetworkManager:
+        def __init__(self):
+            self.nodes = {
+                "node_aarron": Node("node_aarron", self, "pk1", "Aarron"),
+                "node_plato": Node("node_plato", self, "pk2", "Bit Plato")
+            }
+            
+    p2p_service.network_manager = MockNetworkManager()
+    
+    class MockLocalNode:
+        def __init__(self):
+            self.node_id = "agent_node"
+            self.group_ids = set()
+            
+    p2p_service.local_node = MockLocalNode()
+    
+    pipeline_runs = []
+    async def mock_run_loop(msg_obj):
+        pipeline_runs.append(msg_obj)
+        return "No response generated.", None, None
+        
+    agent_service._run_ralph_wiggum_loop = mock_run_loop
+    agent_service.history.clear()
+    
+    try:
+        # Message 1: Normal P2P message (should trigger pipeline)
+        msg_normal = InboundMessage(
+            channel="p2p",
+            sender_id="node_plato",
+            session_id="node_plato",
+            content="如何评估这个去中心化身份提案？",
+            metadata={
+                "message_id": "msg_normal_2",
+                "timestamp": datetime.now(UTC).isoformat()
+            }
+        )
+        
+        # Message 2: Pure acknowledgment (should be skipped by pipeline, but recorded in history)
+        msg_ack = InboundMessage(
+            channel="p2p",
+            sender_id="node_plato",
+            session_id="node_plato",
+            content="同步确认。维持 Standby。",
+            metadata={
+                "message_id": "msg_ack_2",
+                "timestamp": datetime.now(UTC).isoformat()
+            }
+        )
+        
+        # Process normal message
+        await agent_service.process_bus_message(msg_normal)
+        # Process acknowledgment message
+        await agent_service.process_bus_message(msg_ack)
+        
+        # 1. Check history: both messages should be saved
+        history_contents = [msg.content for msg in agent_service.history]
+        assert any("如何评估这个去中心化身份提案？" in content for content in history_contents)
+        assert any("同步确认。维持 Standby。" in content for content in history_contents)
+        
+        # 2. Check LLM pipeline runs: only the normal message should have triggered the LLM
+        assert len(pipeline_runs) == 1
+        assert pipeline_runs[0].content == "如何评估这个去中心化身份提案？"
+        
+    finally:
+        p2p_service._initialized = original_initialized
+        p2p_service.local_node = original_local_node
+        p2p_service.network_manager = original_network_manager
+        agent_service.history = original_history
+        agent_service._run_ralph_wiggum_loop = original_run_loop
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(pytest.main(["-v", __file__]))

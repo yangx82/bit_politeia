@@ -1,127 +1,160 @@
-
 """Context builder for assembling agent prompts."""
 
-import base64
-import mimetypes
-from pathlib import Path
-from typing import Any, List, Optional
 import logging
+from typing import Any
 
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage, BaseMessage
+try:
+    from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+except ImportError:
+    class BaseMessage:
+        def __init__(self, content: str): self.content = content
+    class HumanMessage(BaseMessage): pass
+    class SystemMessage(BaseMessage): pass
 
+from ..services.community_config import community_config
 from ..services.memory_store import memory_store
 from ..services.skill_manager import skill_manager
-from ..agent.prompts import AGENT_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
+
 
 class ContextBuilder:
     """
     Builds the context (system prompt + messages) for the agent.
-    
+
     Assembles memory, skills, and conversation history into a coherent prompt for the LLM.
     """
-    
+
     def __init__(self, task_manager=None):
         self.memory = memory_store
         self.skill_manager = skill_manager
         self.task_manager = task_manager
-    
-    def build_system_prompt(self, name: str = "Agent", personality: str = "Professional and helpful", channel: str = "resident", host_info: str = None, session_id: str = None, chat_name: str = None) -> str:
-        """
-        Build the complete system prompt from core identity, memory, and skills.
-        """
-        parts = []
-        
-        # 1. Core Identity (From prompts.py)
-        parts.append(AGENT_SYSTEM_PROMPT)
-        
-        # 1.5 Resident-defined Identity
-        identity_block = f"""# Your Resident-Defined Identity
-You are currently identified as: **{name}**.
-Your designated personality and tone: **{personality}**.
-Please strictly adhere to this personality in your interactions."""
-        parts.append(identity_block)
-        
-        # 1.55 Role & Channel Awareness
-        if channel == "p2p":
-            role_block = f"""# CURRENT DOMAIN: Autonomous Peer-to-Peer Network
-[URGENT ROLE AWARENESS] You are communicating directly with another machine Node in the network.
-- Do NOT report to your human owner (resident).
-- Do NOT use a subservient reporting tone.
-- Communicate strictly logically, efficiently, and directly to the node on the other side.
-- **FINAL ANSWER DESTINATION**: Your 'Final Answer' in this mode is delivered DIRECTLY to the other machine node via the P2P transport. 
-- **CRITICAL**: Do NOT address your resident/user in the final answer. If you need to inform or ask the resident something, you MUST use the `ask_resident` tool first, but keep your final answer strictly for the peer node.
-- **TERMINATION PROTOCOL**: If the interaction is complete, a task is confirmed, or no further information is needed from the other node (e.g., both parties have acknowledged a plan), you MUST output exactly `[NO_RESPONSE_NEEDED]` as your final answer. This signals the system to stop the loop and avoid redundant 'ACK' messages.
-- If you still need a response, provide a brief technical confirmation (e.g., 'Task completed', 'Data synced')."""
-            parts.append(role_block)
-        else:
-            # Everything else (resident, feishu, telegram, cli, gateway) is a Resident-facing interface
-            role_block = f"""# CURRENT DOMAIN: Private User Interface
-[ROLE AWARENESS] You are communicating directly with your human Resident/Owner.
-- Explain your thoughts naturally.
-- Confirm actions you take on their behalf.
-- **CRITICAL**: If you successfully use a 'send_p2p_message' or 'send_file' tool, do NOT repeat the content of that message in your final response to the human. Just state 'Message sent to [Target Name/ID].' and offer further assistance if needed."""
-            parts.append(role_block)
-        
-        # 1.6 Current Real-World Time
-        from datetime import datetime
-        current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        time_block = f"""# Current System Time
-The current real-world local server time is: **{current_time_str}**.
-Use this absolute time for any date calculations or temporal awareness. Do not rely on time information mentioned casually in user chats unless explicitly requested."""
-        parts.append(time_block)
 
-        if host_info:
-            parts.append(host_info)
-            
-        # 1.8 Conversation Context Awareness (Group vs Direct)
-        if channel == "p2p":
-            if session_id:
-                is_group = False
-                # Simple check for group ID if possible, or we trust the passed info
-                # Here we assume if chat_name is provided or chat_id is known, we label it.
-                if chat_name and chat_name != "Unknown":
-                    is_group = True
-                
-                if is_group:
-                    group_block = f"""# CONVERSATION CONTEXT: GROUP CHAT
-You are currently participating in a group conversation.
-- **Group Name**: {chat_name}
-- **Group ID**: {session_id}
-- **IMPORTANT**: To reply to the entire group, you MUST use the `send_p2p_message` tool with:
-  - `recipient_id`: "{session_id}" (the Group ID)
-  - `message_type`: "GROUP"
-- Do NOT reply only to the individual sender unless you specifically intend to have a private side-conversation."""
-                    parts.append(group_block)
-                else:
-                    direct_block = f"""# CONVERSATION CONTEXT: DIRECT MESSAGE
-You are in a private one-to-one conversation with a single peer.
-- **Peer ID**: {session_id}
-- Use `message_type`: "DIRECT" (default) for your replies."""
-                    parts.append(direct_block)
-        
-        # 2. Skill Index (Progressive Disclosure)
+    def build_system_prompt(
+        self,
+        name: str = "Agent",
+        personality: str = "Professional and helpful",
+        channel: str = "resident",
+        host_info: str = None,
+        session_id: str = None,
+        chat_name: str = None,
+        agent_language: str = "中文",
+    ) -> tuple[str, str, str]:
+        """
+        Build system prompt segments structured in 3 distinct layers for Prefix Caching:
+        Returns: (static_head, semi_static_mid, dynamic_tail)
+        """
+        # --- LAYER 1: ABSOLUTE STATIC HEAD (99%+ Prefix Cache Parity) ---
+        static_parts = []
+
+        # 1. CORE IDENTITY & PERSONA
+        static_parts.append(
+            f"# AGENT NODE IDENTITY\n- **Name**: {name}\n- **Personality**: {personality}"
+        )
+
+        # 2. Language Directive
+        static_parts.append(
+            f"IMPORTANT DIRECTIVE: You MUST generate all responses and communicate exclusively in the following language: {agent_language}. (Unless strictly quoting a source in another language)."
+        )
+
+        # 3. Governing Protocol (Constitution)
+        rules_text = community_config.get_all_rules_text()
+        if rules_text:
+            protocol_block = f"""# GOVERNING PROTOCOL (CONSTITUTION)
+Below is the current community organization and election protocol. 
+Reference these rules for all governance decisions, election proposals, and group management tasks.
+```json
+{rules_text[:15000]}
+```"""
+            static_parts.append(protocol_block)
+
+        # 4. Skill Index (Sorted Keys for Deterministic Prefix)
         skill_index = self.skill_manager.get_skill_index()
         if skill_index:
-            parts.append(f"\n\n# Available Skills\n{skill_index}")
-            
-        # 3. Memory Context
+            static_parts.append(f"# Available Skills\n{skill_index[:10000]}")
+
+        # 5. Role & Channel Rules
+        if channel == "p2p":
+            role_block = """# CURRENT DOMAIN: Autonomous Peer-to-Peer Network
+[URGENT ROLE AWARENESS] You are communicating directly with another machine Node in the network.
+- **COMMUNICATION FIREWALL**: Do NOT report to your human owner (resident) in this channel.
+- **NO CHINESE POLITE GREETINGS**: Do NOT use greetings like '居民，您好' or '報告居民'. 
+- **NO DECORATIVE MARKDOWN**: Do NOT use markdown headers (###), bold headers, or report-style formatting in your 'Final Answer'.
+- **RESPONSE MANDATE**: If the peer node asks a question or query (e.g., capability checks, search capabilities, node status), you MUST provide a concise technical answer and invoke `send_p2p_message` or return a non-empty final answer.
+- **FINAL ANSWER DESTINATION**: Your 'Final Answer' is delivered DIRECTLY to the other machine node. It must be technical, objective, and brief.
+- **TERMINATION**: ONLY output `[NO_RESPONSE_NEEDED]` if the incoming message is a pure system acknowledgment (e.g. 'ACK', 'OK', 'Received') that requires ZERO further response.
+- **CRITICAL**: If you need instructions/reports from/to the resident, you **MUST MUST MUST** use the `ask_resident` tool. It is the ONLY private channel."""
+            static_parts.append(role_block)
+        else:
+            role_block = """# CURRENT DOMAIN: Private User Interface
+[ROLE AWARENESS] You are communicating directly with your human Resident/Owner.
+- **ACTION MANDATE**: If you inform the resident that you are going to perform an action (e.g. sending a P2P message, creating a group, querying network topology, searching literature, writing code, reading files), you MUST invoke the corresponding tool (e.g., `read_file`, `write_file`, `execute_shell_command`, `send_p2p_message`) in the exact same turn.
+- **CODING & FILE TASKS**: When tasked with writing Python programs or analyzing data files (such as CSV/metabolic data), use `list_dir`, `read_file`, `write_file`, `edit_file`, or `execute_shell_command` IMMEDIATELY to inspect files, write Python scripts, and run analysis. Do NOT just say "让我查看" or "现在为您编写" without attaching the tool call.
+- **NO PLACEHOLDER PROMISES**: NEVER output text like "现在我来发送..." or "让我使用Python读取..." without actually attaching the tool call in the response."""
+            static_parts.append(role_block)
+
+        # 6. Conversation Context Awareness
+        if channel == "p2p" and session_id:
+            chat_name = chat_name or "Unknown"
+            is_group = chat_name != "Unknown"
+            if is_group:
+                group_block = f"""# CONVERSATION CONTEXT: GROUP CHAT ({chat_name})
+- To reply to all, use `send_p2p_message` with `id: "{session_id}"` and `type: "GROUP"`."""
+                static_parts.append(group_block)
+            else:
+                static_parts.append(f"# CONVERSATION CONTEXT: DIRECT MESSAGE with {session_id}")
+
+        # 7. Self-Improvement Activator (Static Reminder)
+        activator_prompt = """<self-improvement-reminder>
+After completing this task, evaluate if extractable knowledge emerged:
+- Non-obvious solution discovered through investigation?
+- Workaround for unexpected behavior?
+- Project-specific pattern learned?
+- Error required debugging to resolve?
+
+If yes: Log to .learnings/ using the self-improvement skill format.
+If high-value (recurring, broadly applicable): Consider skill extraction.
+</self-improvement-reminder>"""
+        static_parts.append(activator_prompt)
+
+        static_head = "\n\n---\n\n".join(static_parts)
+
+        # --- LAYER 2: SEMI-STATIC MID (Memory & Task Snapshots) ---
+        semi_static_parts = []
+
+        # 1. Memory Context Snapshot (MEMORY.md + USER.md)
         memory_context = self.memory.get_memory_context()
         if memory_context:
-            parts.append(f"\n\n# Memory Context\n{memory_context}")
-            
-        # 4. Long-term Tasks
+            semi_static_parts.append(f"# Memory Context (MEMORY.md & USER.md)\n{memory_context[:20000]}")
+
+        # 2. Long-term Tasks
         if self.task_manager:
             task_context = self.task_manager.get_task_context()
             if task_context:
-                parts.append(task_context)
-                
-        return "\n\n---\n\n".join(parts)
-    
+                semi_static_parts.append(task_context)
+
+        semi_static_mid = "\n\n---\n\n".join(semi_static_parts) if semi_static_parts else ""
+
+        # --- LAYER 3: DYNAMIC TAIL (Time & Host Info) ---
+        dynamic_parts = []
+        from datetime import datetime
+
+        current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        time_block = f"""# Current System Time
+The current real-world local server time is: **{current_time_str}**.
+Use this absolute time for any date calculations or temporal awareness."""
+        dynamic_parts.append(time_block)
+
+        if host_info:
+            dynamic_parts.append(host_info)
+
+        dynamic_tail = "\n\n---\n\n".join(dynamic_parts)
+
+        return static_head, semi_static_mid, dynamic_tail
+
     def build_messages(
         self,
-        history: List[Any], # List of BaseMessage or dicts
+        history: list[Any],  # List of BaseMessage or dicts
         current_message: str,
         rag_context: str = None,
         network_identity: str = None,
@@ -134,72 +167,70 @@ You are in a private one-to-one conversation with a single peer.
         channel: str = "resident",
         host_info: str = None,
         session_id: str = None,
-        chat_name: str = None
-    ) -> List[BaseMessage]:
+        chat_name: str = None,
+        governance_context: str = None,
+        pending_reply: str = None,
+    ) -> list[BaseMessage]:
         """
-        Build the complete message list for an LLM call.
+        Build complete message list with strict 3-layer prefix caching layout.
         """
-        messages: List[BaseMessage] = []
+        messages: list[BaseMessage] = []
 
-        # 1. System Prompt
-        system_content = self.build_system_prompt(
-            name=name, 
-            personality=personality, 
-            channel=channel, 
+        # 1. Obtain system prompt layers
+        static_head, semi_static_mid, dynamic_tail = self.build_system_prompt(
+            name=name,
+            personality=personality,
+            channel=channel,
             host_info=host_info,
             session_id=session_id,
-            chat_name=chat_name
+            chat_name=chat_name,
+            agent_language=agent_language,
         )
-        
-        # Inject dynamic context (RAG + Network Identity) into System Prompt or as separate SystemMessages
-        # To keep it clean, we add them as separate SystemMessages immediately after the main prompt
-        messages.append(SystemMessage(content=system_content))
-        
-        # Add Language Instruction overrides
-        messages.append(SystemMessage(content=f"IMPORTANT DIRECTIVE: You MUST generate all responses and communicate exclusively in the following language: {agent_language}. (Unless strictly quoting a source in another language)."))
-        
+
+        system_blocks = [static_head]
+
+        if semi_static_mid:
+            system_blocks.append(semi_static_mid)
+
         if resident_memory_context:
-            messages.append(SystemMessage(content=f"Your Internal Memory (Semantic & Working):\n{resident_memory_context}"))
+            system_blocks.append(
+                f"Your Internal Memory (Semantic & Working):\n{resident_memory_context[:10000]}"
+            )
 
         if network_identity:
-            messages.append(SystemMessage(content=f"Your Network Identity:\n{network_identity}"))
-            
-        if recent_global_events:
-            messages.append(SystemMessage(content=f"Recent Global Events (Background Context outside this session):\n{recent_global_events}"))
-            
-        if rag_context:
-            messages.append(SystemMessage(content=f"Relevant Knowledge Context:\n{rag_context}"))
+            system_blocks.append(f"Your Network Identity:\n{network_identity}")
 
-        # 2. History (Existing conversation)
-        # Assuming history is already a list of LangChain BaseMessage objects 
-        # (Message objects from schemas.py need conversion if they are passed here directly)
-        # In AgentService, self.history is list[schemas.Message], but for the LLM we need LangChain messages.
-        # But AgentService._think_and_act logic usually builds a fresh context for the *current* turn.
-        # If we want to include past history, we should convert it. 
-        # For now, AgentService._think_and_act was Stateless (only RAG + System + Current User Message).
-        # We will keep it stateless regarding *chat history* for now (relying on RAG), 
-        # or we can pass a few recent messages if needed. 
-        # The user request "nanobot通过ContextBuilder可以给智能体加载历史信息" implies we SHOULD support it.
-        
+        # Dynamic Tail Blocks (RAG, Governance, Time, Pending Reply)
+        if recent_global_events:
+            system_blocks.append(
+                f"Recent Global Events (Background Context outside this session):\n{recent_global_events}"
+            )
+
+        if rag_context:
+            system_blocks.append(f"Relevant Knowledge Context:\n{rag_context}")
+
+        if governance_context:
+            system_blocks.append(
+                f"LIVE GOVERNANCE STATE (Active Elections/Proposals):\n{governance_context[:10000]}"
+            )
+
+        if pending_reply:
+            cooldown_sec = int(os.getenv("AGENT_P2P_COOLDOWN_SECONDS", "300"))
+            cooldown_disp = f"{cooldown_sec // 60} minutes" if cooldown_sec % 60 == 0 else f"{cooldown_sec} seconds"
+            system_blocks.append(
+                f"# [PENDING REPLY INHIBITION]\nYou generated a reply within the last {cooldown_disp} that has NOT been sent yet due to network rate-limiting policy:\n\n\"{pending_reply}\"\n\nYou are now being prompted by a NEW message. You can choose to update your pending reply (overwriting it) or ignore it. If you use 'send_p2p_message' again, the NEW content will be buffered and sent once the {cooldown_disp} cooldown expires."
+            )
+
+        system_blocks.append(dynamic_tail)
+
+        # Single compiled SystemMessage placed at index 0
+        messages.append(SystemMessage(content="\n\n---\n\n".join(system_blocks)))
+
+        # 2. History (Conversation flow)
         if history:
-            # History is expected to be a list of LangChain BaseMessage objects (HumanMessage, AIMessage, etc.)
-            # If they are dicts or other formats, they should be converted before calling this method.
-             messages.extend(history)
+            messages.extend(history)
 
         # 3. Current User Message
         messages.append(HumanMessage(content=f"Message from {source}: {current_message}"))
-
-        # 4. Self-Improvement Activator Hook
-        activator_prompt = """<self-improvement-reminder>
-After completing this task, evaluate if extractable knowledge emerged:
-- Non-obvious solution discovered through investigation?
-- Workaround for unexpected behavior?
-- Project-specific pattern learned?
-- Error required debugging to resolve?
-
-If yes: Log to .learnings/ using the self-improvement skill format.
-If high-value (recurring, broadly applicable): Consider skill extraction.
-</self-improvement-reminder>"""
-        messages.append(SystemMessage(content=activator_prompt))
 
         return messages

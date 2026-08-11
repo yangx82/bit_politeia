@@ -29,6 +29,96 @@ import sys
 from pathlib import Path
 
 
+def _load_env_file():
+    """Load .env file from skill directory, current directory, parent directories, or package directory.
+    
+    Priority: skill directory > current working directory > parent directories > package directory
+    """
+    def parse_env_content(content):
+        """Simple manual parser for .env files."""
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip("'").strip('"')
+                if key and key not in os.environ:
+                    os.environ[key] = value
+
+    try:
+        from dotenv import load_dotenv
+        has_dotenv = True
+    except ImportError:
+        has_dotenv = False
+
+    # Priority 1: Skill directory (highest priority)
+    skill_dir = Path(__file__).resolve().parent.parent  # scripts/ -> scientific-slides/
+    env_path = skill_dir / ".env"
+    if env_path.exists():
+        if has_dotenv:
+            load_dotenv(dotenv_path=env_path, override=False)
+        else:
+            try:
+                with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                    parse_env_content(f.read())
+            except Exception:
+                pass
+        return True
+
+    # Priority 2: Current working directory
+    env_path = Path.cwd() / ".env"
+    if env_path.exists():
+        if has_dotenv:
+            load_dotenv(dotenv_path=env_path, override=False)
+        else:
+            try:
+                with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                    parse_env_content(f.read())
+            except Exception:
+                pass
+        return True
+
+    # Priority 3: Parent directories (up to 5 levels)
+    cwd = Path.cwd()
+    for _ in range(5):
+        cwd = cwd.parent
+        env_path = cwd / ".env"
+        if env_path.exists():
+            if has_dotenv:
+                load_dotenv(dotenv_path=env_path, override=False)
+            else:
+                try:
+                    with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                        parse_env_content(f.read())
+                except Exception:
+                    pass
+            return True
+        if cwd == cwd.parent:
+            break
+
+    # Priority 4: Package parent directory
+    script_dir = Path(__file__).resolve().parent
+    for _ in range(5):
+        env_path = script_dir / ".env"
+        if env_path.exists():
+            if has_dotenv:
+                load_dotenv(dotenv_path=env_path, override=False)
+            else:
+                try:
+                    with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                        parse_env_content(f.read())
+                except Exception:
+                    pass
+            return True
+        script_dir = script_dir.parent
+        if script_dir == script_dir.parent:
+            break
+
+    return False
+
+
 def main():
     """Command-line interface."""
     parser = argparse.ArgumentParser(
@@ -69,7 +159,10 @@ Examples:
   python generate_slide_image.py "Title: Introduction\\nOverview of deep learning" -o slides/02_intro.png
 
 Environment Variables:
-  OPENROUTER_API_KEY    Required for AI generation
+  OPENROUTER_API_KEY    Required for OpenRouter mode
+  GOOGLE_CLOUD_PROJECT  Required for Vertex AI (Gemini Enterprise Agent Platform)
+  GOOGLE_CLOUD_LOCATION Location for Vertex AI (default: global)
+  GOOGLE_GENAI_USE_ENTERPRISE  Set to 'true' for Vertex AI mode
         """
     )
     
@@ -86,15 +179,25 @@ Environment Variables:
     
     args = parser.parse_args()
     
-    # Check for API key
+    # Load .env file first (priority: skill directory)
+    _load_env_file()
+    
+    # Check if using Vertex AI (Gemini Enterprise Agent Platform)
+    use_vertex = os.getenv("GOOGLE_GENAI_USE_ENTERPRISE", "").lower() in ("true", "1", "yes")
+    
+    # Check for API key (only needed for OpenRouter, not Vertex AI)
     api_key = args.api_key or os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
+    if not api_key and not use_vertex:
         print("Error: OPENROUTER_API_KEY environment variable not set")
-        print("\nFor AI generation, you need an OpenRouter API key.")
+        print("\nFor OpenRouter mode, you need an OpenRouter API key.")
         print("Get one at: https://openrouter.ai/keys")
         print("\nSet it with:")
         print("  export OPENROUTER_API_KEY='your_api_key'")
         print("\nOr use --api-key flag")
+        print("\nOr use Vertex AI (Gemini Enterprise Agent Platform) by setting:")
+        print("  export GOOGLE_CLOUD_PROJECT=your-project-id")
+        print("  export GOOGLE_CLOUD_LOCATION=global")
+        print("  export GOOGLE_GENAI_USE_ENTERPRISE=true")
         sys.exit(1)
     
     # Find AI generation script

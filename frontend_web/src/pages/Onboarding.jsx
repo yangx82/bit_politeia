@@ -19,7 +19,7 @@ const Onboarding = ({ onComplete }) => {
         field: '',
         name: 'Agent',
         personality: 'Professional and helpful',
-        agentUrl: 'http://localhost:8001',
+        agentUrl: 'http://localhost:8100',
         bootstrapUrl: 'http://localhost:8000',
         llmBaseUrl: 'https://api.openai.com/v1',
         apiKey: '',
