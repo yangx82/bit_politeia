@@ -209,9 +209,81 @@ class WatcherService:
             logger.error(f"OpenAlex semantic search fallback failed: {e}")
             return []
 
-    def get_incremental_papers(self, topic, interval_days=7, positive_keywords=None, negative_keywords=None):
+    def expand_topics_with_llm(self, topic: str, llm=None) -> list:
         """
-        Retrieves new papers that are NOT in history, incorporating resident preferences.
+        Uses LLM to expand a research topic into 3-5 synonym / semantic search phrases.
+        Falls back to [topic] if LLM is unavailable or fails.
+        """
+        if not topic or not isinstance(topic, str) or not topic.strip():
+            return [topic] if topic else []
+
+        expanded = [topic.strip()]
+        
+        prompt = (
+            f"You are an academic literature search assistant. "
+            f"Given the research topic: '{topic}', generate 3 to 4 synonymous or closely related academic search phrases in English for literature database querying.\n"
+            f"Output MUST be a JSON array of strings only, e.g. [\"phrase1\", \"phrase2\", \"phrase3\"]. Do not include markdown code blocks or explanations."
+        )
+
+        try:
+            raw_response = None
+            if llm:
+                if hasattr(llm, "invoke"):
+                    res = llm.invoke(prompt)
+                    raw_response = getattr(res, "content", str(res))
+                elif hasattr(llm, "ainvoke"):
+                    import asyncio
+                    try:
+                        res = asyncio.run(llm.ainvoke(prompt))
+                    except RuntimeError:
+                        # Event loop is already running
+                        loop = asyncio.get_event_loop()
+                        res = loop.run_until_complete(llm.ainvoke(prompt))
+                    raw_response = getattr(res, "content", str(res))
+            else:
+                base_url = os.getenv("AGENT_BASE_URL")
+                api_key = os.getenv("AGENT_API_KEY")
+                model = os.getenv("AGENT_MODEL", "gpt-4o")
+
+                if base_url and api_key:
+                    url = f"{base_url.rstrip('/')}/chat/completions"
+                    headers = {
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    }
+                    payload = {
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.3,
+                        "max_tokens": 150,
+                    }
+                    resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        raw_response = data["choices"][0]["message"]["content"]
+
+            if raw_response:
+                clean_str = raw_response.strip()
+                if clean_str.startswith("```"):
+                    clean_str = clean_str.split("```")[1]
+                    if clean_str.startswith("json"):
+                        clean_str = clean_str[4:].strip()
+                clean_str = clean_str.strip()
+                
+                parsed = json.loads(clean_str)
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if isinstance(item, str) and item.strip() and item.strip() not in expanded:
+                            expanded.append(item.strip())
+                    logger.info(f"[Semantic Expansion] Topic '{topic}' expanded to {len(expanded)} queries: {expanded}")
+        except Exception as e:
+            logger.debug(f"[Semantic Expansion] LLM query expansion failed for '{topic}': {e}. Using original topic.")
+
+        return expanded
+
+    def get_incremental_papers(self, topic, interval_days=7, positive_keywords=None, negative_keywords=None, llm=None, enable_expansion=True):
+        """
+        Retrieves new papers that are NOT in history, incorporating resident preferences and LLM query expansion.
         
         Supports multi-topic search: if topic contains ';' separators, each sub-topic
         is searched independently and results are merged with deduplication.
@@ -223,17 +295,29 @@ class WatcherService:
         if not sub_topics:
             sub_topics = [topic]
         
-        # Collect all raw results across sub-topics
-        all_raw_results = []
-        seen_ids = set()  # Deduplicate across sub-topics
+        # Expand sub-topics using LLM semantic expansion if enabled
+        search_queries = []
+        for st in sub_topics:
+            if enable_expansion:
+                expanded = self.expand_topics_with_llm(st, llm=llm)
+                for eq in expanded:
+                    if eq not in search_queries:
+                        search_queries.append(eq)
+            else:
+                if st not in search_queries:
+                    search_queries.append(st)
         
-        for sub_topic in sub_topics:
+        # Collect all raw results across search queries
+        all_raw_results = []
+        seen_ids = set()  # Deduplicate across sub-topics/queries
+        
+        for q in search_queries:
             # Expand search topic with positive keywords if available
-            search_topic = sub_topic
+            search_topic = q
             if positive_keywords and isinstance(positive_keywords, list):
                 valid_pos = [kw.strip() for kw in positive_keywords if kw and isinstance(kw, str)]
                 if valid_pos:
-                    search_topic = f"{sub_topic} {' '.join(valid_pos[:3])}"
+                    search_topic = f"{q} {' '.join(valid_pos[:3])}"
 
             raw_results = self.search_openalex(search_topic, from_date=from_date)
             
@@ -241,7 +325,7 @@ class WatcherService:
                 raw_id = raw.get('id', '')
                 if raw_id and raw_id not in seen_ids:
                     seen_ids.add(raw_id)
-                    all_raw_results.append((sub_topic, raw))
+                    all_raw_results.append((q, raw))
         
         new_papers = []
         neg_kws = [kw.lower().strip() for kw in negative_keywords] if negative_keywords and isinstance(negative_keywords, list) else []

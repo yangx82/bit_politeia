@@ -2462,6 +2462,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         interval_days=7,
                         positive_keywords=res_prefs.get("positive_keywords"),
                         negative_keywords=res_prefs.get("negative_keywords"),
+                        llm=self.llm,
+                        enable_expansion=True,
                     )
                     
                     # Deduplicate across topics
