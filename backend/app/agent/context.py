@@ -215,8 +215,10 @@ Use this absolute time for any date calculations or temporal awareness."""
             )
 
         if pending_reply:
+            cooldown_sec = int(os.getenv("AGENT_P2P_COOLDOWN_SECONDS", "300"))
+            cooldown_disp = f"{cooldown_sec // 60} minutes" if cooldown_sec % 60 == 0 else f"{cooldown_sec} seconds"
             system_blocks.append(
-                f"# [PENDING REPLY INHIBITION]\nYou generated a reply within the last 5 minutes that has NOT been sent yet due to network rate-limiting policy:\n\n\"{pending_reply}\"\n\nYou are now being prompted by a NEW message. You can choose to update your pending reply (overwriting it) or ignore it. If you use 'send_p2p_message' again, the NEW content will be buffered and sent once the 5-minute cooldown expires."
+                f"# [PENDING REPLY INHIBITION]\nYou generated a reply within the last {cooldown_disp} that has NOT been sent yet due to network rate-limiting policy:\n\n\"{pending_reply}\"\n\nYou are now being prompted by a NEW message. You can choose to update your pending reply (overwriting it) or ignore it. If you use 'send_p2p_message' again, the NEW content will be buffered and sent once the {cooldown_disp} cooldown expires."
             )
 
         system_blocks.append(dynamic_tail)
