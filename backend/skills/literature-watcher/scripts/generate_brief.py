@@ -109,16 +109,17 @@ def generate_markdown_brief(topic, papers, output_path):
     return md
 
 def main():
+    # Load env vars first so parser defaults can see env vars if needed
+    _load_env_file()
+
     parser = argparse.ArgumentParser(description="Literature Watcher Briefing Generator")
-    parser.add_argument("--topic", required=True, help="Keyword or topic to monitor")
+    default_topic = os.getenv("AGENT_RESEARCH_FIELD", "AI Governance")
+    parser.add_argument("--topic", default=default_topic, help=f"Keyword or topic to monitor (defaults to AGENT_RESEARCH_FIELD: '{default_topic}')")
     parser.add_argument("--interval", type=int, default=7, help="Lookback interval in days")
     parser.add_argument("--output", help="Specific output file path")
     parser.add_argument("--no-save", action="store_true", help="Don't save to history (dry run)")
     
     args = parser.parse_args()
-    
-    # Load env vars
-    _load_env_file()
     
     service = WatcherService()
     logger.info(f"Starting scheduled update for topic: {args.topic}")
