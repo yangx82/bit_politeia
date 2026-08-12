@@ -927,12 +927,12 @@ class NetworkManager:
                     "data_hash": local_data_hash,  # Include hash for verification
                 }
                 
-                # Create a direct message to the requester instead of broadcasting
+                # Create a direct SYNC message to the requester instead of broadcasting as a new proposal
                 sync_msg = self.message_protocol.create_message(
                     sender_id=self.local_node_id,
                     recipient_id=requester_id,
-                    message_type=MessageType.PROPOSAL,
-                    content=proposal_data,
+                    message_type=MessageType.SYNC,
+                    content={"sync_type": "proposal_sync", **proposal_data},
                 )
                 await self.route_message(sync_msg, gossip_forward=False)
                 synced_count += 1

@@ -313,8 +313,14 @@ class P2PService:
         elif msg_type == MessageType.SYNC.value:
             # Handle state synchronization requests
             content = message.get("content", {})
-            if content.get("sync_type") == "state_request":
+            sync_type = content.get("sync_type")
+            if sync_type == "state_request":
                 safe_create_task(self.network_manager.handle_state_sync_request(message), name="state_sync")
+            elif sync_type == "proposal_sync":
+                from .agent_service import agent_service
+                if agent_service and agent_service.governance_manager:
+                    agent_service.governance_manager.receive_p2p_event("proposal", content)
+                    logger.debug(f"[StateSync] Ingested history proposal sync from {sender_id[:8]}")
             return True
 
         return False
