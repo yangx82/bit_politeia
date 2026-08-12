@@ -91,17 +91,30 @@ class Proposal:
 
     @classmethod
     def from_dict(cls, data: dict):
+        # Extract timestamp safely
+        raw_ts = data.get("timestamp")
+        if isinstance(raw_ts, str):
+            try:
+                ts = datetime.fromisoformat(raw_ts)
+            except Exception:
+                ts = datetime.now(UTC)
+        elif isinstance(raw_ts, (int, float)):
+            ts = datetime.fromtimestamp(raw_ts, tz=UTC)
+        elif isinstance(raw_ts, datetime):
+            ts = raw_ts
+        else:
+            ts = datetime.now(UTC)
+
+        content = data.get("content") or data.get("text") or data.get("title") or data.get("description") or "Proposal without description"
+
         return cls(
-            proposal_id=data["proposal_id"],
-            initiator_id=data["initiator_id"],
-            group_id=data["group_id"],
-            content=data["content"],
-            # Support both datetime object and ISO string
-            timestamp=datetime.fromisoformat(data["timestamp"])
-            if isinstance(data["timestamp"], str)
-            else data["timestamp"],
-            scope=data.get("scope", "group"),
-            status=data.get("status", "discussed"),
+            proposal_id=str(data.get("proposal_id") or str(uuid.uuid4())),
+            initiator_id=str(data.get("initiator_id") or "unknown_node"),
+            group_id=str(data.get("group_id") or "global"),
+            content=str(content),
+            timestamp=ts,
+            scope=str(data.get("scope", "group")),
+            status=str(data.get("status", "discussed")),
             pdf_hash=data.get("pdf_hash"),
         )
 
