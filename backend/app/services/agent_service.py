@@ -2325,17 +2325,25 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                                 f"P2P Reply Delay: already elapsed ({delay_seconds:.1f}s >= {configured_delay}s). Processing immediately."
                             )
 
-                    # 4. Run Pipeline to get Response
+                    # 4. Run Pipeline to get Response (with Thinking & Replied Receipts)
                     try:
+                        if m_id and sender_id != "unknown_sender":
+                            asyncio.create_task(p2p_service.send_receipt(sender_id, m_id, "thinking"))
+
                         pipeline_task = self._run_ralph_wiggum_loop(msg_obj)
                         response_text, _, _ = await asyncio.wait_for(
                             pipeline_task, timeout=900.0
                         )  # 15 min timeout (Extended for long network tasks)
+
+                        if m_id and sender_id != "unknown_sender":
+                            asyncio.create_task(p2p_service.send_receipt(sender_id, m_id, "replied"))
                     except TimeoutError:
                         logger.error(
                             f"P2P processing PIPELINE TIMEOUT for message from {sender_id}. Skipped."
                         )
                         response_text = "Processing timed out."
+                        if m_id and sender_id != "unknown_sender":
+                            asyncio.create_task(p2p_service.send_receipt(sender_id, m_id, "failed"))
 
                     # 5. Agent's Final Answer is for internal record, NOT sent over P2P.
                     # All outbound P2P communication must be done explicitly by the LLM via `send_p2p_message` tool.

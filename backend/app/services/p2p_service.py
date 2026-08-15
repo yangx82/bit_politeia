@@ -473,6 +473,30 @@ class P2PService:
             group_id, content, MessageType.GROUP.value, message_id=message_id, timestamp=timestamp
         )
 
+    async def send_receipt(
+        self,
+        recipient_id: str,
+        target_message_id: str,
+        receipt_status: str,
+    ):
+        """
+        Send a lifecycle receipt (delivered, thinking, replied) to a peer.
+        """
+        if not self.local_node or not recipient_id:
+            return False
+
+        try:
+            content = {
+                "target_message_id": target_message_id,
+                "receipt_status": receipt_status,
+            }
+            return await self.local_node.send_message(
+                recipient_id, content, MessageType.RECEIPT.value
+            )
+        except Exception as e:
+            logger.debug(f"Failed to send receipt {receipt_status} to {recipient_id}: {e}")
+            return False
+
     async def broadcast_governance_event(self, group_id: str, event_type: str, data: dict):
         """
         Broadcast a governance event (proposal or vote) to a group.

@@ -7,10 +7,12 @@ from unittest.mock import AsyncMock, MagicMock
 # Add backend to path
 sys.path.append(os.path.join(os.getcwd(), "backend"))
 
+import pytest
 from app.models.schemas import Message
 from app.services.agent_service import AgentService
 
 
+@pytest.mark.anyio
 async def test_message_retry():
     print("Starting Message Retry Test...")
 

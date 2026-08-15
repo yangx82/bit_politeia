@@ -10,8 +10,12 @@ except ImportError:
     httpx = None
 
 from .bootstrap_client import NodeRegistration, bootstrap_client
+from .dag_resolver import dag_resolver
 from .message_protocol import MessageProtocol, MessageType, SignedMessage
 from .models import Group, Node
+from .offline_mailbox import offline_mailbox
+from .receipt_manager import receipt_pipeline
+from .sync_manager import synckey_manager
 from .tunnel_client import TunnelClient
 
 logger = logging.getLogger(__name__)
@@ -429,6 +433,13 @@ class NetworkManager:
             timestamp=timestamp,
         )
 
+        # 1. IM Enhancement: Assign monotonic sequence ID (SyncKey)
+        channel_id = synckey_manager.get_channel_id(sender_id, target_id)
+        signed_msg = synckey_manager.assign_next_seq(channel_id, signed_msg)
+
+        # 2. IM Enhancement: Track Sent Receipt
+        receipt_pipeline.track_sent(signed_msg.message_id, sender_id, target_id)
+
         return await self.route_message(signed_msg)
 
     async def _send_http_message(self, endpoint: str, message: SignedMessage) -> bool:
@@ -438,6 +449,7 @@ class NetworkManager:
             # Use the existing http_client for efficiency
             resp = await self.http_client.post(url, json=message.to_dict())
             if resp.status_code == 200:
+                receipt_pipeline.update_receipt(message.message_id, "delivered", peer_id=message.recipient_id)
                 return True
             else:
                 logger.warning(f"Transport error to {endpoint}: HTTP {resp.status_code}")
@@ -485,20 +497,20 @@ class NetworkManager:
         if len(self._route_cache) > 10000:
             self._route_cache = set(list(self._route_cache)[-5000:])
 
-        # Helper to route to single node with fallback
+        # Helper to route to single node with fallback & offline mailbox
         async def send_to_node(node_id: str, msg: SignedMessage) -> bool:
             if node_id == self.local_node_id:
                 if self.local_node_id in self.nodes:
                     await self.nodes[self.local_node_id].receive_message(msg)
                 return True
 
+            delivered = False
             if node_id in self.nodes:
                 target = self.nodes[node_id]
-                success = False
                 if target.endpoint:
-                    success = await self._send_http_message(target.endpoint, msg)
+                    delivered = await self._send_http_message(target.endpoint, msg)
 
-                if not success:
+                if not delivered:
                     # BLOCK RE-RELAY: If it came from relay, don't send back to relay
                     if from_relay:
                         self._log_throttled(
@@ -508,17 +520,18 @@ class NetworkManager:
                         return False
 
                     # Fallback to Relay
-                    return await self._send_via_relay(node_id, msg)
-                return True
+                    delivered = await self._send_via_relay(node_id, msg)
             else:
                 # Try Relay even if unknown (maybe new node)
-                if from_relay:
-                    self._log_throttled(
-                        "warning",
-                        f"[Network] Unknown recipient {node_id} for relayed message. Dropping to prevent loop.",
-                    )
-                    return False
-                return await self._send_via_relay(node_id, msg)
+                if not from_relay:
+                    delivered = await self._send_via_relay(node_id, msg)
+
+            if not delivered and not from_relay and msg.message_type not in (MessageType.HEARTBEAT, MessageType.RECEIPT):
+                # 3. IM Enhancement: Offline Mailbox enqueue for failed deliveries
+                offline_mailbox.enqueue(node_id, msg)
+                logger.info(f"[Network] Peer {node_id[:12]} unreachable. Message {msg.message_id} buffered in Offline Mailbox.")
+
+            return delivered
 
         # Handle routing: Detect if recipient is a group to trigger broadcast logic
         is_group_id = message.recipient_id in self.groups

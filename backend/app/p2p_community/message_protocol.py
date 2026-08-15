@@ -31,6 +31,11 @@ class MessageType(Enum):
     ELECTION = "election"  # 选举交互
     GROUP_CONFIG = "group_config"  # 小组配置更新
 
+    # IM Enhancements: Receipts, SyncKey Delta, Event DAG
+    RECEIPT = "receipt"  # 状态回执 (Sent, Delivered, Thinking, Replied)
+    SYNC_PULL = "sync_pull"  # 增量同步拉取 (SyncKey request)
+    SYNC_RESP = "sync_resp"  # 增量同步回复 (SyncKey payload)
+
     # WebRTC Signaling
     SDP_OFFER = "sdp_offer"
     SDP_ANSWER = "sdp_answer"
@@ -53,6 +58,13 @@ class SignedMessage:
     timestamp: datetime
     signature: str  # Base64 encoded signature
     nonce: str  # Prevent replay attacks
+    seq_id: int = 0  # 单调递增序列号 (SyncKey)
+    parents: list[str] = None  # Event DAG 因果父事件ID列表
+    receipt_status: str | None = None  # 回执状态: delivered, thinking, replied
+
+    def __post_init__(self):
+        if self.parents is None:
+            self.parents = []
 
     def to_dict(self) -> dict:
         return {
@@ -64,6 +76,9 @@ class SignedMessage:
             "timestamp": self.timestamp.isoformat(),
             "signature": self.signature,
             "nonce": self.nonce,
+            "seq_id": self.seq_id,
+            "parents": self.parents,
+            "receipt_status": self.receipt_status,
         }
 
     @classmethod
@@ -81,6 +96,9 @@ class SignedMessage:
             timestamp=ts,
             signature=data["signature"],
             nonce=data["nonce"],
+            seq_id=data.get("seq_id", 0),
+            parents=data.get("parents", []),
+            receipt_status=data.get("receipt_status"),
         )
 
     def get_signable_content(self) -> bytes:
@@ -97,6 +115,9 @@ class SignedMessage:
             # Use timespec='microseconds' to ensure consistent decimal places
             "timestamp": self.timestamp.isoformat(timespec="microseconds"),
             "nonce": self.nonce,
+            "seq_id": self.seq_id,
+            "parents": self.parents,
+            "receipt_status": self.receipt_status,
         }
         # sort_keys and separators eliminate non-deterministic whitespace
         return json.dumps(signable, sort_keys=True, separators=(",", ":")).encode("utf-8")
