@@ -190,10 +190,12 @@ class AgentService:
                 )
                 if os.getenv("AGENT_AUTO_EVOLUTION_ENABLED", "false").lower() == "true":
                     interval_hours = int(os.getenv("AGENT_AUTO_EVOLUTION_INTERVAL_HOURS", "24"))
+                    first_run = datetime.now(UTC) + timedelta(seconds=60)
                     self.scheduler.add_job(
                         "app.services.agent_service:run_evolution_watcher_proxy",
                         "interval",
                         hours=interval_hours,
+                        next_run_time=first_run,
                         misfire_grace_time=3600,
                         id="periodic_evolution_watcher_job",
                         replace_existing=True,
@@ -2442,13 +2444,23 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         try:
             from app.services.evolution_service import evolution_service
 
+            draft_aips = [aip for aip in evolution_service.aips.values() if aip.status == "draft"]
+
+            # If no pending draft AIPs exist, trigger proactive LLM auto-exploration
+            if not draft_aips and self.llm:
+                logger.info("[EvolutionWatcher] No pending draft AIPs found. Triggering proactive exploration...")
+                new_aip = await evolution_service.auto_explore_and_propose(llm_client=self.llm)
+                if new_aip:
+                    draft_aips = [new_aip]
+
             # Audit active draft AIPs
-            for aip_id, aip in list(evolution_service.aips.items()):
-                if aip.status == "draft":
-                    logger.info(f"[EvolutionWatcher] Auditing draft proposal {aip_id}...")
-                    vote = await evolution_service.audit_aip(aip_id, llm_client=self.llm)
-                    if vote.approval:
-                        await evolution_service.verify_in_sandbox(aip_id)
+            for aip in draft_aips:
+                logger.info(f"[EvolutionWatcher] Auditing draft proposal {aip.aip_id}...")
+                vote = await evolution_service.audit_aip(aip.aip_id, llm_client=self.llm)
+                if vote.approval:
+                    await evolution_service.verify_in_sandbox(aip.aip_id)
+                    p2p_service = getattr(self, "p2p_service", None)
+                    await evolution_service.broadcast_aip(aip.aip_id, p2p_service=p2p_service)
         except Exception as e:
             logger.error(f"[EvolutionWatcher] Error in self-evolution cycle: {e}")
 

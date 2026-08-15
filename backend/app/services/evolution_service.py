@@ -77,6 +77,43 @@ class EvolutionService:
         logger.info(f"[EvolutionService] Created {aip_id}: '{title}'")
         return aip
 
+    async def auto_explore_and_propose(self, llm_client: Any = None) -> AIPProposal | None:
+        """Automatically explores current codebase bottlenecks and research field to synthesize a new AIP proposal draft."""
+        if not llm_client:
+            return None
+
+        try:
+            prompt = (
+                "You are the Autonomous Evolution Engine for Bit Politeia (a decentralized P2P AI Agent framework).\n"
+                "Propose a new Agent Architecture Improvement Proposal (AIP) to optimize system performance, memory indexing, or P2P protocol reliability.\n"
+                "Respond strictly in JSON format:\n"
+                "{\n"
+                '  "title": "Short title",\n'
+                '  "description": "Detailed explanation of proposed architecture update",\n'
+                '  "target_files": ["backend/app/agent/memory.py"],\n'
+                '  "research_sources": ["https://arxiv.org/abs/2408.00001"]\n'
+                "}"
+            )
+            response = await llm_client.one_shot(prompt, response_format={"type": "json_object"})
+            res_json = json.loads(response)
+            title = res_json.get("title", "Autonomous Architecture Optimization")
+            description = res_json.get("description", "Automated system performance and memory protocol refinement.")
+            target_files = res_json.get("target_files", [])
+            research_sources = res_json.get("research_sources", [])
+
+            aip = self.create_aip(
+                initiator_id="self",
+                title=title,
+                description=description,
+                target_files=target_files,
+                research_sources=research_sources,
+            )
+            logger.info(f"[EvolutionService] Auto-generated new proposal draft: {aip.aip_id} - '{title}'")
+            return aip
+        except Exception as e:
+            logger.error(f"[EvolutionService] Auto-exploration failed: {e}")
+            return None
+
     async def broadcast_aip(self, aip_id: str, p2p_service: Any = None) -> bool:
         """Broadcasts an AIP proposal to peer nodes over the P2P network."""
         aip = self.aips.get(aip_id)
