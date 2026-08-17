@@ -12,6 +12,19 @@ from app.p2p_community.governance import AIPProposal, ElectionType, Vote
 logger = logging.getLogger(__name__)
 
 
+async def _invoke_llm_json(llm_client: Any, prompt: str) -> dict:
+    """Helper to invoke a LangChain ChatOpenAI client and parse JSON response."""
+    from langchain_core.messages import HumanMessage
+    response = await llm_client.ainvoke([HumanMessage(content=prompt)])
+    content = response.content.strip()
+    # Clean potential markdown fences
+    if "```json" in content:
+        content = content.split("```json")[1].split("```")[0].strip()
+    elif "```" in content:
+        content = content.split("```")[1].split("```")[0].strip()
+    return json.loads(content)
+
+
 class EvolutionService:
     """
     Manages the lifecycle of Agent Improvement Proposals (AIPs) for the
@@ -94,8 +107,7 @@ class EvolutionService:
                 '  "research_sources": ["https://arxiv.org/abs/2408.00001"]\n'
                 "}"
             )
-            response = await llm_client.one_shot(prompt, response_format={"type": "json_object"})
-            res_json = json.loads(response)
+            res_json = await _invoke_llm_json(llm_client, prompt)
             title = res_json.get("title", "Autonomous Architecture Optimization")
             description = res_json.get("description", "Automated system performance and memory protocol refinement.")
             target_files = res_json.get("target_files", [])
@@ -173,8 +185,7 @@ class EvolutionService:
                     f"Respond strictly in JSON format:\n"
                     f'{{"approved": true/false, "reason": "concise explanation"}}'
                 )
-                response = await llm_client.one_shot(prompt, response_format={"type": "json_object"})
-                res_json = json.loads(response)
+                res_json = await _invoke_llm_json(llm_client, prompt)
                 approved = res_json.get("approved", True)
                 reason = res_json.get("reason", "LLM audit passed")
                 return Vote(voter_id="self", approval=approved, reason=reason)
