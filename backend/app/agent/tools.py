@@ -871,7 +871,9 @@ async def send_file_to_resident(file_path: str, description: str = "") -> str:
         )
 
         # Pass media as kwargs to notify_resident with broadcast=True
-        await agent_service.notify_resident(content=msg_text, media=media_payload, broadcast=True)
+        # IMPORTANT: type='message' ensures this bypasses the CHANNEL_SEND_FINAL_ONLY filter
+        # in the message bus, which silently drops non-'message' types for feishu/telegram channels.
+        await agent_service.notify_resident(content=msg_text, media=media_payload, broadcast=True, type="message")
 
         return f"Successfully sent {file_name} to the resident."
     except Exception as e:
