@@ -828,18 +828,47 @@ async def send_file_to_resident(file_path: str, description: str = "") -> str:
 
         from app.services.agent_service import agent_service
 
-        if not os.path.exists(file_path):
-            return f"Error: File not found at {file_path}"
+        # Resolve the file path: try the given path first, then probe common base directories
+        # so that relative paths like "data/resident/foo.md" work regardless of CWD.
+        resolved_path = None
+        if os.path.isabs(file_path) and os.path.exists(file_path):
+            resolved_path = file_path
+        else:
+            # Candidate base directories to probe (in priority order)
+            _this_file = os.path.abspath(__file__)               # backend/app/agent/tools.py
+            _backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(_this_file)))  # backend/
+            _project_root = os.path.dirname(_backend_dir)        # project root (bit_politeia/)
+            candidate_bases = [
+                os.getcwd(),          # process working directory
+                _backend_dir,         # backend/
+                _project_root,        # project root
+            ]
+            for base in candidate_bases:
+                candidate = os.path.join(base, file_path)
+                if os.path.exists(candidate):
+                    resolved_path = os.path.abspath(candidate)
+                    break
 
-        file_name = os.path.basename(file_path)
-        ext = file_name.lower().split(".")[-1]
+        if resolved_path is None:
+            return (
+                f"Error: File not found at '{file_path}'. "
+                f"Searched in: {[os.getcwd(), _backend_dir, _project_root]}"
+            )
+
+        file_name = os.path.basename(resolved_path)
+        ext = file_name.lower().rsplit(".", 1)[-1] if "." in file_name else ""
 
         # Simple type inference
         file_type = "image" if ext in ["jpg", "jpeg", "png", "gif"] else "file"
 
-        media_payload = [{"type": file_type, "path": os.path.abspath(file_path), "name": file_name}]
+        media_payload = [{"type": file_type, "path": resolved_path, "name": file_name}]
 
         msg_text = description if description else f"Here is the file: {file_name}"
+
+        import logging
+        logging.getLogger(__name__).info(
+            f"[send_file_to_resident] Resolved '{file_path}' -> '{resolved_path}'"
+        )
 
         # Pass media as kwargs to notify_resident with broadcast=True
         await agent_service.notify_resident(content=msg_text, media=media_payload, broadcast=True)
