@@ -104,7 +104,7 @@ def init_minio():
     print("[5/5] Checking MinIO Large Payload Storage...")
     try:
         import urllib.request
-        minio_url = os.getenv("MINIO_URL", "http://localhost:9000")
+        minio_url = os.getenv("MINIO_URL", "http://localhost:19000")
         req = urllib.request.Request(f"{minio_url}/minio/health/live", method="GET")
         with urllib.request.urlopen(req, timeout=3) as resp:
             if resp.status == 200:
