@@ -55,7 +55,7 @@ services:
 
   # L4: 长期向量数据库 Qdrant
   qdrant-vector:
-    image: qdrant/qdrant:v1.18.0
+    image: qdrant/qdrant:v1.7.4
     container_name: agent-memory-qdrant
     ports:
       - "${QDRANT_REST_PORT:-16333}:6333"
