@@ -40,7 +40,8 @@ else
 fi
 
 # 2. 验证 Qdrant
-QDRANT_STATUS=$(curl -s http://localhost:6333/healthz || echo "FAIL")
+QDRANT_PORT_VAL=${QDRANT_PORT:-16333}
+QDRANT_STATUS=$(curl -s http://localhost:${QDRANT_PORT_VAL}/healthz || echo "FAIL")
 if [[ "$QDRANT_STATUS" == *"ok"* ]]; then
     echo "  [PASS] Qdrant L4 向量记忆服务正常"
 else

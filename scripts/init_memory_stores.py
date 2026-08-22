@@ -82,7 +82,7 @@ def init_qdrant():
         from qdrant_client.models import VectorParams, Distance
         
         qdrant_host = os.getenv("QDRANT_HOST", "localhost")
-        qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
+        qdrant_port = int(os.getenv("QDRANT_PORT", "16333"))
         client = QdrantClient(host=qdrant_host, port=qdrant_port, timeout=3)
         
         collection_name = "agent_longterm_memory"
