@@ -80,6 +80,13 @@ from .identity_service import identity_manager
 from .skill_manager import skill_manager
 from .task_manager import TaskManager, TaskStatus
 
+# DeepSeek Harness Architecture Enhancements
+from ..agent.waterfall import waterfall_pipeline
+from .spill_store import spill_store
+from .context_pruner import tool_result_pruner, compaction_engine
+from .session_event_log import session_event_log
+from .scoped_subagent import scoped_subagent_manager, ToolFilter
+
 
 class AgentService:
     def __init__(self):
@@ -1659,10 +1666,26 @@ class AgentService:
                         if tool_name in self.tools_map:
                             logger.info(f"Agent Invoking Tool: {tool_name} with {args}")
                             tool_func = self.tools_map[tool_name]
-                            try:
-                                tool_output = await tool_func.ainvoke(args)
-                            except Exception as te:
-                                tool_output = f"Error: {te}"
+                            session_id = getattr(self, "current_session_id", "default_session")
+
+                            # 1. Log tool/call event in SessionEventLog
+                            session_event_log.append_event(
+                                session_id,
+                                "tool/call",
+                                {"tool_name": tool_name, "args": args, "call_id": tool_call_id},
+                            )
+
+                            # 2. Waterfall pre_execute hook (Security policy & validation)
+                            waterfall_ctx = {"session_id": session_id, "call_id": tool_call_id}
+                            pre_res = await waterfall_pipeline.run_pre_execute(tool_name, args, waterfall_ctx)
+
+                            if not pre_res.get("allow", True):
+                                tool_output = f"Execution Blocked by Security Policy: {pre_res.get('reason', 'Security Policy Rejection')}"
+                            else:
+                                try:
+                                    tool_output = await tool_func.ainvoke(args)
+                                except Exception as te:
+                                    tool_output = f"Error: {te}"
 
                             # Self-Improvement Error Detector Hook
                             error_patterns = [
@@ -1701,6 +1724,18 @@ A command error was detected. Consider logging this to .learnings/ERRORS.md if:
 Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 </error-detected>"""
                                 output_str += error_hook
+
+                            # 3. Waterfall post_execute hook (SpillStore automatic offload & trimming)
+                            output_str = await waterfall_pipeline.run_post_execute(
+                                tool_name, args, output_str, waterfall_ctx
+                            )
+
+                            # 4. Log tool/result event in SessionEventLog
+                            session_event_log.append_event(
+                                session_id,
+                                "tool/result",
+                                {"tool_name": tool_name, "content": output_str[:1000], "call_id": tool_call_id},
+                            )
 
                             messages.append(
                                 ToolMessage(
