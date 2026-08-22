@@ -28,7 +28,7 @@ class NextGenMemoryClient:
         self.redis_pass = os.getenv("REDIS_PASSWORD", "MemoryRedis2026")
 
         self.mongo_uri = os.getenv("MONGO_URI", "mongodb://admin:MemoryMongo2026@localhost:27017")
-        self.neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+        self.neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:17687")
         self.neo4j_pass = os.getenv("NEO4J_PASSWORD", "MemoryGraph2026")
         self.qdrant_host = os.getenv("QDRANT_HOST", "localhost")
         self.qdrant_port = int(os.getenv("QDRANT_PORT", "16333"))

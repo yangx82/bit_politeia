@@ -46,7 +46,7 @@ def init_neo4j():
     print("[3/5] Initializing Neo4j L4 Temporal Knowledge Graph...")
     try:
         from neo4j import GraphDatabase
-        neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+        neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:17687")
         neo4j_user = os.getenv("NEO4J_USER", "neo4j")
         neo4j_pass = os.getenv("NEO4J_PASSWORD", "MemoryGraph2026")
         

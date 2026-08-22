@@ -11,7 +11,8 @@ echo "=== [Step 3] 等待数据库服务健康就绪 (Healthcheck Loop) ==="
 MAX_RETRIES=30
 RETRY=0
 
-until (docker exec agent-memory-redis redis-cli -a "${REDIS_PASSWORD:-MemoryRedis2026}" ping 2>/dev/null | grep -q "PONG" && curl -s -o /dev/null -w "%{http_code}" http://localhost:7474 | grep -q "200") || [ $RETRY -eq $MAX_RETRIES ]; do
+NEO4J_PORT_VAL=${NEO4J_HTTP_PORT:-17474}
+until (docker exec agent-memory-redis redis-cli -a "${REDIS_PASSWORD:-MemoryRedis2026}" ping 2>/dev/null | grep -q "PONG" && curl -s -o /dev/null -w "%{http_code}" http://localhost:${NEO4J_PORT_VAL} | grep -q "200") || [ $RETRY -eq $MAX_RETRIES ]; do
     echo "等待数据库基础设施全服务就绪中... ($((RETRY+1))/$MAX_RETRIES)"
     sleep 2
     RETRY=$((RETRY+1))
@@ -42,14 +43,15 @@ fi
 # 2. 验证 Qdrant
 QDRANT_PORT_VAL=${QDRANT_PORT:-16333}
 QDRANT_STATUS=$(curl -s http://localhost:${QDRANT_PORT_VAL}/healthz || echo "FAIL")
-if [[ "$QDRANT_STATUS" == *"ok"* ]]; then
+if [[ "$QDRANT_STATUS" == *"passed"* ]] || [[ "$QDRANT_STATUS" == *"ok"* ]] || [[ "$QDRANT_STATUS" == *"healthz"* ]]; then
     echo "  [PASS] Qdrant L4 向量记忆服务正常"
 else
     echo "  [WARN] Qdrant 响应异常"
 fi
 
 # 3. 验证 Neo4j
-NEO4J_HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:7474 || echo "000")
+NEO4J_PORT_VAL=${NEO4J_HTTP_PORT:-17474}
+NEO4J_HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${NEO4J_PORT_VAL} || echo "000")
 if [ "$NEO4J_HTTP" == "200" ]; then
     echo "  [PASS] Neo4j L4 时序图谱服务正常"
 else
