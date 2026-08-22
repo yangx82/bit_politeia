@@ -21,6 +21,22 @@ class EventDAGResolver:
     Resolves causal DAG order for asynchronous multi-agent group messages.
     """
 
+    def __init__(self):
+        self._event_cache: dict[str, SignedMessage] = {}
+
+    def record_event(self, message: SignedMessage):
+        """Records an event into the live DAG cache."""
+        self._event_cache[message.message_id] = message
+        # Keep cache bounded
+        if len(self._event_cache) > 500:
+            oldest_key = next(iter(self._event_cache))
+            self._event_cache.pop(oldest_key, None)
+
+    def get_all_events(self, limit: int = 50) -> list[SignedMessage]:
+        """Returns the most recent events recorded in the DAG cache."""
+        events = list(self._event_cache.values())
+        return events[-limit:]
+
     @staticmethod
     def linearize_messages(messages: list[SignedMessage]) -> list[SignedMessage]:
         """

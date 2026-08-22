@@ -90,6 +90,14 @@ class EvolutionService:
         logger.info(f"[EvolutionService] Created {aip_id}: '{title}'")
         return aip
 
+    def list_aips(self) -> list[dict[str, Any]]:
+        """Returns all persisted AIPs as dictionaries."""
+        return [aip.to_dict() for aip in self.aips.values()]
+
+    def get_aip(self, aip_id: str) -> AIPProposal | None:
+        """Retrieves an AIP by ID."""
+        return self.aips.get(aip_id)
+
     async def auto_explore_and_propose(self, llm_client: Any = None) -> AIPProposal | None:
         """Automatically explores current codebase bottlenecks and research field to synthesize a new AIP proposal draft."""
         if not llm_client:
