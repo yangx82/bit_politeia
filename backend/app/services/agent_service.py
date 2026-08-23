@@ -2497,13 +2497,37 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     draft_aips = [new_aip]
 
             # Audit active draft AIPs
+            processed_reports = []
             for aip in draft_aips:
                 logger.info(f"[EvolutionWatcher] Auditing draft proposal {aip.aip_id}...")
                 vote = await evolution_service.audit_aip(aip.aip_id, llm_client=self.llm)
+                sandbox_status = "未执行"
                 if vote.approval:
-                    await evolution_service.verify_in_sandbox(aip.aip_id)
+                    sb_res = await evolution_service.verify_in_sandbox(aip.aip_id)
+                    sandbox_status = "通过 (Passed ✅)" if sb_res.get("success") else "失败 (Failed ❌)"
                     p2p_service = getattr(self, "p2p_service", None)
                     await evolution_service.broadcast_aip(aip.aip_id, p2p_service=p2p_service)
+
+                target_str = ", ".join(aip.target_files) if aip.target_files else "系统核心架构"
+                report_item = (
+                    f"### 🧬 自主进化提案: {aip.aip_id} - {aip.title}\n"
+                    f"- **改进说明**: {aip.description}\n"
+                    f"- **目标模块**: `{target_str}`\n"
+                    f"- **安全审计**: {'✅ 批准 (Approved)' if vote.approval else '❌ 驳回 (Rejected)'} ({vote.reason})\n"
+                    f"- **沙盒验证**: {sandbox_status}\n"
+                    f"- **当前状态**: `{aip.status}`"
+                )
+                processed_reports.append(report_item)
+
+            if processed_reports:
+                full_report = (
+                    "## 🤖 Bit Politeia 智能体自主进化演化报告\n\n"
+                    + "\n\n---\n\n".join(processed_reports)
+                    + "\n\n> *已自动将通过审计与沙盒测试的提案推向去中心化 P2P 社区进行全网共识裁决。*"
+                )
+                if self.reporter:
+                    await self.reporter.send_report_to_resident(full_report)
+                logger.info(f"[EvolutionWatcher] Dispatched self-evolution report for {len(processed_reports)} AIP(s) to resident.")
         except Exception as e:
             logger.error(f"[EvolutionWatcher] Error in self-evolution cycle: {e}")
 
