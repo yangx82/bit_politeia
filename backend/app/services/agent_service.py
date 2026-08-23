@@ -4976,6 +4976,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
             for group_id in my_groups:
                 try:
+                    # Check if group is in steady-state idle backoff window
+                    if hasattr(p2p_service.network_manager, "should_sync_group"):
+                        if not p2p_service.network_manager.should_sync_group(group_id):
+                            logger.debug(f"[GossipSync] Group {group_id[:8]} in steady state backoff. Skipping sync.")
+                            continue
+
                     # Request state sync from this group
                     await p2p_service.network_manager.request_state_sync(group_id)
                     # Small delay between groups to avoid flooding

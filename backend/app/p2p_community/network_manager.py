@@ -43,6 +43,8 @@ class NetworkManager:
         self.tunnel: TunnelClient | None = None
         # Exponential backoff tracking for unreachable/offline nodes: node_id -> {fail_count, backoff_sec, next_retry_time, last_failed_at}
         self._node_backoff: dict[str, dict[str, Any]] = {}
+        # Idle adaptive sync backoff for steady-state groups with no new messages: group_id -> {idle_count, current_interval_sec, next_sync_time, last_active_at}
+        self._group_sync_backoff: dict[str, dict[str, Any]] = {}
 
     def is_node_in_backoff(self, node_id: str) -> tuple[bool, float]:
         """
@@ -93,6 +95,59 @@ class NetworkManager:
         if node_id and node_id in self._node_backoff:
             self._node_backoff.pop(node_id, None)
             logger.info(f"[BackoffThrottling] Peer {node_id[:12]} recovered. Offline backoff cleared.")
+
+    def should_sync_group(self, group_id: str) -> bool:
+        """
+        Determines if an online group is due for a state synchronization check.
+        Returns False if group is currently within its idle-adaptive backoff window.
+        """
+        import time
+
+        if not group_id or group_id not in self._group_sync_backoff:
+            return True
+        info = self._group_sync_backoff[group_id]
+        return time.time() >= info.get("next_sync_time", 0.0)
+
+    def record_group_sync_idle(
+        self, group_id: str, base_sec: float = 180.0, max_sec: float = 3600.0
+    ) -> float:
+        """
+        Records that an online group sync completed with zero new messages or diffs (steady state).
+        Progressively increases next sync interval: 180s (3m) -> 360s (6m) -> 720s (12m) -> ... -> 3600s (60m).
+        """
+        import time
+
+        if not group_id:
+            return base_sec
+        info = self._group_sync_backoff.get(
+            group_id,
+            {"idle_count": 0, "current_interval_sec": base_sec},
+        )
+        idle_count = info.get("idle_count", 0) + 1
+        # Exponential backoff on idle steady state: 180 * 2^(idle_count - 1), capped at 3600s (60m)
+        interval_sec = min(base_sec * (2 ** (idle_count - 1)), max_sec)
+        next_sync = time.time() + interval_sec
+        self._group_sync_backoff[group_id] = {
+            "idle_count": idle_count,
+            "current_interval_sec": interval_sec,
+            "next_sync_time": next_sync,
+            "last_synced_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._log_throttled(
+            "debug",
+            f"[IdleBackoff] Group {group_id[:8]} in steady state (idle round #{idle_count}). Next sync in {int(interval_sec)}s (max 60m).",
+            interval=60,
+        )
+        return interval_sec
+
+    def record_group_activity(self, group_id: str):
+        """
+        Immediately resets idle backoff upon detecting new messages, proposals, votes, or activity.
+        Restores real-time responsive sync.
+        """
+        if group_id and group_id in self._group_sync_backoff:
+            self._group_sync_backoff.pop(group_id, None)
+            logger.info(f"[IdleBackoff] Activity detected in group {group_id[:8]}. Idle sync backoff reset to baseline.")
 
     async def initialize(self, node_id: str | None = None):
         """Initialize network state from bootstrap server."""
@@ -1020,6 +1075,12 @@ class NetworkManager:
                 await asyncio.sleep(0.1)  # Rate limit to avoid flooding
 
         logger.info(
-            f"[StateSync] Sync complete for {requester_id[:8]}...: "
+            f"[StateSync] Sync complete for {requester_id[:8]}... in group {group_id[:8]}: "
             f"synced={synced_count}, skipped={skipped_count}, integrity_mismatch={integrity_mismatch_count}"
         )
+
+        # Update Idle-Adaptive Sync Backoff
+        if synced_count == 0 and integrity_mismatch_count == 0:
+            self.record_group_sync_idle(group_id)
+        else:
+            self.record_group_activity(group_id)
