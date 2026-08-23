@@ -605,6 +605,17 @@ class NetworkManager:
         if len(self._route_cache) > 10000:
             self._route_cache = set(list(self._route_cache)[-5000:])
 
+        DURABLE_MESSAGE_TYPES = (
+            MessageType.DIRECT,
+            MessageType.GROUP,
+            MessageType.GOSSIP,
+            MessageType.PROPOSAL,
+            MessageType.VOTE,
+            MessageType.FILE,
+            MessageType.ELECTION,
+            MessageType.GROUP_CONFIG,
+        )
+
         # Helper to route to single node with fallback & offline mailbox
         async def send_to_node(node_id: str, msg: SignedMessage) -> bool:
             if node_id == self.local_node_id:
@@ -615,7 +626,7 @@ class NetworkManager:
             # 1. Backoff Check: Suppress direct/relay storming if node is in offline backoff window
             in_backoff, remaining = self.is_node_in_backoff(node_id)
             if in_backoff:
-                if not from_relay and msg.message_type not in (MessageType.HEARTBEAT, MessageType.RECEIPT):
+                if not from_relay and msg.message_type in DURABLE_MESSAGE_TYPES:
                     offline_mailbox.enqueue(node_id, msg)
                 return False
 
@@ -644,10 +655,11 @@ class NetworkManager:
             if delivered:
                 self.record_node_delivery_success(node_id)
             else:
-                if not from_relay and msg.message_type not in (MessageType.HEARTBEAT, MessageType.RECEIPT):
+                if not from_relay:
                     self.record_node_delivery_failure(node_id)
-                    offline_mailbox.enqueue(node_id, msg)
-                    logger.info(f"[Network] Peer {node_id[:12]} unreachable. Message {msg.message_id} buffered in Offline Mailbox.")
+                    if msg.message_type in DURABLE_MESSAGE_TYPES:
+                        offline_mailbox.enqueue(node_id, msg)
+                        logger.info(f"[Network] Peer {node_id[:12]} unreachable. Message {msg.message_id} buffered in Offline Mailbox.")
 
             return delivered
 
