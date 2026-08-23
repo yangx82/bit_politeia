@@ -41,6 +41,58 @@ class NetworkManager:
         self.http_client = httpx.AsyncClient(timeout=3.0, trust_env=False) if httpx else None
         self._last_logs: dict[str, float] = {}  # For deduplication: message -> last_time
         self.tunnel: TunnelClient | None = None
+        # Exponential backoff tracking for unreachable/offline nodes: node_id -> {fail_count, backoff_sec, next_retry_time, last_failed_at}
+        self._node_backoff: dict[str, dict[str, Any]] = {}
+
+    def is_node_in_backoff(self, node_id: str) -> tuple[bool, float]:
+        """
+        Checks if node is currently throttled in offline exponential backoff window.
+        Returns (in_backoff: bool, remaining_sec: float).
+        """
+        import time
+
+        if not node_id or node_id not in self._node_backoff:
+            return False, 0.0
+        info = self._node_backoff[node_id]
+        remaining = info.get("next_retry_time", 0.0) - time.time()
+        if remaining > 0:
+            return True, remaining
+        return False, 0.0
+
+    def record_node_delivery_failure(
+        self, node_id: str, base_sec: float = 60.0, max_sec: float = 3600.0
+    ) -> float:
+        """
+        Records a delivery failure to node_id and exponentially updates retry backoff up to 60 minutes.
+        Progression: 60s -> 120s -> 240s -> 480s -> 960s -> 1920s -> 3600s (max 60m).
+        """
+        import time
+
+        if not node_id:
+            return 0.0
+        info = self._node_backoff.get(node_id, {"fail_count": 0, "backoff_sec": base_sec})
+        fail_count = info.get("fail_count", 0) + 1
+        # Exponential: 60 * 2^(fail_count - 1), capped at max_sec (3600s = 60m)
+        backoff_sec = min(base_sec * (2 ** (fail_count - 1)), max_sec)
+        next_retry = time.time() + backoff_sec
+        self._node_backoff[node_id] = {
+            "fail_count": fail_count,
+            "backoff_sec": backoff_sec,
+            "next_retry_time": next_retry,
+            "last_failed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._log_throttled(
+            "info",
+            f"[BackoffThrottling] Peer {node_id[:12]} marked offline (fail #{fail_count}). Suppressing retries for {int(backoff_sec)}s (max 60m).",
+            interval=30,
+        )
+        return backoff_sec
+
+    def record_node_delivery_success(self, node_id: str):
+        """Clears offline backoff state upon successful node communication."""
+        if node_id and node_id in self._node_backoff:
+            self._node_backoff.pop(node_id, None)
+            logger.info(f"[BackoffThrottling] Peer {node_id[:12]} recovered. Offline backoff cleared.")
 
     async def initialize(self, node_id: str | None = None):
         """Initialize network state from bootstrap server."""
@@ -288,13 +340,14 @@ class NetworkManager:
             # Check for system messages first (these are not signed by peers but by the relay server itself)
             msg_type = message_data.get("type", message_data.get("message_type"))
             if msg_type == "SYSTEM_ERROR":
+                recip_id = message_data.get("recipient_id")
+                if recip_id:
+                    self.record_node_delivery_failure(recip_id)
                 self._log_throttled(
-                    "warning",
-                    f"[Network] Relay System Error: {message_data.get('content')} (Target: {message_data.get('recipient_id')})",
+                    "info",
+                    f"[Network] Relay Delivery Report: Target node {str(recip_id)[:12]} unreachable via relay. Exponential backoff active.",
+                    interval=60,
                 )
-                # Propagate to local node for handling
-                if self.local_node_id in self.nodes:
-                    await self.nodes[self.local_node_id].receive_message(message_data)
                 return
 
             # Basic Validation before parsing
@@ -504,6 +557,13 @@ class NetworkManager:
                     await self.nodes[self.local_node_id].receive_message(msg)
                 return True
 
+            # 1. Backoff Check: Suppress direct/relay storming if node is in offline backoff window
+            in_backoff, remaining = self.is_node_in_backoff(node_id)
+            if in_backoff:
+                if not from_relay and msg.message_type not in (MessageType.HEARTBEAT, MessageType.RECEIPT):
+                    offline_mailbox.enqueue(node_id, msg)
+                return False
+
             delivered = False
             if node_id in self.nodes:
                 target = self.nodes[node_id]
@@ -526,10 +586,13 @@ class NetworkManager:
                 if not from_relay:
                     delivered = await self._send_via_relay(node_id, msg)
 
-            if not delivered and not from_relay and msg.message_type not in (MessageType.HEARTBEAT, MessageType.RECEIPT):
-                # 3. IM Enhancement: Offline Mailbox enqueue for failed deliveries
-                offline_mailbox.enqueue(node_id, msg)
-                logger.info(f"[Network] Peer {node_id[:12]} unreachable. Message {msg.message_id} buffered in Offline Mailbox.")
+            if delivered:
+                self.record_node_delivery_success(node_id)
+            else:
+                if not from_relay and msg.message_type not in (MessageType.HEARTBEAT, MessageType.RECEIPT):
+                    self.record_node_delivery_failure(node_id)
+                    offline_mailbox.enqueue(node_id, msg)
+                    logger.info(f"[Network] Peer {node_id[:12]} unreachable. Message {msg.message_id} buffered in Offline Mailbox.")
 
             return delivered
 

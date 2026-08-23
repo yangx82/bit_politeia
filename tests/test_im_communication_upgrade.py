@@ -234,3 +234,46 @@ def test_event_dag_causal_topological_sort():
     assert len(formatted) == 4
     assert formatted[0]["content"] == "Initiating AIP proposal"
     assert formatted[3]["content"] == "Agreed, all tests pass"
+
+
+def test_offline_backoff_throttling():
+    """Test exponential backoff for unreachable nodes up to 3600s (60 min)."""
+    from unittest.mock import MagicMock
+    from app.p2p_community.message_protocol import MessageProtocol
+    from app.p2p_community.network_manager import NetworkManager
+
+    nm = NetworkManager(message_protocol=MessageProtocol(crypto_service=MagicMock()))
+    peer_id = "test_offline_peer_001"
+
+    # Initially not in backoff
+    in_backoff, _ = nm.is_node_in_backoff(peer_id)
+    assert in_backoff is False
+
+    # 1st Failure -> 60s
+    b1 = nm.record_node_delivery_failure(peer_id)
+    assert b1 == 60.0
+    in_backoff, rem = nm.is_node_in_backoff(peer_id)
+    assert in_backoff is True
+    assert 0 < rem <= 60.0
+
+    # 2nd Failure -> 120s
+    b2 = nm.record_node_delivery_failure(peer_id)
+    assert b2 == 120.0
+
+    # 3rd Failure -> 240s
+    b3 = nm.record_node_delivery_failure(peer_id)
+    assert b3 == 240.0
+
+    # 4th Failure -> 480s
+    b4 = nm.record_node_delivery_failure(peer_id)
+    assert b4 == 480.0
+
+    # 7th Failure -> 3600s (capped at 60 minutes)
+    for _ in range(3):
+        b_cap = nm.record_node_delivery_failure(peer_id)
+    assert b_cap == 3600.0
+
+    # Test recovery clears backoff
+    nm.record_node_delivery_success(peer_id)
+    in_backoff, _ = nm.is_node_in_backoff(peer_id)
+    assert in_backoff is False

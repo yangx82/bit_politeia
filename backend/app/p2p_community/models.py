@@ -234,6 +234,11 @@ class Node:
                 if len(self.recent_inbox_ids) > 2000:
                     self.recent_inbox_ids.clear()
 
+        # Check for relay/system control messages
+        if msg_data.get("type") == "SYSTEM_ERROR" or msg_data.get("error_code") == "DELIVERY_FAILED":
+            logger.debug(f"[SystemNotice] Suppressed relay system error message: {msg_data.get('content')}")
+            return
+
         logger.info(
             f"[{msg_data.get('sender_id', 'unknown')}] <<< RECEIVED via {msg_data.get('message_type', 'P2P')}: {str(msg_data.get('content'))[:100]}..."
         )
