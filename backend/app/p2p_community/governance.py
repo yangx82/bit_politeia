@@ -601,6 +601,16 @@ class GovernanceManager:
 
         return proposal_data
 
+    def get_election_for_proposal(self, proposal_id: str) -> Election | None:
+        """Finds the active or finished election associated with a proposal_id."""
+        for e in self.active_elections.values():
+            if e.proposal_id == proposal_id:
+                return e
+        for e in self.finished_elections.values():
+            if e.proposal_id == proposal_id:
+                return e
+        return None
+
     def initiate_election(
         self, group_id: str, candidates: list[str], duration_minutes: int = 60
     ) -> Election:
@@ -837,21 +847,40 @@ class GovernanceManager:
                     logger.warning("Governance P2P: Malformed proposal message.")
                     return False
 
+                # Check if proposal is already known with identical state
+                existing_proposal = self.proposals.get(proposal.proposal_id)
+                existing_election = self.get_election_for_proposal(proposal.proposal_id)
+
+                is_identical = False
+                if existing_proposal and existing_proposal.status == proposal.status:
+                    if not election_data and not existing_election:
+                        is_identical = True
+                    elif election_data and existing_election:
+                        req_votes = len(election_data.get("votes", {}))
+                        local_votes = len(existing_election.votes)
+                        if req_votes == local_votes and election_data.get("status") == existing_election.status:
+                            is_identical = True
+
+                if is_identical:
+                    logger.debug(f"Governance P2P: Proposal {proposal.proposal_id[:8]} already identical locally. Skipping.")
+                    return True
+
                 # Ingest Proposal
-                proposal = Proposal.from_dict(proposal_data)
                 self.proposals[proposal.proposal_id] = proposal
 
-                # Ingest Election if attached and not already known
+                # Ingest Election if attached
                 if election_data and isinstance(election_data, dict):
                     election_id = election_data.get("election_id")
-                    if election_id and election_id in self.active_elections:
-                        logger.debug(f"Governance P2P: Election {election_id} already exists locally.")
-                    elif election_id:
+                    if election_id:
                         election = Election.from_dict(election_data)
-                        self.active_elections[election.election_id] = election
+                        if election.status == "completed" or getattr(election, "is_finished", False):
+                            self.finished_elections[election.election_id] = election
+                            self.active_elections.pop(election.election_id, None)
+                        else:
+                            self.active_elections[election.election_id] = election
 
                 logger.info(
-                    f"Governance P2P: Successfully ingested remote proposal {proposal.proposal_id}"
+                    f"Governance P2P: Successfully ingested remote proposal {proposal.proposal_id[:8]}"
                 )
                 self.save_state()
                 return True

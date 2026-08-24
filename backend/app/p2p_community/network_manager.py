@@ -936,7 +936,7 @@ class NetworkManager:
                 gm = agent_service.governance_manager
                 for pid, prop in gm.proposals.items():
                     if prop.group_id == group_id:
-                        election = gm.active_elections.get(pid)
+                        election = gm.get_election_for_proposal(pid) if hasattr(gm, "get_election_for_proposal") else gm.active_elections.get(pid)
                         vote_count = len(election.votes) if election else 0
                         local_proposal_data = prop.to_dict()
                         local_election_data = election.to_dict() if election else None
@@ -1024,7 +1024,7 @@ class NetworkManager:
         for proposal in gm.proposals.values():
             if proposal.group_id == group_id:
                 pid = proposal.proposal_id
-                election = gm.active_elections.get(pid)
+                election = gm.get_election_for_proposal(pid) if hasattr(gm, "get_election_for_proposal") else gm.active_elections.get(pid)
                 local_vote_count = len(election.votes) if election else 0
 
                 # Prepare local proposal data
