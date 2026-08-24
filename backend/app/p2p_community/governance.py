@@ -847,6 +847,9 @@ class GovernanceManager:
                     logger.warning("Governance P2P: Malformed proposal message.")
                     return False
 
+                # Ingest Proposal
+                proposal = Proposal.from_dict(proposal_data)
+
                 # Check if proposal is already known with identical state
                 existing_proposal = self.proposals.get(proposal.proposal_id)
                 existing_election = self.get_election_for_proposal(proposal.proposal_id)
@@ -865,7 +868,6 @@ class GovernanceManager:
                     logger.debug(f"Governance P2P: Proposal {proposal.proposal_id[:8]} already identical locally. Skipping.")
                     return True
 
-                # Ingest Proposal
                 self.proposals[proposal.proposal_id] = proposal
 
                 # Ingest Election if attached
