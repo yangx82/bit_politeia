@@ -1021,70 +1021,76 @@ class NetworkManager:
         integrity_mismatch_count = 0
 
         # Get proposals for this group
-        for proposal in gm.proposals.values():
-            if proposal.group_id == group_id:
-                pid = proposal.proposal_id
-                election = gm.get_election_for_proposal(pid) if hasattr(gm, "get_election_for_proposal") else gm.active_elections.get(pid)
-                local_vote_count = len(election.votes) if election else 0
+        group_proposals = [p for p in gm.proposals.values() if p.group_id == group_id]
+        if not requester_known:
+            # If requester did not provide known_proposals (legacy or fresh sync probe), prioritize active ones and top 15 recent
+            active_props = [p for p in group_proposals if p.status in ("voting", "discussed")]
+            other_props = [p for p in group_proposals if p.status not in ("voting", "discussed")]
+            group_proposals = (active_props + other_props)[:15]
 
-                # Prepare local proposal data
-                local_proposal_data = proposal.to_dict()
-                local_election_data = election.to_dict() if election else None
-                local_data_hash = compute_data_hash({
-                    "proposal": local_proposal_data,
-                    "election": local_election_data,
-                })
+        for proposal in group_proposals:
+            pid = proposal.proposal_id
+            election = gm.get_election_for_proposal(pid) if hasattr(gm, "get_election_for_proposal") else gm.active_elections.get(pid)
+            local_vote_count = len(election.votes) if election else 0
 
-                # Check if requester already has this proposal
-                if pid in requester_known:
-                    req_state = requester_known[pid]
-                    
-                    # Check basic status match
-                    if (
-                        req_state.get("status") == proposal.status
-                        and req_state.get("vote_count") == local_vote_count
-                    ):
-                        # Check hash-based integrity verification if provided
-                        remote_hash = req_state.get("data_hash")
-                        if remote_hash:
-                            if remote_hash == local_data_hash:
-                                # State is identical and verified, skip sending
-                                skipped_count += 1
-                                continue
-                            else:
-                                # Hash mismatch - data integrity issue detected!
-                                integrity_mismatch_count += 1
-                                logger.warning(
-                                    f"[StateSync] Integrity mismatch for proposal {pid[:8]}... "
-                                    f"(local: {local_data_hash[:8]}, remote: {remote_hash[:8]})"
-                                )
-                        else:
-                            # No hash provided, assume identical (backward compatibility)
+            # Prepare local proposal data
+            local_proposal_data = proposal.to_dict()
+            local_election_data = election.to_dict() if election else None
+            local_data_hash = compute_data_hash({
+                "proposal": local_proposal_data,
+                "election": local_election_data,
+            })
+
+            # Check if requester already has this proposal
+            if pid in requester_known:
+                req_state = requester_known[pid]
+                
+                # Check basic status match
+                if (
+                    req_state.get("status") == proposal.status
+                    and req_state.get("vote_count") == local_vote_count
+                ):
+                    # Check hash-based integrity verification if provided
+                    remote_hash = req_state.get("data_hash")
+                    if remote_hash:
+                        if remote_hash == local_data_hash:
+                            # State is identical and verified, skip sending
                             skipped_count += 1
                             continue
+                        else:
+                            # Hash mismatch - data integrity issue detected!
+                            integrity_mismatch_count += 1
+                            logger.warning(
+                                f"[StateSync] Integrity mismatch for proposal {pid[:8]}... "
+                                f"(local: {local_data_hash[:8]}, remote: {remote_hash[:8]})"
+                            )
+                    else:
+                        # No hash provided, assume identical (backward compatibility)
+                        skipped_count += 1
+                        continue
 
-                # Prepare proposal data with hash for integrity verification
-                proposal_data = {
-                    "proposal": local_proposal_data,
-                    "election": local_election_data,
-                    "data_hash": local_data_hash,  # Include hash for verification
-                }
-                
-                # Create a direct SYNC message to the requester instead of broadcasting as a new proposal
-                sync_msg = self.message_protocol.create_message(
-                    sender_id=self.local_node_id,
-                    recipient_id=requester_id,
-                    message_type=MessageType.SYNC,
-                    content={"sync_type": "proposal_sync", **proposal_data},
-                )
-                await self.route_message(sync_msg, gossip_forward=False)
-                synced_count += 1
-                
-                logger.debug(
-                    f"[StateSync] Synced proposal {proposal.proposal_id[:8]}... to {requester_id[:8]}... "
-                    f"(hash: {local_data_hash[:8]})"
-                )
-                await asyncio.sleep(0.1)  # Rate limit to avoid flooding
+            # Prepare proposal data with hash for integrity verification
+            proposal_data = {
+                "proposal": local_proposal_data,
+                "election": local_election_data,
+                "data_hash": local_data_hash,  # Include hash for verification
+            }
+            
+            # Create a direct SYNC message to the requester instead of broadcasting as a new proposal
+            sync_msg = self.message_protocol.create_message(
+                sender_id=self.local_node_id,
+                recipient_id=requester_id,
+                message_type=MessageType.SYNC,
+                content={"sync_type": "proposal_sync", **proposal_data},
+            )
+            await self.route_message(sync_msg, gossip_forward=False)
+            synced_count += 1
+            
+            logger.debug(
+                f"[StateSync] Synced proposal {proposal.proposal_id[:8]}... to {requester_id[:8]}... "
+                f"(hash: {local_data_hash[:8]})"
+            )
+            await asyncio.sleep(0.1)  # Rate limit to avoid flooding
 
         logger.info(
             f"[StateSync] Sync complete for {requester_id[:8]}... in group {group_id[:8]}: "

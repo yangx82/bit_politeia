@@ -239,9 +239,15 @@ class Node:
             logger.debug(f"[SystemNotice] Suppressed relay system error message: {msg_data.get('content')}")
             return
 
-        logger.info(
-            f"[{msg_data.get('sender_id', 'unknown')}] <<< RECEIVED via {msg_data.get('message_type', 'P2P')}: {str(msg_data.get('content'))[:100]}..."
-        )
+        msg_type_str = str(msg_data.get("message_type", "P2P")).lower()
+        if msg_type_str in ("sync", "receipt", "heartbeat", "sync_pull", "sync_resp"):
+            logger.debug(
+                f"[{msg_data.get('sender_id', 'unknown')[:12]}] <<< RECEIVED via {msg_type_str}: {str(msg_data.get('content'))[:100]}..."
+            )
+        else:
+            logger.info(
+                f"[{msg_data.get('sender_id', 'unknown')}] <<< RECEIVED via {msg_type_str}: {str(msg_data.get('content'))[:100]}..."
+            )
 
         # 4. Allow external handler to intercept (e.g., for WebRTC Signaling)
         if self.message_handler:
