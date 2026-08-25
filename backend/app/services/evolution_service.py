@@ -12,17 +12,53 @@ from app.p2p_community.governance import AIPProposal, ElectionType, Vote
 logger = logging.getLogger(__name__)
 
 
+def _extract_and_parse_json(text: str) -> dict:
+    """Robustly extracts and parses JSON from arbitrary LLM outputs."""
+    import re
+    if not text:
+        return {}
+
+    cleaned = str(text).strip()
+
+    # 1. Strip reasoning / think tags (e.g. <think>...</think>)
+    if "<think>" in cleaned and "</think>" in cleaned:
+        cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
+    elif "</think>" in cleaned:
+        cleaned = cleaned.split("</think>")[-1].strip()
+
+    # 2. Extract markdown code block if present
+    json_block_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
+    if json_block_match:
+        block_content = json_block_match.group(1).strip()
+        try:
+            return json.loads(block_content)
+        except Exception:
+            cleaned = block_content
+
+    # 3. Extract outermost curly braces { ... }
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        json_candidate = cleaned[first_brace : last_brace + 1]
+        try:
+            return json.loads(json_candidate)
+        except Exception:
+            pass
+
+    # 4. Direct parse attempt
+    try:
+        return json.loads(cleaned)
+    except Exception as e:
+        logger.warning(f"[EvolutionService] Failed to parse LLM JSON response: {e}. Raw content: {text[:200]}")
+        return {}
+
+
 async def _invoke_llm_json(llm_client: Any, prompt: str) -> dict:
-    """Helper to invoke a LangChain ChatOpenAI client and parse JSON response."""
+    """Helper to invoke a LangChain Chat client and robustly parse JSON response."""
     from langchain_core.messages import HumanMessage
     response = await llm_client.ainvoke([HumanMessage(content=prompt)])
-    content = response.content.strip()
-    # Clean potential markdown fences
-    if "```json" in content:
-        content = content.split("```json")[1].split("```")[0].strip()
-    elif "```" in content:
-        content = content.split("```")[1].split("```")[0].strip()
-    return json.loads(content)
+    content = response.content if hasattr(response, "content") else str(response)
+    return _extract_and_parse_json(content)
 
 
 class EvolutionService:

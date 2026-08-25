@@ -70,3 +70,36 @@ async def test_evolution_service_sandbox_verification(tmp_path):
     results = await service.verify_in_sandbox(aip.aip_id)
     assert "success" in results
     assert aip.status in ["sandbox_passed", "failed"]
+
+
+@pytest.mark.anyio
+async def test_evolution_service_auto_exploration_reasoning_models(tmp_path):
+    from unittest.mock import MagicMock, AsyncMock
+
+    data_dir = str(tmp_path / "data")
+    service = EvolutionService(data_dir=data_dir)
+
+    mock_llm = MagicMock()
+    mock_response = MagicMock()
+    # Output with DeepSeek reasoning <think> tags, preamble, and markdown fences
+    mock_response.content = """<think>
+We need to optimize the message router and memory system.
+I will suggest an AIP for Adaptive Memory Cache.
+</think>
+Here is the proposed AIP:
+```json
+{
+  "title": "Adaptive Memory Cache Optimization",
+  "description": "Introduces LRU caching for hot vector embeddings in memory retrieval.",
+  "target_files": ["backend/app/agent/memory.py"],
+  "research_sources": ["https://arxiv.org/abs/2408.12345"]
+}
+```
+"""
+    mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+
+    aip = await service.auto_explore_and_propose(llm_client=mock_llm)
+    assert aip is not None
+    assert aip.title == "Adaptive Memory Cache Optimization"
+    assert aip.target_files == ["backend/app/agent/memory.py"]
+    assert "https://arxiv.org/abs/2408.12345" in aip.research_sources
