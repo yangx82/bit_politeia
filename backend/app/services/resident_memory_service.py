@@ -589,19 +589,39 @@ class ResidentReporter:
             return "I completed my daily memory consolidation, but I encountered an error while drafting the summary report."
 
     async def send_report_to_resident(self, report_text: str):
-        """Send the formatted report to the resident via the message bus."""
+        """Send the formatted report to the resident via the message bus and persist to history."""
+        import uuid
+        from datetime import datetime, timezone
         from ..bus.events import OutboundMessage
+        from ..schemas.domain import Message
 
-        # Publish as a 'message' so it's visible in the main feed.
+        now = datetime.now(timezone.utc)
+        msg_id = str(uuid.uuid4())
+
+        # 1. Append to in-memory history and persist to disk so frontend displays it on page refresh/open
+        if hasattr(self.agent, "history"):
+            self.agent.history.append(
+                Message(
+                    id=msg_id,
+                    content=report_text,
+                    sender="agent",
+                    timestamp=now,
+                    session_id="resident",
+                )
+            )
+            if hasattr(self.agent, "_save_history"):
+                self.agent._save_history()
+
+        # 2. Publish as a 'message' so it's delivered in real-time if a WebSocket is active
         await self.message_bus.publish_outbound(
             OutboundMessage(
                 channel="gateway", session_id="resident", content=report_text, type="message"
             )
         )
 
-        # Log to resident memory as well
+        # 3. Log to resident memory as well
         self.agent.resident_memory.log_interaction(
-            "agent_report", report_text, "report", session_id="resident", status="sent"
+            "agent_report", report_text, "report", session_id="resident", timestamp=now, msg_id=msg_id, status="sent"
         )
         logger.info("Sent daily community report to resident.")
 
