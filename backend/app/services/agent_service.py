@@ -2096,14 +2096,216 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 return {"success": True, "status": "idle_routed", "message": "智能体当前处于空闲状态，打断指令已作为新对话接收"}
             return {"success": False, "status": "no_active_session", "message": "当前会话没有正在运行中的任务"}
 
-    # 2. Community Contact (P2P Listener)
-    async def process_network_inbox(self, verbose: bool = False):
-        """Poll P2P inbox and process messages."""
-        if verbose:
-            logger.info("Checking P2P inbox...")
-
+    async def _group_inbox_by_session(self, raw_items: list[dict]) -> dict[str, list[dict]]:
+        """
+        Groups and normalizes incoming inbox messages by effective_session_id.
+        Handles deduplication, self-filtering, file decoding, and timestamp normalization.
+        """
         import base64
         import os
+
+        sessions: dict[str, list[dict]] = {}
+
+        for msg in raw_items:
+            if not isinstance(msg, dict):
+                logger.warning(f"Malformed P2P message discarded (not a dict): {msg}")
+                continue
+
+            msg_type = msg.get("message_type", msg.get("type"))
+            if msg_type == "SYSTEM_ERROR":
+                continue
+
+            m_id = msg.get("message_id")
+            if m_id:
+                if m_id in self.processed_message_ids:
+                    continue
+                self.processed_message_ids.add(m_id)
+
+            sender_id = self._normalize_session_id(msg.get("sender_id")) or "unknown_sender"
+            if p2p_service.local_node and sender_id == p2p_service.local_node.node_id:
+                logger.debug(f"Skipping self-received P2P message {m_id}")
+                continue
+
+            # Proactively initiate WebRTC warmup
+            if sender_id and sender_id != "unknown_sender":
+                try:
+                    asyncio.create_task(p2p_service.warmup_webrtc(sender_id))
+                except Exception:
+                    pass
+
+            raw_type = str(msg.get("message_type", msg.get("type", ""))).lower()
+            content = msg.get("content")
+
+            package_type = "chat"
+            if raw_type == "file" or (isinstance(content, dict) and "data" in content):
+                package_type = "file"
+            elif raw_type == "gossip":
+                package_type = "gossip"
+            elif raw_type == "system_error":
+                package_type = "error"
+
+            recipient_id = self._normalize_session_id(msg.get("recipient_id"))
+            recipient_type = "direct"
+            if raw_type == "group":
+                recipient_type = "group"
+            elif recipient_id and p2p_service.local_node:
+                if recipient_id in p2p_service.local_node.group_ids:
+                    recipient_type = "group"
+
+            effective_session_id = sender_id
+            if recipient_type == "group" and recipient_id:
+                effective_session_id = recipient_id
+            effective_session_id = self._normalize_session_id(effective_session_id) or "unknown_session"
+
+            text_content = str(content)
+            if isinstance(content, dict) and "text" in content:
+                text_content = content["text"]
+
+            if package_type == "file" and isinstance(content, dict) and "data" in content:
+                try:
+                    file_name = content.get("info", "downloaded_file")
+                    file_data = base64.b64decode(content["data"])
+                    download_dir = "data/downloads"
+                    os.makedirs(download_dir, exist_ok=True)
+                    s_id_short = sender_id[:8] if sender_id else "unknown"
+                    file_path = os.path.join(download_dir, f"{s_id_short}_{file_name}")
+                    with open(file_path, "wb") as f:
+                        f.write(file_data)
+                    text_content = f"Received file: {file_name} (Saved to {file_path})"
+                except Exception as e:
+                    text_content = f"Failed to receive file: {e}"
+                    logger.error(text_content)
+
+            msg_ts = msg.get("timestamp") or msg.get("metadata", {}).get("timestamp")
+            original_ts = None
+            try:
+                if isinstance(msg_ts, str):
+                    msg_ts = datetime.fromisoformat(msg_ts)
+                    if msg_ts.tzinfo is None:
+                        msg_ts = msg_ts.replace(tzinfo=UTC)
+                    original_ts = msg_ts
+                elif not msg_ts:
+                    msg_ts = datetime.now(UTC)
+                else:
+                    if hasattr(msg_ts, "tzinfo") and msg_ts.tzinfo is None:
+                        msg_ts = msg_ts.replace(tzinfo=UTC)
+                    original_ts = msg_ts
+            except Exception:
+                msg_ts = datetime.now(UTC)
+
+            item = {
+                "message_id": m_id,
+                "sender_id": sender_id,
+                "recipient_id": recipient_id,
+                "recipient_type": recipient_type,
+                "package_type": package_type,
+                "effective_session_id": effective_session_id,
+                "text_content": text_content,
+                "timestamp": msg_ts,
+                "original_ts": original_ts,
+                "raw_msg": msg,
+            }
+
+            if effective_session_id not in sessions:
+                sessions[effective_session_id] = []
+            sessions[effective_session_id].append(item)
+
+        # Sort messages in each session by timestamp
+        for s_id in sessions:
+            sessions[s_id].sort(key=lambda x: x["timestamp"])
+
+        return sessions
+
+    async def _format_session_backlog_batch(
+        self, session_id: str, items: list[dict]
+    ) -> tuple[InboundMessage, list[str], list[str], bool]:
+        """
+        Formats a batch of backlog messages for a single session into a single InboundMessage.
+        Applies Hybrid Semantic Compaction if total context exceeds budget.
+        Returns:
+            (inbound_message, list_of_message_ids, list_of_sender_ids, is_all_pure_ack)
+        """
+        from .context_pruner import compaction_engine
+
+        m_ids = [it["message_id"] for it in items if it.get("message_id")]
+        sender_ids = list(dict.fromkeys(it["sender_id"] for it in items if it.get("sender_id")))
+        primary_sender = items[-1]["sender_id"]
+
+        # Check if all messages are pure acknowledgments
+        all_pure_ack = True
+        for it in items:
+            if not await self.is_pure_acknowledgment(it["text_content"]):
+                all_pure_ack = False
+                break
+
+        if len(items) == 1:
+            it = items[0]
+            msg_obj = InboundMessage(
+                channel="p2p",
+                sender_id=it["sender_id"],
+                content=it["text_content"],
+                session_id=session_id,
+                metadata={
+                    "message_id": it["message_id"],
+                    "package_type": it["package_type"],
+                    "recipient_type": it["recipient_type"],
+                    "batched_count": 1,
+                },
+            )
+            return msg_obj, m_ids, sender_ids, all_pure_ack
+
+        # Multi-message backlog batch: check context budget and apply Hybrid Compaction
+        summary_text, recent_items = await compaction_engine.compact_inbox_backlog(
+            items,
+            llm_client=self.llm,
+            max_backlog_chars=16000,
+            keep_recent_count=4,
+        )
+
+        formatted_lines = []
+        if summary_text:
+            formatted_lines.append(
+                f"[系统提示]: 本次处理合并了会话积存的 {len(items)} 条待处理消息。\n"
+                f"[前期积存消息语义摘要]:\n{summary_text}\n\n"
+                f"[近期最新消息列表]:"
+            )
+            for it in recent_items:
+                ts_str = it["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+                s_id_short = it["sender_id"][:8] if it["sender_id"] else "unknown"
+                formatted_lines.append(f"- [{ts_str}] {s_id_short}: {it['text_content']}")
+            formatted_lines.append(
+                "\n请结合以上完整上下文、前期摘要与最新进展，一次性进行连贯、全面的综合回复。"
+            )
+        else:
+            formatted_lines.append(
+                f"[系统提示]: 本次处理合并了会话积存的 {len(items)} 条待处理消息："
+            )
+            for it in items:
+                ts_str = it["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+                s_id_short = it["sender_id"][:8] if it["sender_id"] else "unknown"
+                formatted_lines.append(f"- [{ts_str}] {s_id_short}: {it['text_content']}")
+            formatted_lines.append("\n请根据以上所有上下文，一次性给出连贯、完整的综合回复。")
+
+        batched_content = "\n".join(formatted_lines)
+        msg_obj = InboundMessage(
+            channel="p2p",
+            sender_id=primary_sender,
+            content=batched_content,
+            session_id=session_id,
+            metadata={
+                "message_id": m_ids[-1] if m_ids else str(uuid.uuid4()),
+                "all_message_ids": m_ids,
+                "package_type": "chat",
+                "recipient_type": items[0]["recipient_type"],
+                "batched_count": len(items),
+            },
+        )
+        return msg_obj, m_ids, sender_ids, all_pure_ack
+
+    async def process_network_inbox(self, verbose: bool = False):
+        """Poll P2P inbox and process messages with session-level batching and hybrid compaction."""
+        if verbose:
+            logger.info("Checking P2P inbox...")
 
         if not p2p_service.local_node:
             return
@@ -2118,147 +2320,41 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             if not p2p_service.local_node.inbox:
                 self._hydrate_system_state()
 
-            inbox = p2p_service.local_node.inbox
-            while inbox:
-                msg = inbox.pop(0)
+            # Snapshot and drain all pending messages from inbox
+            raw_items = []
+            while p2p_service.local_node.inbox:
+                raw_items.append(p2p_service.local_node.inbox.pop(0))
 
-                if not isinstance(msg, dict):
-                    logger.warning(f"Malformed P2P message discarded (not a dict): {msg}")
+            if not raw_items:
+                return
+
+            # Group incoming backlog by session_id
+            session_groups = await self._group_inbox_by_session(raw_items)
+
+            for effective_session_id, session_items in session_groups.items():
+                if not session_items:
                     continue
 
-                try:
-                    sender_id = msg.get("sender_id")
-                    content = msg.get("content")
-                    msg_type = msg.get("message_type", msg.get("type"))
+                logger.info(
+                    f"Processing P2P backlog batch ({len(session_items)} messages) for session {effective_session_id[:8]}..."
+                )
 
-                    # Filter out system messages that are handled elsewhere (e.g., in handle_p2p_message)
-                    if msg_type == "SYSTEM_ERROR":
-                        continue
+                # 1. Log each individual message to history, resident memory, and dual broadcast to UI
+                for it in session_items:
+                    m_id = it["message_id"]
+                    s_id = it["sender_id"]
+                    msg_ts = it["timestamp"]
+                    text_content = it["text_content"]
+                    pkg_type = it["package_type"]
 
-                    receive_time = datetime.now(UTC).timestamp()
-                    # 1. De-duplication
-                    m_id = msg.get("message_id")
-                    if m_id:
-                        if m_id in self.processed_message_ids:
-                            continue
-                        self.processed_message_ids.add(m_id)
-
-                    # Normalize Sender ID (Hex ID)
-                    sender_id = self._normalize_session_id(sender_id) or "unknown_sender"
-
-                    # 1.1 Self-Message Filtering
-                    if p2p_service.local_node and sender_id == p2p_service.local_node.node_id:
-                        logger.debug(f"Skipping self-received P2P message {m_id}")
-                        continue
-
-                    # [ICE WARMUP] Proactively initiate WebRTC if message is direct
-                    if sender_id and sender_id != "unknown_sender":
-                        asyncio.create_task(p2p_service.warmup_webrtc(sender_id))
-
-                    # 1.2 Identify Message Nature (Refactored)
-                    raw_type = str(msg.get("message_type", msg.get("type", ""))).lower()
-
-                    # Package Type: What is being sent? (chat, file, gossip, error)
-                    package_type = "chat"
-                    if raw_type == "file" or (isinstance(content, dict) and "data" in content):
-                        package_type = "file"
-                    elif raw_type == "gossip":
-                        package_type = "gossip"
-                    elif raw_type == "system_error":
-                        package_type = "error"
-
-                    # Recipient Type: How is it addressed? (direct, group)
-                    recipient_id = self._normalize_session_id(msg.get("recipient_id"))
-                    recipient_type = "direct"
-                    if raw_type == "group":
-                        recipient_type = "group"
-                    elif recipient_id and p2p_service.local_node:
-                        if recipient_id in p2p_service.local_node.group_ids:
-                            recipient_type = "group"
-
-                    # Process based on type
-                    sender_display = sender_id[:8] if sender_id else "unknown"
-                    logger.info(
-                        f"Processing P2P {package_type} from {sender_display} (addressed to {recipient_type})..."
-                    )
-
-                    # Determine effective session_id (The session key)
-                    effective_session_id = sender_id
-                    if recipient_type == "group" and recipient_id:
-                        effective_session_id = recipient_id
-
-                    effective_session_id = (
-                        self._normalize_session_id(effective_session_id) or "unknown_session"
-                    )
-
-                    # Use 'content' text if available
-                    text_content = str(content)
-                    if isinstance(content, dict) and "text" in content:
-                        text_content = content["text"]
-
-                    # Special Handling for FILE type
-                    if package_type == "file" and isinstance(content, dict) and "data" in content:
+                    if it.get("original_ts"):
                         try:
-                            file_name = content.get("info", "downloaded_file")
-                            file_data = base64.b64decode(content["data"])
-
-                            download_dir = "data/downloads"
-                            os.makedirs(download_dir, exist_ok=True)
-                            s_id_short = sender_id[:8] if sender_id else "unknown"
-                            file_path = os.path.join(download_dir, f"{s_id_short}_{file_name}")
-
-                            with open(file_path, "wb") as f:
-                                f.write(file_data)
-
-                            text_content = f"Received file: {file_name} (Saved to {file_path})"
-                            # Update content for history log
-                        except Exception as e:
-                            text_content = f"Failed to receive file: {e}"
-                            logger.error(text_content)
-
-                    # Use Pipeline
-                    msg_obj = InboundMessage(
-                        channel="p2p",
-                        sender_id=sender_id,
-                        content=text_content,
-                        session_id=effective_session_id,
-                        metadata={
-                            "message_id": m_id,
-                            "package_type": package_type,
-                            "recipient_type": recipient_type,
-                        },
-                    )
-
-                    # 2. Log Inbound Message to history
-                    msg_ts = msg.get("timestamp") or msg.get("metadata", {}).get("timestamp")
-                    original_ts = None
-                    try:
-                        if isinstance(msg_ts, str):
-                            msg_ts = datetime.fromisoformat(msg_ts)
-                            # Ensure aware immediately
-                            if msg_ts.tzinfo is None:
-                                msg_ts = msg_ts.replace(tzinfo=UTC)
-                            original_ts = msg_ts
-                        elif not msg_ts:
-                            msg_ts = datetime.now(UTC)
-                        else:
-                            # Ensure aware immediately
-                            if hasattr(msg_ts, "tzinfo") and msg_ts.tzinfo is None:
-                                msg_ts = msg_ts.replace(tzinfo=UTC)
-                            original_ts = msg_ts
-                    except:
-                        msg_ts = datetime.now(UTC)
-
-                    # Calculate and log delivery latency
-                    if original_ts:
-                        try:
-                            # Ensure UTC for comparison
-                            calc_ts = original_ts
+                            calc_ts = it["original_ts"]
                             if calc_ts.tzinfo is None:
                                 calc_ts = calc_ts.replace(tzinfo=UTC)
                             latency = (datetime.now(UTC) - calc_ts).total_seconds()
                             logger.info(
-                                f"P2P Latency (Polling): Receiving message {m_id} from {sender_id}. Latency: {latency:.3f}s"
+                                f"P2P Latency (Polling): Receiving message {m_id} from {s_id}. Latency: {latency:.3f}s"
                             )
                         except Exception as le:
                             logger.debug(f"Could not calculate latency (Polling): {le}")
@@ -2267,154 +2363,107 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         Message(
                             id=m_id or str(uuid.uuid4()),
                             content=text_content,
-                            sender=sender_id,
+                            sender=s_id,
                             timestamp=msg_ts,
                             session_id=effective_session_id,
                         )
                     )
                     self.resident_memory.log_interaction(
-                        sender_id,
+                        s_id,
                         text_content,
-                        msg_type=package_type,
+                        msg_type=pkg_type,
                         session_id=effective_session_id,
                         timestamp=msg_ts,
                         msg_id=m_id,
                     )
 
-                    # DUAL BROADCAST: Inform UI and other listeners
                     await self.message_bus.publish_outbound(
                         OutboundMessage(
                             channel="gateway",
                             session_id=effective_session_id,
                             content=text_content,
                             type="chat",
-                            sender=sender_id,
+                            sender=s_id,
                             timestamp=msg_ts,
                         )
                     )
-                    # Also publish to p2p for internal listeners
                     await self.message_bus.publish_outbound(
                         OutboundMessage(
                             channel="p2p",
                             session_id=effective_session_id,
                             content=text_content,
                             type="chat",
-                            sender=sender_id,
+                            sender=s_id,
                             timestamp=msg_ts,
                         )
                     )
 
-                    # 2.5 Loop Prevention: Check for pure acknowledgment/status confirmations
-                    if await self.is_pure_acknowledgment(text_content):
-                        logger.info(
-                            f"Loop prevention: message from {sender_id} is a pure acknowledgment/status confirmation. Storing in history without triggering LLM pipeline."
-                        )
-                        s_id_short = sender_id[:8] if sender_id else "unknown"
-                        await self.message_bus.publish_outbound(
-                            OutboundMessage(
-                                channel="gateway",
-                                session_id=effective_session_id,
-                                content=f"Loop prevention: received pure acknowledgment/status confirmation from {s_id_short}. Stored in history without auto-processing.",
-                                type="thought",
-                            )
-                        )
-                        continue
+                # 2. Build batched InboundMessage with hybrid compaction
+                (
+                    msg_obj,
+                    all_m_ids,
+                    all_senders,
+                    all_pure_ack,
+                ) = await self._format_session_backlog_batch(effective_session_id, session_items)
 
-                    # 3. Check for lapsed messages (30 mins = 1800 seconds)
-                    now = datetime.now(UTC)
-                    delay_seconds = (now - msg_ts).total_seconds()
-                    skip_delay = False
-
-                    if delay_seconds > 1800 and inbox:
-                        # Only skip lapsed messages if there are MORE messages in the queue
-                        logger.info(
-                            f"Lapsed message detected ({int(delay_seconds)}s delay) with {len(inbox)} more in queue. Skipping agent processing for session {effective_session_id}."
+                # 3. Loop Prevention: If all messages in batch are pure acknowledgments, skip LLM
+                if all_pure_ack:
+                    logger.info(
+                        f"Loop prevention: all {len(session_items)} messages in batch from {effective_session_id[:8]} are pure acknowledgments. Stored in history without triggering LLM pipeline."
+                    )
+                    await self.message_bus.publish_outbound(
+                        OutboundMessage(
+                            channel="gateway",
+                            session_id=effective_session_id,
+                            content=f"Loop prevention: received pure acknowledgments in batch ({len(session_items)} msgs). Stored in history without auto-processing.",
+                            type="thought",
                         )
-                        await self.message_bus.publish_outbound(
-                            OutboundMessage(
-                                channel="gateway",
-                                session_id=effective_session_id,
-                                content=f"Message received with {int(delay_seconds / 60)}m delay. Stored in history without auto-processing.",
-                                type="thought",
-                            )
-                        )
-                        continue
-                    elif delay_seconds > 1800 and not inbox:
-                        # Last message in queue but lapsed: process it immediately, skip reply delay
-                        logger.info(
-                            f"Lapsed message detected ({int(delay_seconds)}s delay) but it's the LAST in queue. Processing immediately."
-                        )
-                        skip_delay = True
+                    )
+                    continue
 
-                    # 3.5 Smart Reply Delay: Calculate remaining delay
-                    if not skip_delay:
-                        configured_delay = getattr(self, "p2p_reply_delay", 5)
-                        remaining_delay = max(0, configured_delay - delay_seconds)
-                        if remaining_delay > 0:
-                            logger.info(
-                                f"P2P Reply Delay: waiting {remaining_delay:.1f}s (configured={configured_delay}s, elapsed={delay_seconds:.1f}s)"
-                            )
-                            await asyncio.sleep(remaining_delay)
-                        else:
-                            logger.info(
-                                f"P2P Reply Delay: already elapsed ({delay_seconds:.1f}s >= {configured_delay}s). Processing immediately."
-                            )
+                # 4. Dispatch 'thinking' receipts for all messages in the batch
+                for s_id in all_senders:
+                    for m_id in all_m_ids:
+                        if m_id and s_id != "unknown_sender":
+                            try:
+                                asyncio.create_task(p2p_service.send_receipt(s_id, m_id, "thinking"))
+                            except Exception:
+                                pass
 
-                    # 4. Run Pipeline to get Response (with Thinking & Replied Receipts)
-                    try:
-                        if m_id and sender_id != "unknown_sender":
-                            asyncio.create_task(p2p_service.send_receipt(sender_id, m_id, "thinking"))
+                # 5. Run Pipeline once for the entire batch
+                try:
+                    pipeline_task = self._run_ralph_wiggum_loop(msg_obj)
+                    response_text, _, _ = await asyncio.wait_for(
+                        pipeline_task, timeout=900.0
+                    )
 
-                        pipeline_task = self._run_ralph_wiggum_loop(msg_obj)
-                        response_text, _, _ = await asyncio.wait_for(
-                            pipeline_task, timeout=900.0
-                        )  # 15 min timeout (Extended for long network tasks)
-
-                        if m_id and sender_id != "unknown_sender":
-                            asyncio.create_task(p2p_service.send_receipt(sender_id, m_id, "replied"))
-                    except TimeoutError:
-                        logger.error(
-                            f"P2P processing PIPELINE TIMEOUT for message from {sender_id}. Skipped."
-                        )
-                        response_text = "Processing timed out."
-                        if m_id and sender_id != "unknown_sender":
-                            asyncio.create_task(p2p_service.send_receipt(sender_id, m_id, "failed"))
-
-                    # 5. Agent's Final Answer is for internal record, NOT sent over P2P.
-                    # All outbound P2P communication must be done explicitly by the LLM via `send_p2p_message` tool.
-                    if (
-                        response_text
-                        and "[NO_RESPONSE_NEEDED]" not in str(response_text)
-                        and response_text != "No response generated."
-                    ):
-                        # Log the agent's final conclusion of this P2P interaction to local history so the resident sees it
-                        self.history.append(
-                            Message(
-                                id=str(uuid.uuid4()),
-                                content=f"[Agent completed P2P task]: {response_text}",
-                                sender="agent",
-                                timestamp=datetime.now(UTC),
-                                session_id=effective_session_id,
-                            )
-                        )
-                        # Ensure Gateway knows processing is done
-                        s_id_short = sender_id[:8] if sender_id else "unknown"
-                        await self.message_bus.publish_outbound(
-                            OutboundMessage(
-                                channel="gateway",
-                                session_id=effective_session_id,
-                                content=f"Agent processed P2P message from {s_id_short}",
-                                type="thought",
-                            )
-                        )
+                    # Dispatch 'replied' receipts for all messages in the batch
+                    for s_id in all_senders:
+                        for m_id in all_m_ids:
+                            if m_id and s_id != "unknown_sender":
+                                try:
+                                    asyncio.create_task(p2p_service.send_receipt(s_id, m_id, "replied"))
+                                except Exception:
+                                    pass
+                except TimeoutError:
+                    logger.error(
+                        f"P2P processing PIPELINE TIMEOUT for batch from {effective_session_id[:8]}. Skipped."
+                    )
+                    response_text = "Processing timed out."
+                    for s_id in all_senders:
+                        for m_id in all_m_ids:
+                            if m_id and s_id != "unknown_sender":
+                                try:
+                                    asyncio.create_task(p2p_service.send_receipt(s_id, m_id, "failed"))
+                                except Exception:
+                                    pass
                 except asyncio.CancelledError:
                     logger.warning(
-                        f"Process Network Inbox was cancelled during message processing from {sender_id}. This usually happens on timeout or shutdown."
+                        f"Process Network Inbox was cancelled during batch processing for {effective_session_id[:8]}."
                     )
                     self._is_processing_inbox = False
                     raise
                 except Exception as e:
-                    logger.error(f"Error processing P2P message from {sender_id}: {e}")
                     # Optional: Push back to inbox or Dead Letter Queue?
                     # For now, just log to history so user sees something failed
 

@@ -316,3 +316,79 @@ def test_online_idle_adaptive_sync_backoff():
     # Instant activity detection resets idle backoff immediately
     nm.record_group_activity(group_id)
     assert nm.should_sync_group(group_id) is True
+
+
+@pytest.mark.anyio
+async def test_inbox_session_batching_and_formatting():
+    """Test grouping raw inbox items by session and formatting multi-message batches."""
+    from unittest.mock import MagicMock, AsyncMock
+    from app.services.agent_service import AgentService
+
+    agent = AgentService.__new__(AgentService)
+    agent.processed_message_ids = set()
+    agent.llm = None
+
+    # Helper mock
+    def mock_norm(s):
+        return s.strip().lower() if s else s
+    agent._normalize_session_id = mock_norm
+
+    async def mock_ack(text):
+        return "收到" in text or "ACK" in text
+    agent.is_pure_acknowledgment = mock_ack
+
+    # 3 messages for peer_1 and 1 message for peer_2
+    raw_inbox = [
+        {
+            "message_id": "msg_001",
+            "sender_id": "peer_1",
+            "content": {"text": "First question about architecture"},
+            "timestamp": "2026-08-25T20:00:00Z",
+            "message_type": "DIRECT",
+        },
+        {
+            "message_id": "msg_002",
+            "sender_id": "peer_1",
+            "content": {"text": "Second question about benchmarks"},
+            "timestamp": "2026-08-25T20:01:00Z",
+            "message_type": "DIRECT",
+        },
+        {
+            "message_id": "msg_003",
+            "sender_id": "peer_2",
+            "content": {"text": "Hello from peer 2"},
+            "timestamp": "2026-08-25T20:02:00Z",
+            "message_type": "DIRECT",
+        },
+        {
+            "message_id": "msg_004",
+            "sender_id": "peer_1",
+            "content": {"text": "Third question about dataset"},
+            "timestamp": "2026-08-25T20:03:00Z",
+            "message_type": "DIRECT",
+        },
+    ]
+
+    # Group by session
+    groups = await agent._group_inbox_by_session(raw_inbox)
+    assert len(groups) == 2
+    assert "peer_1" in groups
+    assert "peer_2" in groups
+    assert len(groups["peer_1"]) == 3
+    assert len(groups["peer_2"]) == 1
+
+    # Format batch for peer_1 (multi-message)
+    msg_obj1, m_ids1, senders1, is_ack1 = await agent._format_session_backlog_batch("peer_1", groups["peer_1"])
+    assert msg_obj1.metadata["batched_count"] == 3
+    assert m_ids1 == ["msg_001", "msg_002", "msg_004"]
+    assert senders1 == ["peer_1"]
+    assert is_ack1 is False
+    assert "合并了会话积存的 3 条待处理消息" in msg_obj1.content
+    assert "First question about architecture" in msg_obj1.content
+    assert "Third question about dataset" in msg_obj1.content
+
+    # Format batch for peer_2 (single message)
+    msg_obj2, m_ids2, senders2, is_ack2 = await agent._format_session_backlog_batch("peer_2", groups["peer_2"])
+    assert msg_obj2.metadata["batched_count"] == 1
+    assert m_ids2 == ["msg_003"]
+    assert msg_obj2.content == "Hello from peer 2"

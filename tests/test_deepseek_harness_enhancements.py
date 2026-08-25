@@ -105,6 +105,36 @@ async def test_compaction_engine_semantic():
     assert "[SYSTEM COMPACTION CHECKPOINT]" in compacted[0]["content"]
 
 
+@pytest.mark.anyio
+async def test_compaction_engine_inbox_backlog():
+    compactor = CompactionEngine()
+
+    mock_llm = MagicMock()
+    mock_response = MagicMock()
+    mock_response.content = "- Peer requested data files\n- Peer asked about F1-score evaluation"
+    mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+
+    # 6 incoming backlog messages exceeding max_backlog_chars
+    raw_backlog = [
+        {"sender_id": "node_a", "content": "Long question part 1 " * 50, "timestamp": "2026-08-25T20:00:00Z"},
+        {"sender_id": "node_a", "content": "Long question part 2 " * 50, "timestamp": "2026-08-25T20:01:00Z"},
+        {"sender_id": "node_a", "content": "Long question part 3 " * 50, "timestamp": "2026-08-25T20:02:00Z"},
+        {"sender_id": "node_a", "content": "Recent question 1", "timestamp": "2026-08-25T20:03:00Z"},
+        {"sender_id": "node_a", "content": "Recent question 2", "timestamp": "2026-08-25T20:04:00Z"},
+    ]
+
+    # Compact with low max_backlog_chars threshold
+    summary, recent = await compactor.compact_inbox_backlog(
+        raw_backlog, llm_client=mock_llm, max_backlog_chars=100, keep_recent_count=2
+    )
+
+    assert summary is not None
+    assert "Peer requested data files" in summary
+    assert len(recent) == 2
+    assert recent[0]["content"] == "Recent question 1"
+    assert recent[1]["content"] == "Recent question 2"
+
+
 # --- 3. Waterfall Pipeline Tests ---
 
 @pytest.mark.anyio

@@ -136,10 +136,76 @@ class CompactionEngine:
                 f"[CompactionEngine] Compaction completed: reduced from {len(messages)} to {len(compacted_messages)} messages."
             )
             return compacted_messages
-
         except Exception as e:
             logger.error(f"[CompactionEngine] Semantic compaction failed: {e}")
             return messages
+
+    async def compact_inbox_backlog(
+        self,
+        raw_items: list[dict[str, Any]],
+        llm_client: Any = None,
+        max_backlog_chars: int = 16000,
+        keep_recent_count: int = 4,
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """
+        Performs hybrid semantic compaction on an oversized backlog of incoming messages for a single session.
+        Returns:
+            (compacted_summary_str_or_None, list_of_retained_recent_items)
+        """
+        if len(raw_items) <= keep_recent_count:
+            return None, raw_items
+
+        total_chars = sum(len(str(item.get("content", ""))) for item in raw_items)
+        if total_chars <= max_backlog_chars:
+            return None, raw_items
+
+        # Split into older slice to compact and recent slice to retain intact
+        split_idx = max(0, len(raw_items) - keep_recent_count)
+        old_slice = raw_items[:split_idx]
+        recent_slice = raw_items[split_idx:]
+
+        if not old_slice:
+            return None, recent_slice
+
+        # If LLM client is available, generate an intelligent dense factual summary
+        if llm_client:
+            try:
+                logger.info(
+                    f"[CompactionEngine] Compacting {len(old_slice)} backlog messages ({total_chars} chars)..."
+                )
+                formatted_old = []
+                for m in old_slice:
+                    sender = m.get("sender_id", "peer")
+                    ts = m.get("timestamp", "")
+                    content = str(m.get("content", ""))[:400]
+                    formatted_old.append(f"[{ts}] {sender}: {content}")
+                backlog_text = "\n".join(formatted_old)
+
+                prompt = (
+                    "You are an AI assistant processing backlogged incoming messages from a peer.\n"
+                    "Summarize the key inquiries, information shared, requests, and context from these earlier messages concisely:\n\n"
+                    f"{backlog_text}\n\n"
+                    "Respond with a concise bulleted summary capturing all actionable points."
+                )
+
+                from langchain_core.messages import HumanMessage
+
+                response = await llm_client.ainvoke([HumanMessage(content=prompt)])
+                summary_text = response.content.strip()
+                return summary_text, recent_slice
+            except Exception as e:
+                logger.error(f"[CompactionEngine] Backlog semantic compaction failed: {e}")
+
+        # Rule-based fallback summary
+        fallback_points = [
+            f"- [{m.get('timestamp', '')}] From {m.get('sender_id', 'peer')[:8]}: {str(m.get('content', ''))[:120]}..."
+            for m in old_slice[:6]
+        ]
+        fallback_summary = (
+            f"[Automatic Backlog Summary of {len(old_slice)} earlier messages]:\n"
+            + "\n".join(fallback_points)
+        )
+        return fallback_summary, recent_slice
 
 
 # Singleton instances
