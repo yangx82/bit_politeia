@@ -55,10 +55,43 @@ def _extract_and_parse_json(text: str) -> dict:
 
 async def _invoke_llm_json(llm_client: Any, prompt: str) -> dict:
     """Helper to invoke a LangChain Chat client and robustly parse JSON response."""
-    from langchain_core.messages import HumanMessage
-    response = await llm_client.ainvoke([HumanMessage(content=prompt)])
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    system_content = (
+        "You are an automated API component of the Bit Politeia framework. "
+        "You must respond ONLY with a valid JSON object. "
+        "Never output conversational preambles (e.g. 'I will start by...'), thinking commentary, or markdown outside the JSON block. "
+        "Your response MUST start with '{' and end with '}'."
+    )
+
+    try:
+        response = await llm_client.ainvoke([
+            SystemMessage(content=system_content),
+            HumanMessage(content=prompt),
+        ])
+    except Exception:
+        # Fallback for LLM backends that reject SystemMessage
+        response = await llm_client.ainvoke([
+            HumanMessage(content=f"{system_content}\n\nTask:\n{prompt}")
+        ])
+
     content = response.content if hasattr(response, "content") else str(response)
-    return _extract_and_parse_json(content)
+    res_dict = _extract_and_parse_json(content)
+
+    # If first attempt returned pure conversational text without JSON, trigger a 1-shot conversion
+    if not res_dict and content and len(str(content).strip()) > 10:
+        try:
+            repair_prompt = (
+                f"Extract and format the information from this response into strictly valid JSON:\n\n{content}\n\n"
+                f"Output strictly raw JSON starting with '{{' and ending with '}}'."
+            )
+            repair_resp = await llm_client.ainvoke([HumanMessage(content=repair_prompt)])
+            repair_content = repair_resp.content if hasattr(repair_resp, "content") else str(repair_resp)
+            res_dict = _extract_and_parse_json(repair_content)
+        except Exception:
+            pass
+
+    return res_dict
 
 
 class EvolutionService:
@@ -141,19 +174,25 @@ class EvolutionService:
 
         try:
             prompt = (
-                "You are the Autonomous Evolution Engine for Bit Politeia (a decentralized P2P AI Agent framework).\n"
-                "Propose a new Agent Architecture Improvement Proposal (AIP) to optimize system performance, memory indexing, or P2P protocol reliability.\n"
-                "Respond strictly in JSON format:\n"
+                "You are the Autonomous Architecture Evolution Engine for Bit Politeia (a decentralized P2P AI Agent framework).\n"
+                "Analyze the agent system and propose a concrete, highly actionable Agent Improvement Proposal (AIP).\n"
+                "Focus on one of these core areas:\n"
+                "- P2P message batching and adaptive backoff\n"
+                "- Memory compaction and vector indexing latency\n"
+                "- DAG causal consensus and offline mailbox store-and-forward\n"
+                "- Tool result pruning and token efficiency\n\n"
+                "Return strictly valid JSON matching this schema:\n"
                 "{\n"
-                '  "title": "Short title",\n'
-                '  "description": "Detailed explanation of proposed architecture update",\n'
-                '  "target_files": ["backend/app/agent/memory.py"],\n'
+                '  "title": "Clear concise title",\n'
+                '  "description": "2-3 sentences explaining the architecture change and expected benefit",\n'
+                '  "target_files": ["backend/app/services/agent_service.py"],\n'
                 '  "research_sources": ["https://arxiv.org/abs/2408.00001"]\n'
-                "}"
+                "}\n\n"
+                "IMPORTANT: Output ONLY the raw JSON object. Do not write any conversational preamble or markdown explanation."
             )
             res_json = await _invoke_llm_json(llm_client, prompt)
-            title = res_json.get("title", "Autonomous Architecture Optimization")
-            description = res_json.get("description", "Automated system performance and memory protocol refinement.")
+            title = res_json.get("title", "Autonomous P2P & Memory Architecture Optimization")
+            description = res_json.get("description", "Automated system performance, token compaction, and P2P protocol reliability enhancement.")
             target_files = res_json.get("target_files", [])
             research_sources = res_json.get("research_sources", [])
 
