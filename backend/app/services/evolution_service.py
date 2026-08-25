@@ -180,30 +180,39 @@ class EvolutionService:
                 "You are the Autonomous Architecture Evolution Engine for Bit Politeia (a decentralized P2P AI Agent framework).\n"
                 "Analyze the agent system and propose a concrete, highly actionable Agent Improvement Proposal (AIP).\n"
                 "Focus on one of these core areas:\n"
-                "- P2P message batching and adaptive backoff\n"
-                "- Memory compaction and vector indexing latency\n"
+                "- P2P message batching, deduplication, and adaptive backoff\n"
+                "- Memory compaction and LRU caching for vector embeddings\n"
                 "- DAG causal consensus and offline mailbox store-and-forward\n"
-                "- Tool result pruning and token efficiency\n\n"
+                "- Tool result pruning and context window efficiency\n\n"
                 "Return strictly valid JSON matching this schema:\n"
                 "{\n"
-                '  "title": "Clear concise title",\n'
+                '  "title": "Clear concise title (e.g. Adaptive Vector Embedding Cache)",\n'
                 '  "description": "2-3 sentences explaining the architecture change and expected benefit",\n'
                 '  "target_files": ["backend/app/services/agent_service.py"],\n'
+                '  "proposed_diff": "def compute_adaptive_cache_key(data: str) -> str:\\n    import hashlib\\n    return hashlib.sha256(data.encode()).hexdigest()[:16]",\n'
                 '  "research_sources": ["https://arxiv.org/abs/2408.00001"]\n'
                 "}\n\n"
-                "IMPORTANT: Output ONLY the raw JSON object. Do not write any conversational preamble or markdown explanation."
+                "IMPORTANT: Provide concrete Python code for proposed_diff. Output ONLY the raw JSON object. Do not write conversational preamble."
             )
             res_json = await _invoke_llm_json(llm_client, prompt)
-            title = res_json.get("title", "Autonomous P2P & Memory Architecture Optimization")
-            description = res_json.get("description", "Automated system performance, token compaction, and P2P protocol reliability enhancement.")
-            target_files = res_json.get("target_files", [])
-            research_sources = res_json.get("research_sources", [])
+            title = res_json.get("title", "Autonomous Adaptive Memory & P2P Stream Optimization")
+            description = res_json.get(
+                "description",
+                "Introduces latency-aware vector caching and dynamic backoff to enhance agent throughput.",
+            )
+            target_files = res_json.get("target_files") or ["backend/app/services/agent_service.py"]
+            proposed_diff = res_json.get(
+                "proposed_diff",
+                "def optimize_cache_ttl(hit_rate: float) -> int:\n    return int(300 * (1.0 + hit_rate))\n",
+            )
+            research_sources = res_json.get("research_sources") or ["https://arxiv.org/abs/2408.00001"]
 
             aip = self.create_aip(
                 initiator_id="self",
                 title=title,
                 description=description,
                 target_files=target_files,
+                proposed_diff=proposed_diff,
                 research_sources=research_sources,
             )
             logger.info(f"[EvolutionService] Auto-generated new proposal draft: {aip.aip_id} - '{title}'")
