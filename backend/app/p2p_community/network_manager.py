@@ -928,6 +928,28 @@ class NetworkManager:
 
         logger.info(f"[StateSync] Requesting state sync for group {group_id}")
 
+        def compute_canonical_state_hash(prop_dict: dict, elec_dict: dict | None = None) -> str:
+            """Compute deterministic canonical state hash for proposal + election."""
+            pid = str(prop_dict.get("proposal_id", ""))
+            p_status = str(prop_dict.get("status", ""))
+            p_content = str(prop_dict.get("content", ""))
+
+            e_info = "none"
+            if elec_dict and isinstance(elec_dict, dict):
+                eid = str(elec_dict.get("election_id", ""))
+                e_status = str(elec_dict.get("status", ""))
+                votes_dict = elec_dict.get("votes", {})
+                vote_items = []
+                for voter_id in sorted(votes_dict.keys()):
+                    ballots = votes_dict[voter_id]
+                    for b in ballots:
+                        if isinstance(b, dict):
+                            vote_items.append(f"{voter_id}:{b.get('approval')}:{b.get('reward_amount', 0)}")
+                e_info = f"{eid}:{e_status}:{';'.join(vote_items)}"
+
+            canonical_repr = f"P:{pid}:{p_status}:{hashlib.sha256(p_content.encode()).hexdigest()[:16]}|E:{e_info}"
+            return hashlib.sha256(canonical_repr.encode()).hexdigest()[:16]
+
         # Gather local known proposals and their status/vote counts to support delta sync
         known_proposals = {}
         try:
@@ -940,10 +962,7 @@ class NetworkManager:
                         vote_count = len(election.votes) if election else 0
                         local_proposal_data = prop.to_dict()
                         local_election_data = election.to_dict() if election else None
-                        local_data_hash = compute_data_hash({
-                            "proposal": local_proposal_data,
-                            "election": local_election_data,
-                        })
+                        local_data_hash = compute_canonical_state_hash(local_proposal_data, local_election_data)
                         known_proposals[pid] = {
                             "status": prop.status,
                             "vote_count": vote_count,
@@ -1003,12 +1022,27 @@ class NetworkManager:
         if not agent_service or not agent_service.governance_manager:
             return
 
-        # Helper function to compute data hash for integrity verification
-        def compute_data_hash(data: dict) -> str:
-            """Compute SHA256 hash of data for integrity verification."""
-            # Sort keys for deterministic serialization
-            serialized = json.dumps(data, sort_keys=True, default=str)
-            return hashlib.sha256(serialized.encode()).hexdigest()[:16]
+        def compute_canonical_state_hash(prop_dict: dict, elec_dict: dict | None = None) -> str:
+            """Compute deterministic canonical state hash for proposal + election."""
+            pid = str(prop_dict.get("proposal_id", ""))
+            p_status = str(prop_dict.get("status", ""))
+            p_content = str(prop_dict.get("content", ""))
+
+            e_info = "none"
+            if elec_dict and isinstance(elec_dict, dict):
+                eid = str(elec_dict.get("election_id", ""))
+                e_status = str(elec_dict.get("status", ""))
+                votes_dict = elec_dict.get("votes", {})
+                vote_items = []
+                for voter_id in sorted(votes_dict.keys()):
+                    ballots = votes_dict[voter_id]
+                    for b in ballots:
+                        if isinstance(b, dict):
+                            vote_items.append(f"{voter_id}:{b.get('approval')}:{b.get('reward_amount', 0)}")
+                e_info = f"{eid}:{e_status}:{';'.join(vote_items)}"
+
+            canonical_repr = f"P:{pid}:{p_status}:{hashlib.sha256(p_content.encode()).hexdigest()[:16]}|E:{e_info}"
+            return hashlib.sha256(canonical_repr.encode()).hexdigest()[:16]
 
         # Share active proposals and elections
         gm = agent_service.governance_manager
@@ -1036,10 +1070,7 @@ class NetworkManager:
             # Prepare local proposal data
             local_proposal_data = proposal.to_dict()
             local_election_data = election.to_dict() if election else None
-            local_data_hash = compute_data_hash({
-                "proposal": local_proposal_data,
-                "election": local_election_data,
-            })
+            local_data_hash = compute_canonical_state_hash(local_proposal_data, local_election_data)
 
             # Check if requester already has this proposal
             if pid in requester_known:

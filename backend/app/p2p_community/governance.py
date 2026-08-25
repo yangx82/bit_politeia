@@ -312,12 +312,12 @@ class Election:
                 if self.election_type == ElectionType.CORE_NODE
                 else "Community Vote"
             ),
-            "eligible_voters": list(self.eligible_voters),
-            "votes": {k: [v.to_dict() for v in val] for k, val in self.votes.items()},
+            "eligible_voters": sorted(list(self.eligible_voters)),
+            "votes": {k: [v.to_dict() for v in val] for k, val in sorted(self.votes.items())},
             "status": self.status,
             "target_positions": self.target_positions,
-            "excluded_voters": list(self.excluded_voters),
-            "participation_rate": self.participation_rate,
+            "excluded_voters": sorted(list(self.excluded_voters)),
+            "participation_rate": round(self.participation_rate, 4),
             "payout_status": self.payout_status,
             "payout_amount": self.payout_amount,
             "payout_attempts": self.payout_attempts,
