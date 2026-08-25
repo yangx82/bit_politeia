@@ -272,7 +272,7 @@ class AgentService:
                 self.scheduler.add_job(
                     "app.services.agent_service:gossip_state_sync_proxy",
                     "interval",
-                    minutes=3,
+                    minutes=15,
                     id="gossip_state_sync_job",
                     replace_existing=True,
                 )

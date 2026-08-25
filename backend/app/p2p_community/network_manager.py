@@ -109,11 +109,11 @@ class NetworkManager:
         return time.time() >= info.get("next_sync_time", 0.0)
 
     def record_group_sync_idle(
-        self, group_id: str, base_sec: float = 180.0, max_sec: float = 3600.0
+        self, group_id: str, base_sec: float = 3600.0, max_sec: float = 28800.0
     ) -> float:
         """
-        Records that an online group sync completed with zero new messages or diffs (steady state).
-        Progressively increases next sync interval: 180s (3m) -> 360s (6m) -> 720s (12m) -> ... -> 3600s (60m).
+        Records that an online group sync completed or was dispatched in steady state.
+        Progressively increases next sync interval: 3600s (60m) -> 7200s (2h) -> 14400s (4h) -> 28800s (8h).
         """
         import time
 
@@ -124,7 +124,7 @@ class NetworkManager:
             {"idle_count": 0, "current_interval_sec": base_sec},
         )
         idle_count = info.get("idle_count", 0) + 1
-        # Exponential backoff on idle steady state: 180 * 2^(idle_count - 1), capped at 3600s (60m)
+        # Exponential backoff on idle steady state: 3600 * 2^(idle_count - 1), capped at 28800s (8h)
         interval_sec = min(base_sec * (2 ** (idle_count - 1)), max_sec)
         next_sync = time.time() + interval_sec
         self._group_sync_backoff[group_id] = {
@@ -135,7 +135,7 @@ class NetworkManager:
         }
         self._log_throttled(
             "debug",
-            f"[IdleBackoff] Group {group_id[:8]} in steady state (idle round #{idle_count}). Next sync in {int(interval_sec)}s (max 60m).",
+            f"[IdleBackoff] Group {group_id[:8]} in steady state (idle round #{idle_count}). Next sync in {int(interval_sec)}s (max 8h).",
             interval=60,
         )
         return interval_sec
@@ -988,6 +988,8 @@ class NetworkManager:
 
         # Broadcast sync request to all group members
         await self.route_message(sync_msg, gossip_forward=True)
+        # Advance idle backoff for local node to prevent repetitive probing
+        self.record_group_sync_idle(group_id, base_sec=3600.0, max_sec=28800.0)
 
     async def handle_state_sync_request(self, message: SignedMessage | dict):
         """Handle incoming state sync request by sharing known proposals/elections dynamically (delta sync).
@@ -1128,8 +1130,5 @@ class NetworkManager:
             f"synced={synced_count}, skipped={skipped_count}, integrity_mismatch={integrity_mismatch_count}"
         )
 
-        # Update Idle-Adaptive Sync Backoff
-        if synced_count == 0 and integrity_mismatch_count == 0:
-            self.record_group_sync_idle(group_id)
-        else:
-            self.record_group_activity(group_id)
+        # Update Idle-Adaptive Sync Backoff for responder node (60m base -> 8h max)
+        self.record_group_sync_idle(group_id, base_sec=3600.0, max_sec=28800.0)

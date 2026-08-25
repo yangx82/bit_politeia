@@ -280,7 +280,7 @@ def test_offline_backoff_throttling():
 
 
 def test_online_idle_adaptive_sync_backoff():
-    """Test online idle adaptive backoff when no new messages/diffs need syncing, up to 60min."""
+    """Test online idle adaptive backoff when no new messages/diffs need syncing, 60min up to 8h."""
     from unittest.mock import MagicMock
     from app.p2p_community.message_protocol import MessageProtocol
     from app.p2p_community.network_manager import NetworkManager
@@ -291,27 +291,27 @@ def test_online_idle_adaptive_sync_backoff():
     # Initially group is ready for sync
     assert nm.should_sync_group(group_id) is True
 
-    # 1st Idle sync completed -> 180s (3m)
+    # 1st Idle sync completed -> 3600s (60m / 1h)
     i1 = nm.record_group_sync_idle(group_id)
-    assert i1 == 180.0
+    assert i1 == 3600.0
     assert nm.should_sync_group(group_id) is False
 
-    # 2nd Idle sync completed -> 360s (6m)
+    # 2nd Idle sync completed -> 7200s (120m / 2h)
     i2 = nm.record_group_sync_idle(group_id)
-    assert i2 == 360.0
+    assert i2 == 7200.0
 
-    # 3rd Idle sync completed -> 720s (12m)
+    # 3rd Idle sync completed -> 14400s (240m / 4h)
     i3 = nm.record_group_sync_idle(group_id)
-    assert i3 == 720.0
+    assert i3 == 14400.0
 
-    # 4th Idle sync completed -> 1440s (24m)
+    # 4th Idle sync completed -> capped at 28800s (8h)
     i4 = nm.record_group_sync_idle(group_id)
-    assert i4 == 1440.0
+    assert i4 == 28800.0
 
-    # 6th Idle sync completed -> capped at 3600s (60m)
+    # 5th+ Idle sync completed -> still capped at 28800s (8h)
     for _ in range(3):
         i_cap = nm.record_group_sync_idle(group_id)
-    assert i_cap == 3600.0
+    assert i_cap == 28800.0
 
     # Instant activity detection resets idle backoff immediately
     nm.record_group_activity(group_id)
