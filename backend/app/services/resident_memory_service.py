@@ -593,7 +593,10 @@ class ResidentReporter:
         import uuid
         from datetime import datetime, timezone
         from ..bus.events import OutboundMessage
-        from ..schemas.domain import Message
+        try:
+            from ..models.schemas import Message
+        except (ImportError, ValueError):
+            from app.models.schemas import Message
 
         now = datetime.now(timezone.utc)
         msg_id = str(uuid.uuid4())
