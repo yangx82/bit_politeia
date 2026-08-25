@@ -7,7 +7,10 @@ from datetime import datetime, timezone
 UTC = timezone.utc
 from typing import Any
 
-from app.p2p_community.governance import AIPProposal, ElectionType, Vote
+try:
+    from ..p2p_community.governance import AIPProposal, ElectionType, Vote
+except (ImportError, ValueError):
+    from app.p2p_community.governance import AIPProposal, ElectionType, Vote
 
 logger = logging.getLogger(__name__)
 
@@ -289,7 +292,10 @@ class EvolutionService:
             return {"success": False, "error": f"AIP {aip_id} not found"}
 
         try:
-            from app.agent.sandbox import LocalSandbox
+            try:
+                from ..agent.sandbox import LocalSandbox
+            except (ImportError, ValueError):
+                from app.agent.sandbox import LocalSandbox
 
             sandbox = LocalSandbox()
             

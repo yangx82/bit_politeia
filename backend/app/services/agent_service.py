@@ -2534,7 +2534,10 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         """
         logger.info("[EvolutionWatcher] Running periodic self-evolution cycle...")
         try:
-            from app.services.evolution_service import evolution_service
+            try:
+                from .evolution_service import evolution_service
+            except (ImportError, ValueError):
+                from app.services.evolution_service import evolution_service
 
             draft_aips = [aip for aip in evolution_service.aips.values() if aip.status == "draft"]
 
