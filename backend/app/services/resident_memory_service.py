@@ -589,44 +589,29 @@ class ResidentReporter:
             return "I completed my daily memory consolidation, but I encountered an error while drafting the summary report."
 
     async def send_report_to_resident(self, report_text: str):
-        """Send the formatted report to the resident via the message bus and persist to history."""
-        import uuid
-        from datetime import datetime, timezone
+        """Send the formatted report to the resident via the message bus, history, and all bridges (Feishu, etc.)."""
         from ..bus.events import OutboundMessage
-        try:
-            from ..models.schemas import Message
-        except (ImportError, ValueError):
-            from app.models.schemas import Message
 
-        now = datetime.now(timezone.utc)
-        msg_id = str(uuid.uuid4())
-
-        # 1. Append to in-memory history and persist to disk so frontend displays it on page refresh/open
-        if hasattr(self.agent, "history"):
-            self.agent.history.append(
-                Message(
-                    id=msg_id,
-                    content=report_text,
-                    sender="agent",
-                    timestamp=now,
-                    session_id="resident",
+        # If agent service is available, broadcast via notify_resident to Gateway + Feishu + Telegram
+        if hasattr(self, "agent") and hasattr(self.agent, "notify_resident"):
+            await self.agent.notify_resident(
+                content=report_text,
+                type="message",
+                session_id="resident",
+                broadcast=True,
+            )
+        else:
+            # Fallback direct bus publish
+            await self.message_bus.publish_outbound(
+                OutboundMessage(
+                    channel="gateway", session_id="resident", content=report_text, type="message"
                 )
             )
-            if hasattr(self.agent, "_save_history"):
-                self.agent._save_history()
-
-        # 2. Publish as a 'message' so it's delivered in real-time if a WebSocket is active
-        await self.message_bus.publish_outbound(
-            OutboundMessage(
-                channel="gateway", session_id="resident", content=report_text, type="message"
-            )
-        )
-
-        # 3. Log to resident memory as well
-        self.agent.resident_memory.log_interaction(
-            "agent_report", report_text, "report", session_id="resident", timestamp=now, msg_id=msg_id, status="sent"
-        )
-        logger.info("Sent daily community report to resident.")
+            if hasattr(self, "agent") and hasattr(self.agent, "resident_memory"):
+                self.agent.resident_memory.log_interaction(
+                    "agent_report", report_text, "report", session_id="resident", status="sent"
+                )
+        logger.info("Sent daily community report to resident (broadcasted to all active channels).")
 
     async def generate_community_brief(self) -> str:
         """

@@ -1969,7 +1969,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
     async def notify_resident(
         self,
         content: str,
-        type: str = "agent_message",
+        type: str = "message",
         session_id: str = None,
         broadcast: bool = True,
         media: list = None,
@@ -1996,6 +1996,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 status="resident_only",  # Prevents P2P retry scheduler from picking this up
             )
         )
+        if hasattr(self, "_save_history"):
+            self._save_history()
+
         self.resident_memory.log_interaction(
             "agent", content, msg_type="chat", session_id=session_id
         )
