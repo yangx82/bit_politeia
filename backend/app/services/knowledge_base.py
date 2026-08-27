@@ -359,9 +359,11 @@ class KnowledgeBase:
         1. Check update frequency (default 30 days).
         2. Fallback to offline if connection fails.
         """
-        cache_dir = "backend/data"
+        from pathlib import Path
+        backend_dir = Path(__file__).resolve().parent.parent.parent
+        cache_dir = str(backend_dir / "data")
         if not os.path.exists(cache_dir):
-            os.makedirs(cache_dir)
+            os.makedirs(cache_dir, exist_ok=True)
 
         check_file = os.path.join(cache_dir, ".model_last_check")
         should_check_online = True
