@@ -1,6 +1,11 @@
+import os
 import sys
-import warnings
 
+# Critical for China: Set HuggingFace Mirror before any imports that might use it
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+
+import warnings
 from fastapi import FastAPI
 
 # Suppress pkg_resources deprecation warning from lark-oapi and other legacy packages
@@ -10,7 +15,6 @@ warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
 print("\n[!!!] STARTING main.py from " + __file__ + " [!!!]\n", flush=True)
 import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,9 +23,6 @@ from app.api.v1 import router as api_router
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
-# Critical for China: Set HuggingFace Mirror before any imports that might use it
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 from app.utils.env_utils import load_dotenv_safe
 
@@ -162,6 +163,7 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8100,
         reload=True,
+        app_dir=backend_dir,
         reload_dirs=[app_dir],
         reload_excludes=[
             "data",
