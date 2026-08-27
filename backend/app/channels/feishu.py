@@ -23,10 +23,17 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
     避免与主进程的事件循环冲突。
     支持通过 stop_event 优雅退出。
     """
+    import asyncio
     import atexit
     import lark_oapi as lark
+    import lark_oapi.ws.client as lark_ws_client_mod
     import signal
     import time
+    
+    # 彻底重置当前工作进程的 asyncio 事件循环，避免继承父进程的 running 状态
+    worker_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(worker_loop)
+    lark_ws_client_mod.loop = worker_loop
     
     # 配置日志
     logging.basicConfig(
@@ -109,6 +116,11 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
 
             def start_ws():
                 try:
+                    nonlocal worker_loop
+                    if worker_loop.is_closed():
+                        worker_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(worker_loop)
+                    lark_ws_client_mod.loop = worker_loop
                     ws_client.start()
                 except Exception as e:
                     start_exception[0] = e
@@ -293,9 +305,10 @@ class FeishuChannel(BaseChannel):
         # )
 
         # Start WebSocket client in a separate PROCESS to avoid event loop conflict
-        self._ws_queue = multiprocessing.Queue()
-        self._ws_stop_event = multiprocessing.Event()
-        self._ws_process = multiprocessing.Process(
+        mp_ctx = multiprocessing.get_context("spawn")
+        self._ws_queue = mp_ctx.Queue()
+        self._ws_stop_event = mp_ctx.Event()
+        self._ws_process = mp_ctx.Process(
             target=_feishu_ws_worker,
             args=(
                 self.config.app_id,

@@ -13,9 +13,11 @@ sleep 1
 mkdir -p backend/data/logs
 export PYTHONPATH="$DIR/backend:$PYTHONPATH"
 
-echo "[*] Starting backend main.py in background..."
-nohup /home/xing/miniconda3/envs/bit_politeia/bin/python backend/main.py > backend/data/logs/backend_stdout.log 2>&1 &
+echo "[*] Starting backend (uvicorn main:app) in background..."
+cd "$DIR/backend"
+nohup /home/xing/miniconda3/envs/bit_politeia/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8100 > data/logs/backend_stdout.log 2>&1 &
 PID=$!
+cd "$DIR"
 echo "[+] Backend launched with PID: $PID"
 
 for i in {1..35}; do
