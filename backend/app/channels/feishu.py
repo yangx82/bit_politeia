@@ -696,7 +696,26 @@ class FeishuChannel(BaseChannel):
         if not file_data or len(file_data) == 0:
             raise Exception(f"Feishu file content is empty for {file_key}")
 
-        download_dir = Path("data/downloads")
+        # Determine proper extension based on magic bytes if file_name has no standard extension
+        ext = Path(file_name).suffix.lower()
+        if not ext or ext == ".image":
+            if file_data.startswith(b"\x89PNG"):
+                ext = ".png"
+            elif file_data.startswith(b"\xff\xd8"):
+                ext = ".jpg"
+            elif file_data.startswith(b"GIF8"):
+                ext = ".gif"
+            elif file_data.startswith(b"RIFF") and b"WEBP" in file_data[:16]:
+                ext = ".webp"
+            elif file_type == "image":
+                ext = ".png"
+            else:
+                ext = ""
+            if ext:
+                file_name = f"{Path(file_name).stem}{ext}"
+
+        backend_dir = Path(__file__).resolve().parent.parent.parent
+        download_dir = backend_dir / "data" / "downloads"
         download_dir.mkdir(parents=True, exist_ok=True)
 
         file_path = download_dir / f"fs_{message_id}_{file_name}"
@@ -704,7 +723,7 @@ class FeishuChannel(BaseChannel):
         with open(file_path, "wb") as f:
             f.write(file_data)
 
-        return str(file_path.absolute())
+        return str(file_path.resolve())
 
     async def _on_message(self, data: "P2ImMessageReceiveV1") -> None:
         """Handle incoming message from Feishu."""
@@ -764,12 +783,12 @@ class FeishuChannel(BaseChannel):
                             file_name,
                         )
 
-                        content = f"[System] User sent a {resource_type}: {file_name}"
+                        content = f"[System] User sent a {resource_type}: {Path(file_path).name} (saved locally at: {file_path})"
                         media_items.append(
                             {
                                 "type": resource_type,
                                 "path": file_path,
-                                "name": file_name,
+                                "name": Path(file_path).name,
                             }
                         )
                         logger.info(f"Downloaded Feishu {resource_type}: {file_path}")
