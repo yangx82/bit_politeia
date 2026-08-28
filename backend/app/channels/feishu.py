@@ -8,6 +8,7 @@ import os
 import sys
 import threading
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any
 
 from ..bus.events import OutboundMessage
