@@ -1,5 +1,10 @@
 import os
 import sys
+import site
+
+user_site = site.getusersitepackages()
+if user_site and user_site not in sys.path:
+    sys.path.insert(0, user_site)
 
 # Critical for China: Set HuggingFace Mirror before any imports that might use it
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
@@ -12,22 +17,21 @@ from fastapi import FastAPI
 warnings.filterwarnings("ignore", category=UserWarning, module="lark_oapi")
 warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
 
-print("\n[!!!] STARTING main.py from " + __file__ + " [!!!]\n", flush=True)
 import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi.middleware.cors import CORSMiddleware
+from app.utils.env_utils import load_dotenv_safe, sanitize_proxy_env
 
+# Load env vars & sanitize proxy settings before any service imports
+load_dotenv_safe()
+sanitize_proxy_env()
+
+from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import router as api_router
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
-from app.utils.env_utils import load_dotenv_safe
-
-# Load env vars
-load_dotenv_safe()
 
 from app.bus.queue import message_bus
 from app.channels.feishu import FeishuChannel

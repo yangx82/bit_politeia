@@ -20,11 +20,35 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def sanitize_proxy_env():
+    """
+    Sanitize proxy environment variables.
+    Python's httpx/urllib3/requests libraries do not support 'socks://' scheme
+    (they expect 'http://', 'https://', 'socks5://', or 'socks5h://' if socksio is installed).
+    If ALL_PROXY / all_proxy / HTTP_PROXY / HTTPS_PROXY is set to socks://,
+    httpx fails with: ValueError("Unknown scheme for proxy URL URL('socks://...')").
+    This helper cleans unsupported socks schemes so standard HTTP/HTTPS
+    proxies work reliably without crashing ChromaDB, HuggingFace, OpenAI, or LangChain.
+    """
+    for var in ["ALL_PROXY", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]:
+        if var in os.environ and "socks" in os.environ[var].lower():
+            try:
+                logger.info(f"[ProxySanitizer] Removing unsupported proxy scheme in {var}={os.environ[var]}")
+            except Exception:
+                pass
+            del os.environ[var]
+
+
+# Run immediately on module import
+sanitize_proxy_env()
+
+
 def load_dotenv_safe(dotenv_path: str = None, **kwargs):
     """
     Enhanced load_dotenv that strips null characters (\x00) from the .env file.
     Null characters cause ValueError: embedded null character when set to os.environ.
     Uses find_dotenv() to support parent-directory search if no path specified.
+    Also automatically sanitizes proxy environment variables.
     """
     # Use find_dotenv() to mirror standard load_dotenv behavior if no path given
     path = dotenv_path or find_dotenv()
@@ -39,6 +63,7 @@ def load_dotenv_safe(dotenv_path: str = None, **kwargs):
             path = str(env_file)
             logger.info(f"[SafeDotenv] Found .env at project root: {path}")
 
+    res = False
     if path and os.path.exists(path):
         try:
             with open(path, "rb") as f:
@@ -51,11 +76,14 @@ def load_dotenv_safe(dotenv_path: str = None, **kwargs):
 
             # Use io.StringIO for load_dotenv
             stream = io.StringIO(clean_content.decode("utf-8", errors="replace"))
-            return _load_dotenv(stream=stream, **kwargs)
+            res = _load_dotenv(stream=stream, **kwargs)
         except Exception as e:
             logger.error(f"[SafeDotenv] Error processing {path}: {e}")
             # Fallback to standard loading if something goes wrong
-            return _load_dotenv(dotenv_path=path, **kwargs)
+            res = _load_dotenv(dotenv_path=path, **kwargs)
+    else:
+        res = _load_dotenv(dotenv_path=dotenv_path, **kwargs)
 
-    # If find_dotenv() failed or file doesn't exist, fallback to standard load_dotenv
-    return _load_dotenv(dotenv_path=dotenv_path, **kwargs)
+    # Sanitize proxy after dotenv loading
+    sanitize_proxy_env()
+    return res
