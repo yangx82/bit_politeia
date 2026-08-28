@@ -8,6 +8,8 @@ echo "[*] Killing old backend processes..."
 pkill -9 -f "uvicorn" 2>/dev/null || true
 pkill -9 -f "backend/main.py" 2>/dev/null || true
 pkill -9 -f "code_supervisor.py" 2>/dev/null || true
+pkill -9 -f "multiprocessing" 2>/dev/null || true
+fuser -k 8100/tcp 2>/dev/null || true
 sleep 1
 
 mkdir -p backend/data/logs

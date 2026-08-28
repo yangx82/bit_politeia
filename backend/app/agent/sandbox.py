@@ -48,11 +48,23 @@ class LocalSandbox(Sandbox):
         # For now, we trust the input if it's explicitly provided,
         # but default to our isolated temp space.
 
-        # Prepare Environment (Allow only essential variables)
+        # Prepare Environment (Allow essential execution variables)
+        import sys
+        python_bin_dir = os.path.dirname(sys.executable)
+        current_path = os.environ.get("PATH", "")
+        effective_path = f"{python_bin_dir}{os.pathsep}{current_path}" if current_path else python_bin_dir
+
         safe_env = {
+            "PATH": effective_path,
             "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+            "VIRTUAL_ENV": os.environ.get("VIRTUAL_ENV", ""),
+            "CONDA_PREFIX": os.environ.get("CONDA_PREFIX", ""),
+            "CONDA_DEFAULT_ENV": os.environ.get("CONDA_DEFAULT_ENV", ""),
             "TEMP": self.temp_dir,
             "TMP": self.temp_dir,
+            "HOME": os.environ.get("HOME", "/tmp"),
+            "LANG": os.environ.get("LANG", "C.UTF-8"),
+            "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
             # Pass through ResearchClaw context
             "RESEARCHCLAW_HOME": os.environ.get("RESEARCHCLAW_HOME", ""),
             "BAILIAN_SP_KEY": os.environ.get("BAILIAN_SP_KEY", ""),
