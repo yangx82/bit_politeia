@@ -38,19 +38,91 @@ def sanitize_proxy_env():
                 pass
             del os.environ[var]
 
-    # 2. Inject domestic endpoints into NO_PROXY / no_proxy
+    # 2. Inject domestic endpoints & dynamic LLM hosts into NO_PROXY / no_proxy
+    from urllib.parse import urlparse
+
     domestic_hosts = [
+        # P2P Bootstrap & Local
         "113.106.87.146",
-        "open.feishu.cn",
-        "feishu.cn",
-        ".feishu.cn",
-        "larksuite.com",
-        ".larksuite.com",
         "127.0.0.1",
         "localhost",
         "bitpoliteia.com",
         ".bitpoliteia.com",
+        # Feishu / Lark
+        "open.feishu.cn",
+        "msg-frontier.feishu.cn",
+        "feishu.cn",
+        ".feishu.cn",
+        "larksuite.com",
+        ".larksuite.com",
+        # Domestic LLMs / Model Providers
+        "coding.dashscope.aliyuncs.com",
+        "dashscope.aliyuncs.com",
+        "bailian.cn-beijing.aliyuncs.com",
+        ".aliyuncs.com",
+        ".aliyun.com",
+        "api.deepseek.com",
+        ".deepseek.com",
+        "open.bigmodel.cn",
+        "api.zhipuai.cn",
+        ".bigmodel.cn",
+        ".zhipuai.cn",
+        "api.moonshot.cn",
+        ".moonshot.cn",
+        "qianfan.baidubce.com",
+        "aip.baidubce.com",
+        ".baidubce.com",
+        "spark-api.xf-yun.com",
+        "spark-api-open.xf-yun.com",
+        "100ime-iat-api.xfyun.cn",
+        ".xfyun.cn",
+        ".xf-yun.com",
+        "api.siliconflow.cn",
+        ".siliconflow.cn",
+        "api.minimax.chat",
+        ".minimax.chat",
+        "api.stepfun.com",
+        ".stepfun.com",
+        # Mirrors & Domestic Repositories
+        "hf-mirror.com",
+        ".hf-mirror.com",
+        "gitee.com",
+        "pypi.tuna.tsinghua.edu.cn",
+        "mirrors.aliyun.com",
     ]
+
+    # Dynamically extract host from configured LLM URLs
+    for url_env in ["AGENT_BASE_URL", "AUX_MODEL_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE", "AGENT_BOOTSTRAP_URL"]:
+        val = os.environ.get(url_env)
+        if val:
+            try:
+                parsed = urlparse(val if "://" in val else f"http://{val}")
+                if parsed.hostname:
+                    h = parsed.hostname.lower()
+                    if h not in domestic_hosts:
+                        # If domain is domestic (.cn, .aliyun, .deepseek, etc.) or private IP
+                        if (
+                            h.endswith(".cn")
+                            or "aliyun" in h
+                            or "deepseek" in h
+                            or "zhipu" in h
+                            or "moonshot" in h
+                            or "baidu" in h
+                            or "xfyun" in h
+                            or "siliconflow" in h
+                            or "minimax" in h
+                            or "113.106." in h
+                            or "192.168." in h
+                            or "10." in h
+                            or "172." in h
+                        ):
+                            domestic_hosts.append(h)
+                            # Also add wildcard dot-prefix
+                            if not h.startswith("."):
+                                domestic_hosts.append(f".{h}")
+            except Exception:
+                pass
+
     for np_key in ["NO_PROXY", "no_proxy"]:
         current_np = os.environ.get(np_key, "")
         existing = [x.strip() for x in current_np.split(",") if x.strip()]

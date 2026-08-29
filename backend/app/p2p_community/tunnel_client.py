@@ -35,7 +35,7 @@ class TunnelClient:
 
         try:
             if httpx:
-                async with httpx.AsyncClient(timeout=10.0, verify=verify_ssl) as client:
+                async with httpx.AsyncClient(timeout=10.0, verify=verify_ssl, trust_env=False) as client:
                     resp = await client.post(
                         f"{self.bootstrap_url}/tunnel/v1/request", json={"node_id": self.node_id}
                     )
