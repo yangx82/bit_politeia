@@ -14,7 +14,7 @@ sleep 1
 
 # Auto-clamp WSL2 MTU to 1400 to prevent TLS handshake drops on VPN/Clash TUN
 if [ "$(uname)" = "Linux" ]; then
-    sudo ip link set dev eth0 mtu 1400 2>/dev/null || true
+    sudo -n ip link set dev eth0 mtu 1400 2>/dev/null || true
 fi
 
 mkdir -p backend/data/logs
