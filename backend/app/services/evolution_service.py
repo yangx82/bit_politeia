@@ -221,6 +221,49 @@ class EvolutionService:
             logger.error(f"[EvolutionService] Auto-exploration failed: {e}")
             return None
 
+    async def revise_aip(self, aip_id: str, feedback: str, llm_client: Any = None) -> AIPProposal | None:
+        """Revises a rejected or draft AIP proposal based on audit feedback."""
+        aip = self.aips.get(aip_id)
+        if not aip or not llm_client:
+            return None
+
+        try:
+            prompt = (
+                "You are the Autonomous Architecture Evolution Engine for Bit Politeia.\n"
+                f"Your previous Agent Improvement Proposal ({aip.aip_id}) was reviewed by the Audit Committee and rejected with the following feedback:\n\n"
+                f"--- AUDIT FEEDBACK ---\n{feedback}\n----------------------\n\n"
+                f"Current Proposal:\n"
+                f"Title: {aip.title}\n"
+                f"Description: {aip.description}\n"
+                f"Target Files: {aip.target_files}\n"
+                f"Proposed Diff:\n{aip.proposed_diff}\n\n"
+                "Please systematically address EVERY issue identified in the audit feedback and produce a revised, production-ready proposal.\n"
+                "Return strictly valid JSON matching this schema:\n"
+                "{\n"
+                '  "title": "Revised title",\n'
+                '  "description": "Updated explanation addressing the feedback",\n'
+                '  "target_files": ["backend/app/services/memory_service.py"],\n'
+                '  "proposed_diff": "Complete revised Python implementation with threading.Lock, numpy, proper interfaces, and tests",\n'
+                '  "research_sources": ["https://arxiv.org/..."]\n'
+                "}\n\n"
+                "IMPORTANT: Output ONLY the raw JSON object. Do not output conversational preambles."
+            )
+            res_json = await _invoke_llm_json(llm_client, prompt)
+            if res_json and "proposed_diff" in res_json:
+                aip.title = res_json.get("title", aip.title)
+                aip.description = res_json.get("description", aip.description)
+                aip.target_files = res_json.get("target_files", aip.target_files)
+                aip.proposed_diff = res_json.get("proposed_diff", aip.proposed_diff)
+                if "research_sources" in res_json:
+                    aip.research_sources = res_json.get("research_sources")
+                aip.status = "revised_draft"
+                self._save_aips()
+                logger.info(f"[EvolutionService] Successfully revised {aip.aip_id} based on audit feedback.")
+                return aip
+        except Exception as e:
+            logger.error(f"[EvolutionService] Failed to revise AIP {aip_id}: {e}")
+        return None
+
     async def broadcast_aip(self, aip_id: str, p2p_service: Any = None) -> bool:
         """Broadcasts an AIP proposal to peer nodes over the P2P network."""
         aip = self.aips.get(aip_id)

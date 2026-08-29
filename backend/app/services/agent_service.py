@@ -2553,6 +2553,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
             # Audit active draft AIPs
             processed_reports = []
+            has_approved = False
             for aip in draft_aips:
                 logger.info(f"[EvolutionWatcher] Auditing draft proposal {aip.aip_id}...")
                 vote = await evolution_service.audit_aip(aip.aip_id, llm_client=self.llm)
@@ -2562,6 +2563,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     sandbox_status = "通过 (Passed ✅)" if sb_res.get("success") else "失败 (Failed ❌)"
                     p2p_service = getattr(self, "p2p_service", None)
                     await evolution_service.broadcast_aip(aip.aip_id, p2p_service=p2p_service)
+                    has_approved = True
+                else:
+                    # Trigger proactive iterative self-repair based on audit feedback
+                    if self.llm:
+                        logger.info(f"[EvolutionWatcher] Proposal {aip.aip_id} rejected. Triggering iterative self-repair...")
+                        await evolution_service.revise_aip(aip.aip_id, feedback=vote.reason, llm_client=self.llm)
 
                 target_str = ", ".join(aip.target_files) if aip.target_files else "系统核心架构"
                 report_item = (
@@ -2575,10 +2582,15 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 processed_reports.append(report_item)
 
             if processed_reports:
+                if has_approved:
+                    footer_note = "> *已自动将通过审计与沙盒测试的提案推向去中心化 P2P 社区进行全网共识裁决。*"
+                else:
+                    footer_note = "> *提示：本期提案未通过安全与架构审计，演化引擎已根据审查意见自动完成草案迭代修正，进入下一轮验证。*"
+
                 full_report = (
                     "## 🤖 Bit Politeia 智能体自主进化演化报告\n\n"
                     + "\n\n---\n\n".join(processed_reports)
-                    + "\n\n> *已自动将通过审计与沙盒测试的提案推向去中心化 P2P 社区进行全网共识裁决。*"
+                    + f"\n\n{footer_note}"
                 )
                 if self.reporter:
                     await self.reporter.send_report_to_resident(full_report)
