@@ -843,13 +843,7 @@ class AgentService:
 
         logger.info(f"Setting P2P Endpoint to: {p2p_endpoint}")
 
-        if p2p_service.local_node:
-            await p2p_service.update_node_info(name=self.name)
-            node_id = p2p_service.local_node.node_id
-        else:
-            # Initialize if not already (first run)
-            node_id = crypto_service.get_node_id()
-            await p2p_service.initialize(node_id, p2p_endpoint, name=self.name)
+        node_id = crypto_service.get_node_id()
 
         # Start Message Bus and Listener
         await self.message_bus.start()
@@ -868,12 +862,21 @@ class AgentService:
         if self.archive_manager:
             knowledge_base.ingest_archives(self.archive_manager.chain.get_chain_dict())
 
-        # Use the actual node_id from p2p_service for consistency
-        real_node_id = p2p_service.local_node.node_id if p2p_service.local_node else node_id
-
         # Initialize Ledger Balance (Mocking initial funding)
-        if self.ledger.get_balance(real_node_id) == 0:
-            self.ledger.credit(real_node_id, 0.0)
+        if self.ledger.get_balance(node_id) == 0:
+            self.ledger.credit(node_id, 0.0)
+
+        # Initialize P2P service in background task so LLM and APIs are ready immediately
+        async def _init_p2p_bg():
+            try:
+                if p2p_service.local_node:
+                    await p2p_service.update_node_info(name=self.name)
+                else:
+                    await p2p_service.initialize(node_id, p2p_endpoint, name=self.name)
+            except Exception as pe:
+                logger.warning(f"Background P2P initialization error: {pe}")
+
+        asyncio.create_task(_init_p2p_bg())
 
         # Initialize LLM with Tools
         try:
