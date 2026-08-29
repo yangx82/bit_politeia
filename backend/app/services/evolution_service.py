@@ -485,17 +485,25 @@ class EvolutionService:
             
             # If code is provided in proposed_diff, write to sandbox and execute
             code_to_verify = aip.proposed_diff.strip() if aip.proposed_diff else ""
-            if code_to_verify:
-                test_file_path = os.path.join(sandbox.temp_dir, "test_aip_verification.py")
-                with open(test_file_path, "w", encoding="utf-8") as tf:
-                    tf.write(code_to_verify)
-                    tf.write("\n\nprint('[Sandbox Verification] Code executed cleanly without exceptions.')\n")
-                
-                verify_script = f"python {test_file_path}"
-            else:
-                verify_script = (
-                    "python -c \"import sys; print('Sandbox environment initialized.'); print('Pre-flight checks passed.')\""
-                )
+            if not code_to_verify:
+                err_data = {
+                    "success": False,
+                    "stdout": "",
+                    "stderr": "Empty proposed_diff: proposal contains no executable code modifications.",
+                    "error": "Empty proposed_diff",
+                    "timestamp": datetime.now(UTC).isoformat(),
+                }
+                aip.sandbox_results = err_data
+                aip.status = "failed"
+                self._save_aips()
+                return err_data
+
+            test_file_path = os.path.join(sandbox.temp_dir, "test_aip_verification.py")
+            with open(test_file_path, "w", encoding="utf-8") as tf:
+                tf.write(code_to_verify)
+                tf.write("\n\nprint('[Sandbox Verification] Code executed cleanly without exceptions.')\n")
+            
+            verify_script = f"python {test_file_path}"
 
             stdout, stderr, returncode = await sandbox.execute(verify_script)
 
