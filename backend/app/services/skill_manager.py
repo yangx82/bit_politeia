@@ -224,9 +224,19 @@ class SkillManager:
     # --- Claude Style Skills Support ---
 
     def _parse_skill_md(self, file_path: str) -> dict[str, Any]:
-        """Parse SKILL.md frontmatter and content."""
-        with open(file_path, encoding="utf-8") as f:
-            content = f.read()
+        """Parse SKILL.md frontmatter and content with resilient encoding support."""
+        content = ""
+        for encoding in ["utf-8", "utf-8-sig", "gb18030", "gbk", "latin-1"]:
+            try:
+                with open(file_path, encoding=encoding) as f:
+                    content = f.read()
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if not content:
+            with open(file_path, encoding="utf-8", errors="replace") as f:
+                content = f.read()
 
         import yaml
 
