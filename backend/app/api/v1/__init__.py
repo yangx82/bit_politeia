@@ -287,3 +287,23 @@ async def evaluate_research(election_id: str, request: ResearchEvaluateRequest) 
         return {"status": "success", "message": message}
     else:
         raise HTTPException(status_code=400, detail=message)
+
+
+@router.post("/evolution/trigger")
+async def trigger_evolution() -> dict:
+    """Trigger a full closed-loop evolution cycle on the running backend."""
+    import asyncio
+    asyncio.create_task(agent_service.run_evolution_watcher())
+    return {"status": "started", "message": "Closed-loop evolution cycle initiated."}
+
+
+@router.get("/evolution/aips")
+async def get_evolution_aips() -> list[dict]:
+    """Get all AIP proposals with details."""
+    try:
+        from ...services.evolution_service import evolution_service
+        return [a.to_dict() for a in evolution_service.aips.values()]
+    except Exception as e:
+        logger.error(f"Error fetching AIPs: {e}")
+        return []
+

@@ -112,6 +112,14 @@ async def _invoke_llm_json(llm_client: Any, prompt: str) -> dict:
         except Exception:
             pass
 
+    # If result has a top-level wrapper key like 'message' or 'content', unwrap it
+    for wrapper_key in ["message", "response", "content", "data", "result"]:
+        if wrapper_key in res_dict and isinstance(res_dict[wrapper_key], (str, dict)):
+            inner = _extract_and_parse_json(res_dict[wrapper_key]) if isinstance(res_dict[wrapper_key], str) else res_dict[wrapper_key]
+            if inner and isinstance(inner, dict) and ("proposed_diff" in inner or "description" in inner or "approved" in inner):
+                res_dict = inner
+                break
+
     return res_dict
 
 

@@ -3343,10 +3343,28 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         return {"proposal": proposal.to_dict(), "election": election.to_dict()}
 
     async def get_proposals(self) -> list[dict]:
-        if not self.governance_manager:
-            return []
-        # Return list of proposals
-        return [p.to_dict() for p in self.governance_manager.proposals.values()]
+        proposals = []
+        if self.governance_manager:
+            proposals.extend([p.to_dict() for p in self.governance_manager.proposals.values()])
+        try:
+            try:
+                from .evolution_service import evolution_service
+            except (ImportError, ValueError):
+                from app.services.evolution_service import evolution_service
+
+            for aip in evolution_service.aips.values():
+                proposals.append({
+                    "proposal_id": aip.aip_id,
+                    "proposer_id": aip.initiator_id,
+                    "content": f"[AIP 自主演化] {aip.title}: {aip.description}",
+                    "scope": "architecture_evolution",
+                    "status": aip.status,
+                    "timestamp": aip.timestamp,
+                    "metadata": aip.to_dict(),
+                })
+        except Exception as e:
+            logger.error(f"Error fetching AIP proposals in get_proposals: {e}")
+        return proposals
 
     async def get_research_proposals(self, group_id: str = None) -> list[dict]:
         """Get research proposals with optional filtering."""
