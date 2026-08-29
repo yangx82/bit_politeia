@@ -307,3 +307,26 @@ async def get_evolution_aips() -> list[dict]:
         logger.error(f"Error fetching AIPs: {e}")
         return []
 
+
+@router.post("/evolution/aips/{aip_id}/broadcast")
+async def broadcast_evolution_aip(aip_id: str) -> dict:
+    """Broadcast an AIP proposal to the P2P community."""
+    try:
+        from ...services.evolution_service import evolution_service
+        from ...services.agent_service import agent_service
+        from ...services.p2p_service import p2p_service
+        success = await evolution_service.broadcast_aip(
+            aip_id=aip_id,
+            p2p_service=p2p_service,
+            agent_service=agent_service,
+        )
+        if success:
+            return {"status": "success", "message": f"AIP {aip_id} broadcasted to P2P network."}
+        else:
+            raise HTTPException(status_code=400, detail=f"Failed to broadcast AIP {aip_id}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error broadcasting AIP {aip_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

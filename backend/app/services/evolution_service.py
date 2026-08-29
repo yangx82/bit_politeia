@@ -338,35 +338,93 @@ class EvolutionService:
             logger.error(f"[EvolutionService] Failed to revise AIP {aip_id}: {e}")
         return None
 
-    async def broadcast_aip(self, aip_id: str, p2p_service: Any = None) -> bool:
+    async def broadcast_aip(self, aip_id: str, p2p_service: Any = None, agent_service: Any = None) -> bool:
         """Broadcasts an AIP proposal to peer nodes over the P2P network."""
         aip = self.aips.get(aip_id)
         if not aip:
             logger.error(f"[EvolutionService] AIP {aip_id} not found")
             return False
 
-        aip.status = "proposed"
+        aip.status = "verified_and_proposed"
         self._save_aips()
 
-        if p2p_service and p2p_service.network_manager:
+        if not p2p_service:
             try:
-                # Construct P2P governance proposal message
+                from .p2p_service import p2p_service as default_p2p
+                p2p_service = default_p2p
+            except Exception:
+                pass
+
+        if not agent_service:
+            try:
+                from .agent_service import agent_service as default_agent
+                agent_service = default_agent
+            except Exception:
+                pass
+
+        if p2p_service and p2p_service.local_node:
+            try:
+                # 1. Determine active group ID
+                group_id = None
+                if p2p_service.local_node.group_ids:
+                    group_id = list(p2p_service.local_node.group_ids)[0]
+                elif p2p_service.network_manager and p2p_service.network_manager.groups:
+                    group_id = list(p2p_service.network_manager.groups.keys())[0]
+
+                if not group_id:
+                    logger.warning(f"[EvolutionService] No group found for broadcasting AIP {aip_id}")
+                    return False
+
+                # 2. Construct P2P governance proposal message
                 content_payload = json.dumps({
                     "type": "architecture_evolution",
                     "aip": aip.to_dict()
-                })
-                # Broadcast via governance network
-                if hasattr(p2p_service, "governance_manager") and p2p_service.governance_manager:
-                    p2p_service.governance_manager.create_proposal(
+                }, ensure_ascii=False)
+
+                # 3. Create governance proposal & election, and broadcast to P2P network
+                if agent_service and hasattr(agent_service, "governance_manager") and agent_service.governance_manager:
+                    result = await agent_service.create_proposal(
+                        group_id=group_id,
                         content=content_payload,
-                        scope="group"
+                        duration_minutes=1440
                     )
-                logger.info(f"[EvolutionService] Broadcasted {aip_id} to P2P network")
-                return True
+                    logger.info(f"[EvolutionService] Created governance proposal and broadcasted {aip_id} to group {group_id}: {result.get('proposal', {}).get('proposal_id')}")
+                    return True
+                else:
+                    proposal_id = str(uuid.uuid4())
+                    election_id = str(uuid.uuid4())
+                    prop_data = {
+                        "proposal_id": proposal_id,
+                        "initiator_id": p2p_service.local_node.node_id,
+                        "group_id": group_id,
+                        "content": content_payload,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "scope": "group",
+                        "status": "discussed"
+                    }
+                    elec_data = {
+                        "election_id": election_id,
+                        "group_id": group_id,
+                        "election_type": "proposal_vote",
+                        "initiator_id": p2p_service.local_node.node_id,
+                        "start_time": datetime.now(timezone.utc).isoformat(),
+                        "end_time": (datetime.now(timezone.utc) + timedelta(minutes=1440)).isoformat(),
+                        "proposal_id": proposal_id,
+                        "status": "active"
+                    }
+                    await p2p_service.broadcast_governance_event(
+                        group_id=group_id,
+                        event_type="proposal",
+                        data={"proposal": prop_data, "election": elec_data}
+                    )
+                    logger.info(f"[EvolutionService] Directly broadcasted {aip_id} to group {group_id}")
+                    return True
             except Exception as e:
-                logger.error(f"[EvolutionService] Failed to broadcast AIP {aip_id}: {e}")
+                logger.error(f"[EvolutionService] Failed to broadcast AIP {aip_id}: {e}", exc_info=True)
                 return False
-        return True
+        else:
+            logger.warning(f"[EvolutionService] P2PService not initialized, cannot broadcast {aip_id}")
+            return False
 
     async def audit_aip(self, aip_id: str, llm_client: Any = None) -> Vote:
         """
@@ -467,6 +525,7 @@ class EvolutionService:
         max_rounds: int = 4,
         llm_client: Any = None,
         p2p_service: Any = None,
+        agent_service: Any = None,
         progress_callback: Any = None,
     ) -> dict[str, Any]:
         """
@@ -536,7 +595,7 @@ class EvolutionService:
 
             # 3. Success Phase: Broadcast to P2P Community
             logger.info(f"[EvolutionLoop] Round {current_round}: Sandbox verification PASSED! Broadcasting to P2P...")
-            await self.broadcast_aip(aip.aip_id, p2p_service=p2p_service)
+            await self.broadcast_aip(aip.aip_id, p2p_service=p2p_service, agent_service=agent_service)
             aip.status = "verified_and_proposed"
             self._save_aips()
 

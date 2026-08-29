@@ -884,6 +884,24 @@ class GovernanceManager:
                 logger.info(
                     f"Governance P2P: Successfully ingested remote proposal {proposal.proposal_id[:8]}"
                 )
+
+                # Auto-ingest into EvolutionService if it is an architecture evolution AIP
+                try:
+                    import json
+                    c_data = json.loads(proposal.content) if isinstance(proposal.content, str) else proposal.content
+                    if isinstance(c_data, dict) and c_data.get("type") == "architecture_evolution":
+                        aip_data = c_data.get("aip")
+                        if aip_data and isinstance(aip_data, dict):
+                            from ..services.evolution_service import evolution_service, AIPProposal as ES_AIPProposal
+                            remote_aip_id = aip_data.get("aip_id")
+                            if remote_aip_id:
+                                remote_aip = ES_AIPProposal.from_dict(aip_data)
+                                evolution_service.aips[remote_aip_id] = remote_aip
+                                evolution_service._save_aips()
+                                logger.info(f"Governance P2P: Ingested remote AIP {remote_aip_id} into EvolutionService")
+                except Exception as e:
+                    logger.debug(f"Governance P2P: Non-AIP proposal content: {e}")
+
                 self.save_state()
                 return True
 

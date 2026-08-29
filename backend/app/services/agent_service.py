@@ -2602,7 +2602,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     aip_id=aip.aip_id,
                     max_rounds=4,
                     llm_client=self.llm,
-                    p2p_service=getattr(self, "p2p_service", None),
+                    p2p_service=p2p_service,
+                    agent_service=self,
                     progress_callback=progress_notify,
                 )
 
