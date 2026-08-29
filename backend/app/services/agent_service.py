@@ -2568,7 +2568,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
             active_aips = [
                 aip for aip in evolution_service.aips.values()
-                if aip.status in ["draft", "proposed", "revised_draft"]
+                if aip.status in ["draft", "proposed", "revised_draft", "stalled"]
             ]
 
             # If no pending draft AIPs exist, trigger proactive LLM auto-exploration
