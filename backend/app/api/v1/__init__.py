@@ -330,3 +330,26 @@ async def broadcast_evolution_aip(aip_id: str) -> dict:
         logger.error(f"Error broadcasting AIP {aip_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.post("/evolution/aips/{aip_id}/apply_and_create_pr")
+async def apply_and_create_pr_endpoint(aip_id: str) -> dict:
+    """Physically apply code patch, create branch, push, and submit GitHub PR."""
+    try:
+        from ...services.evolution_service import evolution_service
+        from ...services.agent_service import agent_service
+        res = await evolution_service.submit_pr(
+            aip_id=aip_id,
+            agent_service=agent_service,
+            auto_apply=True,
+            base_branch="feature/autonomous-evolution-engine",
+        )
+        if res.get("success"):
+            return res
+        else:
+            raise HTTPException(status_code=400, detail=res.get("error", "Failed to apply and create PR"))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error applying PR for AIP {aip_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
