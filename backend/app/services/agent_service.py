@@ -2542,53 +2542,71 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             except (ImportError, ValueError):
                 from app.services.evolution_service import evolution_service
 
-            draft_aips = [aip for aip in evolution_service.aips.values() if aip.status == "draft"]
+            active_aips = [
+                aip for aip in evolution_service.aips.values()
+                if aip.status in ["draft", "proposed", "revised_draft"]
+            ]
 
             # If no pending draft AIPs exist, trigger proactive LLM auto-exploration
-            if not draft_aips and self.llm:
+            if not active_aips and self.llm:
                 logger.info("[EvolutionWatcher] No pending draft AIPs found. Triggering proactive exploration...")
                 new_aip = await evolution_service.auto_explore_and_propose(llm_client=self.llm)
                 if new_aip:
-                    draft_aips = [new_aip]
+                    active_aips = [new_aip]
 
-            # Audit active draft AIPs
+            # Progress notification callback
+            async def progress_notify(msg: str):
+                logger.info(f"[EvolutionWatcher] {msg}")
+                try:
+                    if hasattr(self, "message_bus") and self.message_bus:
+                        from app.bus.events import OutboundMessage
+                        await self.message_bus.publish_outbound(OutboundMessage(
+                            channel="gateway",
+                            session_id="resident",
+                            content=msg,
+                            type="thought",
+                        ))
+                except Exception:
+                    pass
+
+            # Execute closed-loop inner evolution for each active AIP
             processed_reports = []
             has_approved = False
-            for aip in draft_aips:
-                logger.info(f"[EvolutionWatcher] Auditing draft proposal {aip.aip_id}...")
-                vote = await evolution_service.audit_aip(aip.aip_id, llm_client=self.llm)
-                sandbox_status = "未执行"
-                if vote.approval:
-                    sb_res = await evolution_service.verify_in_sandbox(aip.aip_id)
-                    sandbox_status = "通过 (Passed ✅)" if sb_res.get("success") else "失败 (Failed ❌)"
-                    p2p_service = getattr(self, "p2p_service", None)
-                    await evolution_service.broadcast_aip(aip.aip_id, p2p_service=p2p_service)
+            for aip in active_aips:
+                logger.info(f"[EvolutionWatcher] Starting closed-loop evolution for {aip.aip_id}...")
+                loop_res = await evolution_service.run_aip_evolution_loop(
+                    aip_id=aip.aip_id,
+                    max_rounds=4,
+                    llm_client=self.llm,
+                    p2p_service=getattr(self, "p2p_service", None),
+                    progress_callback=progress_notify,
+                )
+
+                rounds_used = loop_res.get("rounds_used", 1)
+                is_success = loop_res.get("success", False)
+                if is_success:
                     has_approved = True
-                else:
-                    # Trigger proactive iterative self-repair based on audit feedback
-                    if self.llm:
-                        logger.info(f"[EvolutionWatcher] Proposal {aip.aip_id} rejected. Triggering iterative self-repair...")
-                        await evolution_service.revise_aip(aip.aip_id, feedback=vote.reason, llm_client=self.llm)
 
                 target_str = ", ".join(aip.target_files) if aip.target_files else "系统核心架构"
                 report_item = (
                     f"### 🧬 自主进化提案: {aip.aip_id} - {aip.title}\n"
+                    f"- **迭代收敛轮次**: {rounds_used} 轮\n"
                     f"- **改进说明**: {aip.description}\n"
                     f"- **目标模块**: `{target_str}`\n"
-                    f"- **安全审计**: {'✅ 批准 (Approved)' if vote.approval else '❌ 驳回 (Rejected)'} ({vote.reason})\n"
-                    f"- **沙盒验证**: {sandbox_status}\n"
+                    f"- **安全审计状态**: {'✅ 批准 (Approved)' if is_success else '❌ 需进一步修正'}\n"
+                    f"- **沙盒验证状态**: {'✅ 通过 (Passed)' if is_success else '❌ 未通过'}\n"
                     f"- **当前状态**: `{aip.status}`"
                 )
                 processed_reports.append(report_item)
 
             if processed_reports:
                 if has_approved:
-                    footer_note = "> *已自动将通过审计与沙盒测试的提案推向去中心化 P2P 社区进行全网共识裁决。*"
+                    footer_note = "> *🎉 提案已自主完成迭代收敛并通过全流程审计与沙盒双重验证，已正式推向去中心化 P2P 社区裁决。*"
                 else:
-                    footer_note = "> *提示：本期提案未通过安全与架构审计，演化引擎已根据审查意见自动完成草案迭代修正，进入下一轮验证。*"
+                    footer_note = "> *提示：本期提案历经多轮迭代仍未收敛，已归档至 L3 错题反思库，待下一周期继续演化。*"
 
                 full_report = (
-                    "## 🤖 Bit Politeia 智能体自主进化演化报告\n\n"
+                    "## 🤖 Bit Politeia 智能体自主进化全闭环演化成果报告\n\n"
                     + "\n\n---\n\n".join(processed_reports)
                     + f"\n\n{footer_note}"
                 )
