@@ -35,6 +35,12 @@ def _feishu_ws_worker(app_id: str, app_secret: str, encrypt_key: str, verificati
     worker_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(worker_loop)
     lark_ws_client_mod.loop = worker_loop
+
+    try:
+        from ..utils.env_utils import sanitize_proxy_env
+        sanitize_proxy_env()
+    except Exception:
+        pass
     
     # 配置日志
     logging.basicConfig(
