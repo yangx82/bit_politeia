@@ -8,6 +8,18 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 class CryptoService:
     def __init__(self, key_dir="keys"):
+        if not os.path.isabs(key_dir):
+            backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            root_dir = os.path.dirname(backend_dir)
+            root_keys = os.path.join(root_dir, key_dir)
+            backend_keys = os.path.join(backend_dir, key_dir)
+            if os.path.exists(os.path.join(root_keys, "private_key.pem")):
+                key_dir = root_keys
+            elif os.path.exists(os.path.join(backend_keys, "private_key.pem")):
+                key_dir = backend_keys
+            else:
+                key_dir = root_keys
+
         self.key_dir = key_dir
         if not os.path.exists(key_dir):
             os.makedirs(key_dir)
