@@ -159,8 +159,22 @@ def sanitize_proxy_env():
             pass
 
 
+def fix_wsl_mtu():
+    """Ensure WSL2 eth0 MTU is clamped to <= 1400 to prevent TLS handshake packet drop under VPN/TUN."""
+    if sys.platform == "linux" and os.path.exists("/sys/class/net/eth0/mtu"):
+        try:
+            with open("/sys/class/net/eth0/mtu") as f:
+                cur_mtu = int(f.read().strip())
+            if cur_mtu > 1500:
+                import subprocess
+                subprocess.run(["sudo", "-n", "ip", "link", "set", "dev", "eth0", "mtu", "1400"], check=False, capture_output=True)
+        except Exception:
+            pass
+
+
 # Run immediately on module import
 sanitize_proxy_env()
+fix_wsl_mtu()
 
 
 def load_dotenv_safe(dotenv_path: str = None, **kwargs):
