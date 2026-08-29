@@ -125,11 +125,20 @@ def sanitize_proxy_env():
 
     for np_key in ["NO_PROXY", "no_proxy"]:
         current_np = os.environ.get(np_key, "")
-        existing = [x.strip() for x in current_np.split(",") if x.strip()]
+        raw_entries = [x.strip() for x in current_np.split(",") if x.strip()]
+        # Strip invalid wildcard entries (e.g. 127.* or *jd.com) that break standard curl/urllib3/httpx parsers
+        cleaned_entries = []
+        for entry in raw_entries:
+            if entry.startswith("*."):
+                cleaned_entries.append(entry[1:])  # Convert *.domain.com to .domain.com
+            elif "*" in entry:
+                continue  # drop broken wildcards like 127.*, 10.*, 172.*
+            else:
+                cleaned_entries.append(entry)
         for host in domestic_hosts:
-            if host not in existing:
-                existing.append(host)
-        os.environ[np_key] = ",".join(existing)
+            if host not in cleaned_entries:
+                cleaned_entries.append(host)
+        os.environ[np_key] = ",".join(cleaned_entries)
 
     # 3. Check if local proxy port is actually alive. If dead, clear proxy vars to avoid ProxyError
     proxy_val = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or os.environ.get("https_proxy")

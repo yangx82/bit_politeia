@@ -25,7 +25,7 @@ echo "[+] Backend launched with PID: $PID"
 for i in {1..35}; do
     if ss -tlpn | grep -q ":8100"; then
         echo "[+] Backend successfully listening on port 8100!"
-        curl -s http://127.0.0.1:8100/
+        curl --noproxy '*' -s http://127.0.0.1:8100/
         echo ""
         exit 0
     fi
