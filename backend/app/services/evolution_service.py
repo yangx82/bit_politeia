@@ -29,14 +29,14 @@ def _extract_and_parse_json(text: str) -> dict:
     elif "</think>" in cleaned:
         cleaned = cleaned.split("</think>")[-1].strip()
 
-    # 2. Extract markdown code block if present
+    # 2. Extract markdown json code block if present
     json_block_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
     if json_block_match:
         block_content = json_block_match.group(1).strip()
         try:
             return json.loads(block_content)
         except Exception:
-            cleaned = block_content
+            pass
 
     # 3. Extract outermost curly braces { ... }
     first_brace = cleaned.find("{")
@@ -52,8 +52,26 @@ def _extract_and_parse_json(text: str) -> dict:
     try:
         return json.loads(cleaned)
     except Exception as e:
-        logger.warning(f"[EvolutionService] Failed to parse LLM JSON response: {e}. Raw content: {text[:200]}")
-        return {}
+        logger.warning(f"[EvolutionService] Failed direct JSON parse: {e}. Attempting heuristic extraction...")
+
+    # 5. Regex heuristic fallback for malformed JSON containing code
+    try:
+        extracted = {}
+        title_m = re.search(r'"title"\s*:\s*"([^"]+)"', cleaned)
+        if title_m:
+            extracted["title"] = title_m.group(1)
+        desc_m = re.search(r'"description"\s*:\s*"([^"]+)"', cleaned)
+        if desc_m:
+            extracted["description"] = desc_m.group(1)
+        py_code_m = re.search(r"```(?:python)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
+        if py_code_m:
+            extracted["proposed_diff"] = py_code_m.group(1).strip()
+        if extracted:
+            return extracted
+    except Exception:
+        pass
+
+    return {}
 
 
 async def _invoke_llm_json(llm_client: Any, prompt: str) -> dict:
@@ -249,17 +267,21 @@ class EvolutionService:
                 "IMPORTANT: Output ONLY the raw JSON object. Do not output conversational preambles."
             )
             res_json = await _invoke_llm_json(llm_client, prompt)
-            if res_json and "proposed_diff" in res_json:
+            if res_json and ("proposed_diff" in res_json or "description" in res_json):
                 aip.title = res_json.get("title", aip.title)
                 aip.description = res_json.get("description", aip.description)
-                aip.target_files = res_json.get("target_files", aip.target_files)
-                aip.proposed_diff = res_json.get("proposed_diff", aip.proposed_diff)
+                if "target_files" in res_json:
+                    aip.target_files = res_json.get("target_files", aip.target_files)
+                if "proposed_diff" in res_json and res_json.get("proposed_diff"):
+                    aip.proposed_diff = res_json.get("proposed_diff")
                 if "research_sources" in res_json:
                     aip.research_sources = res_json.get("research_sources")
                 aip.status = "revised_draft"
                 self._save_aips()
                 logger.info(f"[EvolutionService] Successfully revised {aip.aip_id} based on audit feedback.")
                 return aip
+            else:
+                logger.warning(f"[EvolutionService] revise_aip returned empty/unparsed JSON for {aip_id}. Keys: {list(res_json.keys()) if isinstance(res_json, dict) else 'none'}")
         except Exception as e:
             logger.error(f"[EvolutionService] Failed to revise AIP {aip_id}: {e}")
         return None
