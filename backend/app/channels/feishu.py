@@ -563,6 +563,8 @@ class FeishuChannel(BaseChannel):
                     logger.error(
                         f"Failed to send Feishu text to {target_id}: code={response.code}, msg={response.msg}"
                     )
+                else:
+                    logger.info(f"Successfully delivered Feishu message to {target_id}")
             elif not msg.media:
                 # 如果既没有文本也没有附件，发送默认提示
                 content = json.dumps({"text": "(empty message)"})

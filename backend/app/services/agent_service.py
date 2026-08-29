@@ -866,6 +866,9 @@ class AgentService:
         if self.ledger.get_balance(node_id) == 0:
             self.ledger.credit(node_id, 0.0)
 
+        # Hydrate system state (including resident bridges like Feishu) from disk
+        self._hydrate_system_state()
+
         # Initialize P2P service in background task so LLM and APIs are ready immediately
         async def _init_p2p_bg():
             try:
