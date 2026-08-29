@@ -151,8 +151,35 @@ class EvolutionService:
                     data = json.load(f)
                     for k, v in data.items():
                         self.aips[k] = AIPProposal.from_dict(v)
+                self.consolidate_duplicates()
             except Exception as e:
                 logger.error(f"[EvolutionService] Failed to load AIPs: {e}")
+
+    def consolidate_duplicates(self):
+        """Consolidates duplicate AIPs sharing the same or near-identical titles into single canonical entries."""
+        seen_titles: dict[str, str] = {}
+        to_delete = []
+
+        # Sort AIPs so verified_and_proposed or newest ones take precedence
+        sorted_aips = sorted(
+            self.aips.values(),
+            key=lambda x: (1 if x.status == "verified_and_proposed" else 0, x.timestamp),
+            reverse=True,
+        )
+
+        for aip in sorted_aips:
+            norm_title = aip.title.strip().lower()
+            if norm_title in seen_titles:
+                to_delete.append(aip.aip_id)
+            else:
+                seen_titles[norm_title] = aip.aip_id
+
+        if to_delete:
+            for aid in to_delete:
+                if aid in self.aips:
+                    del self.aips[aid]
+            self._save_aips()
+            logger.info(f"[EvolutionService] Consolidated {len(to_delete)} duplicate AIP(s): {to_delete}")
 
     def _save_aips(self):
         """Persists AIPs to disk."""
@@ -232,6 +259,23 @@ class EvolutionService:
                 "def optimize_cache_ttl(hit_rate: float) -> int:\n    return int(300 * (1.0 + hit_rate))\n",
             )
             research_sources = res_json.get("research_sources") or ["https://arxiv.org/abs/2408.00001"]
+
+            # If an AIP with this exact title already exists, re-use and evolve it rather than creating a duplicate
+            norm_title = title.strip().lower()
+            existing_aip = next(
+                (a for a in self.aips.values() if a.title.strip().lower() == norm_title),
+                None
+            )
+            if existing_aip:
+                existing_aip.description = description
+                existing_aip.target_files = target_files
+                existing_aip.proposed_diff = proposed_diff
+                existing_aip.research_sources = research_sources
+                if existing_aip.status in ["stalled", "failed"]:
+                    existing_aip.status = "draft"
+                self._save_aips()
+                logger.info(f"[EvolutionService] Re-using and updating existing proposal: {existing_aip.aip_id} - '{title}'")
+                return existing_aip
 
             aip = self.create_aip(
                 initiator_id="self",
