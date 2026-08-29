@@ -60,4 +60,14 @@ export const deleteElection = async (electionId) => {
     return response.data;
 }
 
+export const triggerEvolution = async () => {
+    const response = await api.post('/api/v1/evolution/trigger')
+    return response.data;
+}
+
+export const getEvolutionAips = async () => {
+    const response = await api.get('/api/v1/evolution/aips')
+    return response.data;
+}
+
 export default api

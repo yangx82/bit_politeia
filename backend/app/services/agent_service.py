@@ -2022,6 +2022,24 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         if default_feishu_id:
                             bridges_to_notify["feishu"] = default_feishu_id
                             self.resident_bridges["feishu"] = default_feishu_id
+                        else:
+                            # Auto-hydrate from recent chat.jsonl
+                            chat_log = self.backend_dir / "memory" / "chat.jsonl"
+                            if chat_log.exists():
+                                with open(chat_log, "r", encoding="utf-8") as cf:
+                                    lines = cf.readlines()
+                                for line in reversed(lines[-200:]):
+                                    if "[feishu]" in line:
+                                        import json
+                                        obj = json.loads(line)
+                                        sender = obj.get("sender", "")
+                                        if "[feishu]" in sender:
+                                            raw_feishu_id = sender.split("[feishu]", 1)[1].strip()
+                                            if raw_feishu_id:
+                                                bridges_to_notify["feishu"] = raw_feishu_id
+                                                self.resident_bridges["feishu"] = raw_feishu_id
+                                                logger.info(f"Hydrated Feishu resident bridge from chat history: {raw_feishu_id}")
+                                                break
                 except Exception as fe_err:
                     logger.debug(f"Feishu fallback lookup error: {fe_err}")
         else:

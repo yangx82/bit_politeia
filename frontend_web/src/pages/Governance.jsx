@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { getProposals, createProposal, getElections, castVote, getGroups } from '../services/api';
-import { Scale, Clock, PenTool } from 'lucide-react';
+import { getProposals, createProposal, getElections, castVote, getGroups, triggerEvolution } from '../services/api';
+import { Scale, Clock, PenTool, Sparkles, Cpu, CheckCircle2, AlertCircle, Play, FileCode } from 'lucide-react';
 
 const Governance = () => {
     const [activeTab, setActiveTab] = useState('proposals');
@@ -9,6 +9,7 @@ const Governance = () => {
     const [groups, setGroups] = useState([]);
     const [loading, setLoading] = useState(true);
     const [refreshTrigger, setRefreshTrigger] = useState(0);
+    const [isTriggeringEvolution, setIsTriggeringEvolution] = useState(false);
 
     // Form State
     const [showCreateModal, setShowCreateModal] = useState(false);
@@ -28,9 +29,9 @@ const Governance = () => {
                 getElections(),
                 getGroups()
             ]);
-            setProposals(props);
-            setElections(elecs);
-            setGroups(grps);
+            setProposals(props || []);
+            setElections(elecs || []);
+            setGroups(grps || []);
         } catch (error) {
             console.error("Failed to fetch governance data", error);
         }
@@ -50,6 +51,19 @@ const Governance = () => {
         }
     };
 
+    const handleTriggerEvolution = async () => {
+        setIsTriggeringEvolution(true);
+        try {
+            const res = await triggerEvolution();
+            alert(res.message || "Autonomous Evolution cycle initiated in background!");
+            setTimeout(() => fetchData(), 3000);
+        } catch (error) {
+            alert("Failed to trigger evolution: " + error.message);
+        } finally {
+            setIsTriggeringEvolution(false);
+        }
+    };
+
     const handleVote = async (electionId, approval) => {
         const reason = prompt(approval ? "Reason for approval (optional):" : "Reason for rejection (required):");
         if (approval === false && !reason) {
@@ -63,6 +77,72 @@ const Governance = () => {
         } catch (error) {
             alert("Failed to send suggestion: " + error.message);
         }
+    };
+
+    const aipProposals = proposals.filter(p => 
+        p.scope === 'architecture_evolution' || (p.proposal_id && p.proposal_id.startsWith('AIP-'))
+    );
+
+    const renderAipCard = (aip) => {
+        const meta = aip.metadata || {};
+        const title = meta.title || aip.content || aip.proposal_id;
+        const description = meta.description || aip.content;
+        const status = aip.status || meta.status || 'draft';
+        const targetFiles = meta.target_files || [];
+        const sandbox = meta.sandbox_results || {};
+
+        let statusBadge = "bg-amber-50 text-amber-700 border-amber-200";
+        let statusLabel = "Draft 草案";
+        if (status === 'verified_and_proposed' || status === 'sandbox_passed') {
+            statusBadge = "bg-emerald-50 text-emerald-700 border-emerald-200";
+            statusLabel = "Verified & Broadcasted 已验证并发布";
+        } else if (status === 'stalled' || status === 'failed') {
+            statusBadge = "bg-rose-50 text-rose-700 border-rose-200";
+            statusLabel = "Stalled / 归档";
+        }
+
+        return (
+            <div key={aip.proposal_id} className="bg-surface p-6 rounded-xl border border-slate-200 shadow-sm mb-4">
+                <div className="flex justify-between items-start mb-3">
+                    <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-2">
+                            <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 px-2.5 py-0.5 rounded-full text-xs font-mono font-bold">
+                                {aip.proposal_id}
+                            </span>
+                            <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium border ${statusBadge}`}>
+                                ● {statusLabel}
+                            </span>
+                            <span className="text-xs text-slate-400 ml-auto">
+                                {aip.timestamp ? new Date(aip.timestamp).toLocaleString() : ''}
+                            </span>
+                        </div>
+                        <h3 className="text-lg font-semibold text-primary">{title}</h3>
+                        <p className="text-sm text-slate-600 mt-2 whitespace-pre-line leading-relaxed">{description}</p>
+                    </div>
+                </div>
+
+                {targetFiles.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-2 flex-wrap text-xs">
+                        <span className="text-slate-400 flex items-center gap-1 font-medium"><FileCode size={13} /> 目标文件:</span>
+                        {targetFiles.map(f => (
+                            <span key={f} className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-mono">
+                                {f}
+                            </span>
+                        ))}
+                    </div>
+                )}
+
+                {sandbox.timestamp && (
+                    <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+                        <span className={`flex items-center gap-1 font-medium ${sandbox.success ? 'text-emerald-600' : 'text-amber-600'}`}>
+                            {sandbox.success ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}
+                            沙盒验证: {sandbox.success ? '通过 (Exit 0)' : '需整改'}
+                        </span>
+                        <span className="text-slate-400">({new Date(sandbox.timestamp).toLocaleTimeString()})</span>
+                    </div>
+                )}
+            </div>
+        );
     };
 
     const renderGovernanceCard = (election) => {
@@ -198,16 +278,26 @@ const Governance = () => {
             {/* Header */}
             <div className="flex justify-between items-center mb-8">
                 <div>
-                    <h1 className="text-2xl font-bold text-primary mb-2">Governance</h1>
-                    <p className="text-secondary">Participate in community decision making</p>
+                    <h1 className="text-2xl font-bold text-primary mb-2">Governance & Evolution</h1>
+                    <p className="text-secondary">Participate in community decision making and autonomous architecture evolution</p>
                 </div>
-                <button
-                    onClick={() => setShowCreateModal(true)}
-                    className="bg-primary text-white px-4 py-2 rounded-lg hover:bg-primary-dark transition-colors flex items-center gap-2"
-                >
-                    <PenTool size={18} />
-                    New Proposal
-                </button>
+                <div className="flex gap-3">
+                    <button
+                        onClick={handleTriggerEvolution}
+                        disabled={isTriggeringEvolution}
+                        className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 text-sm font-medium disabled:opacity-50"
+                    >
+                        <Sparkles size={16} />
+                        {isTriggeringEvolution ? 'Evolving...' : 'Trigger Evolution'}
+                    </button>
+                    <button
+                        onClick={() => setShowCreateModal(true)}
+                        className="bg-primary text-white px-4 py-2 rounded-lg hover:bg-primary-dark transition-colors flex items-center gap-2 text-sm font-medium"
+                    >
+                        <PenTool size={16} />
+                        New Proposal
+                    </button>
+                </div>
             </div>
 
             {/* Tabs */}
@@ -217,6 +307,18 @@ const Governance = () => {
                     className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${activeTab === 'proposals' ? 'bg-white text-primary shadow-sm' : 'text-slate-500 hover:text-primary'}`}
                 >
                     Active Governance
+                </button>
+                <button
+                    onClick={() => setActiveTab('aips')}
+                    className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-1.5 ${activeTab === 'aips' ? 'bg-white text-primary shadow-sm' : 'text-slate-500 hover:text-primary'}`}
+                >
+                    <Cpu size={15} />
+                    Autonomous Evolution (AIP)
+                    {aipProposals.length > 0 && (
+                        <span className="bg-indigo-100 text-indigo-700 text-[11px] font-bold px-1.5 py-0.2 rounded-full ml-1">
+                            {aipProposals.length}
+                        </span>
+                    )}
                 </button>
                 <button
                     onClick={() => setActiveTab('history')}
@@ -230,6 +332,16 @@ const Governance = () => {
             <div className="space-y-4">
                 {loading ? (
                     <div className="text-center py-12 text-slate-400">Loading governance data...</div>
+                ) : activeTab === 'aips' ? (
+                    aipProposals.length > 0 ? (
+                        aipProposals.map(renderAipCard)
+                    ) : (
+                        <div className="text-center py-12 bg-slate-50 rounded-xl border border-dashed border-slate-300">
+                            <Cpu className="mx-auto text-slate-300 mb-3" size={48} />
+                            <p className="text-slate-500 font-medium">No autonomous evolution proposals yet</p>
+                            <p className="text-sm text-slate-400 mt-1">Click "Trigger Evolution" to start a proactive exploration loop!</p>
+                        </div>
+                    )
                 ) : (
                     elections.length > 0 ? (
                         elections
