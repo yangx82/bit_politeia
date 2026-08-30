@@ -64,6 +64,7 @@ class AIPProposal:
         )
 
 
+
 @dataclass
 class Proposal:
     proposal_id: str

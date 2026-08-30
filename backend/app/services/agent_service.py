@@ -2907,6 +2907,265 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         await self.notify_resident(report)
         logger.info("Literature Watcher: Status report sent to resident (no new papers found)")
 
+    async def run_literature_watcher(self):
+        """Periodic task to watch for new literature, evaluate quality, and share with community.
+        
+        Improvements (2026-08-02):
+        1. Split research_field by ';' into separate topics
+        2. Use semantic search for better matching
+        3. Merge and deduplicate results across topics
+        """
+        logger.info(f"Starting Periodic Literature Watcher for topic: {self.research_field}")
+        
+        # 1. Initialize Skill Service (Dynamic Import)
+        import sys
+        skill_path = str(self.backend_dir / "skills" / "literature-watcher" / "scripts")
+        if skill_path not in sys.path:
+            sys.path.append(skill_path)
+        
+        try:
+            from watcher_service import WatcherService
+            watcher = WatcherService()
+            
+            # Fetch resident feedback preferences from memory
+            res_prefs = {}
+            if self.resident_memory:
+                res_prefs = self.resident_memory.get_research_preferences()
+
+            # 2. Split research field into separate topics
+            raw_topics = [t.strip() for t in self.research_field.split(";") if t.strip()]
+            if not raw_topics:
+                raw_topics = [self.research_field]  # Fallback to single topic
+            
+            logger.info(f"Literature Watcher: Searching {len(raw_topics)} topics: {raw_topics}")
+            
+            # 3. Search for new papers for EACH topic (using semantic search)
+            all_new_papers = []
+            seen_ids = set()  # For deduplication across topics
+            
+            for topic in raw_topics:
+                logger.info(f"Literature Watcher: Searching topic '{topic}'...")
+                try:
+                    # Use semantic search (already enabled in watcher_service.py)
+                    topic_papers = await asyncio.to_thread(
+                        watcher.get_incremental_papers,
+                        topic,
+                        interval_days=7,
+                        positive_keywords=res_prefs.get("positive_keywords"),
+                        negative_keywords=res_prefs.get("negative_keywords"),
+                        llm=self.llm,
+                        enable_expansion=True,
+                    )
+                    
+                    # Deduplicate across topics
+                    for paper in topic_papers:
+                        paper_id = paper.get("id") or paper.get("doi") or paper.get("title", "")
+                        if paper_id and paper_id not in seen_ids:
+                            seen_ids.add(paper_id)
+                            all_new_papers.append(paper)
+                    
+                    logger.info(f"Literature Watcher: Found {len(topic_papers)} papers for topic '{topic}'")
+                except Exception as topic_err:
+                    logger.error(f"Literature Watcher: Failed to search topic '{topic}': {topic_err}")
+                    continue
+            
+            if not all_new_papers:
+                logger.info("No new literature found in this cycle.")
+                # 即使没有新论文，也发送状态报告，让居民知道任务在正常运行
+                await self._send_literature_watcher_status_report(
+                    topics_searched=raw_topics,
+                    keywords_used=res_prefs,
+                    interval_days=7,
+                    papers_found=0,
+                    watcher=watcher,
+                )
+                return
+
+            logger.info(f"Found {len(all_new_papers)} unique new papers across all topics.")
+            
+            # 4. Evaluate and Act (using LLM)
+            high_quality_count = 0
+            shared_count = 0
+
+            for paper in all_new_papers:
+                # Use LLM to decide quality and sharing, taking resident preferences into account
+                decision = await self._evaluate_and_share_paper(paper, research_prefs=res_prefs)
+                
+                # A. Internal Log & Resident Notification
+                if decision.get("is_high_quality"):
+                    high_quality_count += 1
+                    self.resident_memory.log_interaction(
+                        "literature_watcher",
+                        f"High-Quality Paper Found: {paper['title']}\nSummary: {decision.get('summary')}",
+                        "research",
+                        session_id="resident"
+                    )
+                    
+                    # Push a direct notice to UI
+                    await self.notify_resident(
+                        f"📚 [文献追踪] 发现高质量新文献：\n《{paper['title']}》\n\n💡 理由：{decision.get('summary')}"
+                    )
+                    
+                # B. P2P Community Share (Autonomous Decision)
+                if decision.get("should_share"):
+                    shared_count += 1
+                    await self._share_paper_with_community(paper, decision.get("discussion_starter"))
+                
+                # C. Save to skill history so we don't process it again in the next run
+                await asyncio.to_thread(watcher.save_to_history, [paper])
+
+            logger.info(f"Literature Watcher Cycle Complete. High Quality: {high_quality_count}, Shared: {shared_count}")
+
+        except Exception as e:
+            logger.error(f"Literature Watcher process failed: {e}")
+
+    async def _evaluate_and_share_paper(self, paper: dict, research_prefs: dict = None) -> dict:
+        """Ask LLM to evaluate the paper and decide on sharing with the network."""
+        if not self.llm:
+            return {"is_high_quality": False, "should_share": False}
+
+        prefs_str = "None specified."
+        if research_prefs:
+            pos = ", ".join(research_prefs.get("positive_keywords", [])) or "None"
+            neg = ", ".join(research_prefs.get("negative_keywords", [])) or "None"
+            summary = research_prefs.get("feedback_summary", "")
+            prefs_str = f"Preferred Topics: [{pos}]\nExclude Topics: [{neg}]\nSummary: {summary}"
+
+        prompt = f"""
+        You are a proactive Research Agent in the Bit-Politeia network. 
+        You just found a new paper during your periodic monitoring.
+        
+        PAPER DETAILS:
+        Title: {paper.get('title')}
+        Authors: {paper.get('authors')}
+        Abstract: {paper.get('abstract', 'No abstract available.')}
+        
+        RESIDENT ACADEMIC PREFERENCES & FEEDBACK:
+        {prefs_str}
+
+        TASK:
+        1. Evaluate if this paper is high quality and highly relevant to your research field: {self.research_field}, aligning with the resident's preferences.
+        2. Decide if you should share and discuss this with other autonomous nodes in the P2P community to foster scientific collaboration.
+        3. Create a brief internal summary in {self.agent_language} explaining why it's important.
+        4. If sharing, create a "Discussion Starter" in {self.agent_language} (e.g. "I found this interesting because... What do you think about X?").
+        
+        RESPONSE FORMAT (Strict JSON):
+        {{
+            "is_high_quality": boolean,
+            "should_share": boolean,
+            "summary": "string explaining importance",
+            "discussion_starter": "string for community discussion"
+        }}
+        """
+        try:
+            from langchain_core.messages import HumanMessage
+            response = await self.llm.ainvoke([HumanMessage(content=prompt)])
+            
+            content = response.content.strip()
+            # Clean potential markdown fences
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+                
+            return json.loads(content)
+        except Exception as e:
+            logger.error(f"LLM Paper evaluation error: {e}")
+            # Fallback: Treat as low quality to be safe
+            return {"is_high_quality": False, "should_share": False}
+
+    async def _share_paper_with_community(self, paper: dict, discussion_starter: str):
+        """Broadcast the paper discussion to peers in the P2P community."""
+        share_content = (
+            f"📢 [研究分享] 我发现了一篇值得关注的文献：\n\n"
+            f"《{paper.get('title')}》\n\n"
+            f"💬 我的观点：{discussion_starter}\n\n"
+            f"🔗 链接: {paper.get('url', 'N/A')}\n"
+            f"🆔 DOI: {paper.get('doi', 'N/A')}"
+        )
+        
+        logger.info(f"Autonomous Share: Disseminating paper '{paper['title']}' to community.")
+        
+        # 1. Identify Peers (Target top reputation peers or active nodes)
+        if p2p_service.network_manager:
+            peers = list(p2p_service.network_manager.nodes.keys())
+            
+            # Exclude self
+            if p2p_service.local_node:
+                self_id = p2p_service.local_node.node_id
+                peers = [p for p in peers if p != self_id]
+            
+            # Limit sharing to a few nodes to prevent network-wide spam
+            # In the future, this could be filtered by node interests
+            target_peers = peers[:3] 
+            
+            for peer_id in target_peers:
+                try:
+                    await self.send_p2p_message(peer_id, share_content)
+                except Exception as e:
+                    logger.warning(f"Failed to share paper with peer {peer_id}: {e}")
+
+    async def _send_literature_watcher_status_report(
+        self,
+        topics_searched: list,
+        keywords_used: dict,
+        interval_days: int,
+        papers_found: int,
+        watcher: Any = None,
+    ):
+        """Send a status report when no new papers are found, to confirm the task is running normally."""
+        from datetime import datetime, timezone
+        
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        
+        # Build keywords summary
+        pos_keywords = keywords_used.get("positive_keywords", [])
+        neg_keywords = keywords_used.get("negative_keywords", [])
+        
+        keywords_str = ""
+        if pos_keywords:
+            keywords_str += f"**正面关键词**: {', '.join(pos_keywords[:5])}{'...' if len(pos_keywords) > 5 else ''}\n"
+        if neg_keywords:
+            keywords_str += f"**排除关键词**: {', '.join(neg_keywords[:5])}{'...' if len(neg_keywords) > 5 else ''}\n"
+        if not keywords_str:
+            keywords_str = "未设置关键词过滤\n"
+        
+        # Get history stats if watcher is available
+        history_stats = ""
+        if watcher:
+            try:
+                history = watcher.get_history_stats()
+                if history:
+                    total = history.get("total_records", 0)
+                    last_check = history.get("last_check", "未知")
+                    history_stats = f"\n**历史记录**: 共 {total} 篇已处理论文"
+                    if last_check and last_check != "未知":
+                        history_stats += f"，上次检查: {last_check[:10]}"
+            except Exception:
+                pass
+        
+        report = f"""## 📊 文献监控状态报告
+
+**执行时间**: {now}
+**研究领域**: {'; '.join(topics_searched)}
+**回溯天数**: {interval_days} 天
+
+### 搜索结果
+- **找到新论文**: {papers_found} 篇
+- **关键词过滤**: 
+{keywords_str}{history_stats}
+
+### 状态
+✅ 文献监控任务正常运行
+
+---
+*下次执行时间: 明天 00:30 UTC*
+"""
+        
+        # Notify resident
+        await self.notify_resident(report)
+        logger.info("Literature Watcher: Status report sent to resident (no new papers found)")
+
     # 4. Ad-hoc Task: Periodic Participation Reward
     async def trigger_adhoc_task(self):
         if not self.ledger or not p2p_service.local_node:
@@ -3397,6 +3656,37 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         except Exception as e:
             logger.error(f"Error fetching AIP proposals in get_proposals: {e}")
         return proposals
+
+    async def get_research_proposals(self, group_id: str = None) -> list[dict]:
+        """Get research proposals with optional filtering."""
+        if not self.governance_manager:
+            return []
+        return self.governance_manager.get_research_proposals(group_id=group_id)
+
+    async def get_research_proposal(self, election_id: str) -> dict:
+        """Get detailed information about a research proposal."""
+        if not self.governance_manager:
+            return {}
+        return self.governance_manager.get_research_proposal(election_id)
+
+    async def submit_research_evaluation(
+        self, election_id: str, score: float, feedback: str, reward_amount: float = 0
+    ) -> tuple[bool, str]:
+        """Submit an evaluation for a research publication."""
+        if not self.governance_manager:
+            return False, "Governance manager not initialized"
+        
+        if not p2p_service.local_node:
+            return False, "P2P node not initialized"
+        
+        evaluator_id = p2p_service.local_node.node_id
+        return self.governance_manager.submit_research_evaluation(
+            election_id=election_id,
+            evaluator_id=evaluator_id,
+            score=score,
+            feedback=feedback,
+            reward_amount=reward_amount,
+        )
 
     async def get_research_proposals(self, group_id: str = None) -> list[dict]:
         """Get research proposals with optional filtering."""
