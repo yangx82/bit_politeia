@@ -150,7 +150,7 @@ class AgentService:
         self.ledger.set_event_callback(self._on_transaction_completed)
         self.resident_memory = ResidentMemory()
         self.reporter = None
-        self.research_field = "AI Governance"
+        self.research_field = os.getenv("AGENT_RESEARCH_FIELD", "AI Governance")
         self.enable_welcome = True
         self.task_manager = TaskManager()
         self.context_builder = ContextBuilder(task_manager=self.task_manager)
@@ -2647,8 +2647,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         Improvements (2026-08-02):
         1. Split research_field by ';' into separate topics
         2. Use semantic search for better matching
-        3. Merge and deduplicate results across topics
         """
+        self.research_field = os.getenv("AGENT_RESEARCH_FIELD", self.research_field)
         logger.info(f"Starting Periodic Literature Watcher for topic: {self.research_field}")
         
         # 1. Initialize Skill Service (Dynamic Import)
@@ -2756,7 +2756,14 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
     async def _evaluate_and_share_paper(self, paper: dict, research_prefs: dict = None) -> dict:
         """Ask LLM to evaluate the paper and decide on sharing with the network."""
         if not self.llm:
-            return {"is_high_quality": False, "should_share": False}
+            # Fallback heuristic: mark as high quality if relevance score >= 2.0 or citations >= 5
+            is_hq = (paper.get("relevance_score", 0) >= 2.0 or paper.get("citations", 0) >= 5)
+            return {
+                "is_high_quality": is_hq,
+                "should_share": False,
+                "summary": f"匹配研究偏好 (相关度分值: {paper.get('relevance_score', 0)}, 引用: {paper.get('citations', 0)})",
+                "discussion_starter": "",
+            }
 
         prefs_str = "None specified."
         if research_prefs:
@@ -2765,23 +2772,27 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             summary = research_prefs.get("feedback_summary", "")
             prefs_str = f"Preferred Topics: [{pos}]\nExclude Topics: [{neg}]\nSummary: {summary}"
 
+        p_title = paper.get("title", "")
+        p_authors = paper.get("authors", "")
+        p_abstract = paper.get("abstract", "No abstract available.")
+
         prompt = f"""
         You are a proactive Research Agent in the Bit-Politeia network. 
         You just found a new paper during your periodic monitoring.
         
         PAPER DETAILS:
-        Title: {paper.get('title')}
-        Authors: {paper.get('authors')}
-        Abstract: {paper.get('abstract', 'No abstract available.')}
+        Title: {p_title}
+        Authors: {p_authors}
+        Abstract: {p_abstract}
         
         RESIDENT ACADEMIC PREFERENCES & FEEDBACK:
         {prefs_str}
 
         TASK:
-        1. Evaluate if this paper is high quality and highly relevant to your research field: {self.research_field}, aligning with the resident's preferences.
+        1. Evaluate if this paper is high quality and highly relevant to your research field: {self.research_field}, aligning with resident preferences.
         2. Decide if you should share and discuss this with other autonomous nodes in the P2P community to foster scientific collaboration.
-        3. Create a brief internal summary in {self.agent_language} explaining why it's important.
-        4. If sharing, create a "Discussion Starter" in {self.agent_language} (e.g. "I found this interesting because... What do you think about X?").
+        3. Create a brief internal summary in {self.agent_language} explaining why it is important.
+        4. If sharing, create a discussion starter in {self.agent_language} (e.g. "I found this interesting because... What do you think about X?").
         
         RESPONSE FORMAT (Strict JSON):
         {{
@@ -2877,24 +2888,20 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         history_stats += f"，上次检查: {last_check[:10]}"
             except Exception:
                 pass
-        
-        report = f"""## 📊 文献监控状态报告
-
-**执行时间**: {now}
-**研究领域**: {'; '.join(topics_searched)}
-**回溯天数**: {interval_days} 天
-
-### 搜索结果
-- **找到新论文**: {papers_found} 篇
-- **关键词过滤**: 
-{keywords_str}{history_stats}
-
-### 状态
-✅ 文献监控任务正常运行
-
----
-*下次执行时间: 明天 00:30 UTC*
-"""
+        report = (
+            f"## 📊 文献监控状态报告\n\n"
+            f"**执行时间**: {now}\n"
+            f"**研究领域**: {'; '.join(topics_searched)}\n"
+            f"**回溯天数**: {interval_days} 天\n\n"
+            f"### 搜索结果\n"
+            f"- **找到新论文**: {papers_found} 篇\n"
+            f"- **关键词过滤**: \n"
+            f"{keywords_str}{history_stats}\n\n"
+            f"### 状态\n"
+            f"✅ 文献监控任务正常运行\n\n"
+            f"---\n"
+            f"*下次执行时间: 明天 00:30 UTC*\n"
+        )
         
         # Notify resident
         await self.notify_resident(report)

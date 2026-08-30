@@ -107,107 +107,51 @@ class WatcherService:
         "ai governance": ["T11603"],  # Artificial Intelligence
     }
 
-    def search_openalex(self, topic, from_date=None, limit=20):
+    def search_openalex(self, topic, from_date=None, limit=20, max_retries=3):
         """
         Searches OpenAlex for papers matching topic since from_date.
-        
-        Uses KEYWORD SEARCH (search=) with domain filtering (filter=) for precise results.
-        This avoids semantic search returning irrelevant papers
-        (e.g., AI papers for "neural" queries).
-        
-        OpenAlex API:
-        - search=: Full-text keyword search
-        - filter=: Domain/concept filtering
+        Uses clean keyword search (search=) with date filtering and rate-limit backoff.
         """
-        # 使用 search 参数进行关键词搜索
-        params = {
-            "search": topic,  # 全文关键词搜索
-            "sort": "cited_by_count:desc",
-            "per_page": limit
-        }
-        
-        # 构建 filter 条件
-        filters = []
-        
-        # 添加领域过滤（根据主题自动选择）
-        domain_filter = self._get_domain_filter(topic)
-        if domain_filter:
-            filters.append(domain_filter)
-        
-        # 添加日期过滤
-        if from_date:
-            filters.append(f"from_publication_date:{from_date}")
-        
-        # 组合所有过滤条件
-        if filters:
-            params["filter"] = ",".join(filters)
-            
-        headers = {}
-        if self.email:
-            params["mailto"] = self.email
-            logger.info(f"Using polite pool with email: {self.email}")
+        import time
 
-        logger.info(f"[Keyword Search] OpenAlex: search='{topic}', filter='{params.get('filter', 'none')}'")
-        
-        try:
-            response = requests.get(self.base_url, params=params, headers=headers, timeout=30, verify=False)
-            response.raise_for_status()
-            data = response.json()
-            results = data.get("results", [])
-            logger.info(f"[Keyword Search] Found {len(results)} results for '{topic}'")
-            return results
-        except Exception as e:
-            logger.error(f"OpenAlex keyword search failed: {e}")
-            # 降级到语义搜索
-            logger.info("Falling back to semantic search...")
-            return self._semantic_search_fallback(topic, from_date, limit)
-    
-    def _get_domain_filter(self, topic: str) -> str:
-        """根据主题获取领域过滤条件"""
-        topic_lower = topic.lower()
-        
-        # 检查是否匹配神经科学相关主题
-        neuro_keywords = ["neural", "brain", "cognition", "instinct", "neuroscience"]
-        if any(kw in topic_lower for kw in neuro_keywords):
-            # 使用 primary_topic.id 过滤到神经科学领域
-            # T10077: Neuroscience and Neuropharmacology Research
-            # T11601: Neuroscience and Neural Engineering
-            # T13106: Neuroscience, Education and Cognitive Function
-            return "primary_topic.id:T10077|T11601|T13106"
-        
-        # 检查是否匹配区块链主题
-        if "blockchain" in topic_lower:
-            return "concepts.id:C208177563"  # Blockchain
-        
-        # 检查是否匹配 AI 治理主题
-        if "ai" in topic_lower or "governance" in topic_lower:
-            return "concepts.id:C154945302"  # AI 相关
-        
-        return ""
-    
-    def _semantic_search_fallback(self, topic, from_date=None, limit=20):
-        """语义搜索降级方案"""
         params = {
             "search": topic,
             "sort": "cited_by_count:desc",
             "per_page": limit
         }
         
+        filters = []
         if from_date:
-            params["filter"] = f"from_publication_date:{from_date}"
+            filters.append(f"from_publication_date:{from_date}")
+        if filters:
+            params["filter"] = ",".join(filters)
             
         headers = {}
         if self.email:
             params["mailto"] = self.email
 
-        try:
-            response = requests.get(self.base_url, params=params, headers=headers, timeout=30, verify=False)
-            response.raise_for_status()
-            data = response.json()
-            return data.get("results", [])
-        except Exception as e:
-            logger.error(f"OpenAlex semantic search fallback failed: {e}")
-            return []
+        logger.info(f"[Keyword Search] OpenAlex: search='{topic}', filter='{params.get('filter', 'none')}'")
+        
+        for attempt in range(max_retries):
+            try:
+                # Polite spacing between calls
+                time.sleep(0.35)
+                response = requests.get(self.base_url, params=params, headers=headers, timeout=30, verify=False)
+                if response.status_code == 429:
+                    wait_sec = (attempt + 1) * 1.5
+                    logger.warning(f"OpenAlex 429 rate limit reached. Backing off for {wait_sec}s...")
+                    time.sleep(wait_sec)
+                    continue
+                response.raise_for_status()
+                data = response.json()
+                results = data.get("results", [])
+                logger.info(f"[Keyword Search] Found {len(results)} results for '{topic}'")
+                return results
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"OpenAlex keyword search failed for '{topic}': {e}")
+                time.sleep(0.5)
+        return []
 
     def expand_topics_with_llm(self, topic: str, llm=None) -> list:
         """
@@ -285,42 +229,57 @@ class WatcherService:
         """
         Retrieves new papers that are NOT in history, incorporating resident preferences and LLM query expansion.
         
-        Supports multi-topic search: if topic contains ';' separators, each sub-topic
-        is searched independently and results are merged with deduplication.
+        Supports independent multi-topic search:
+        - Splits multiple topics (by ';' or 'and') and queries them separately.
+        - Positive keywords are queried as independent search queries, NOT blindly concatenated to topics.
+        - Results are aggregated, deduplicated, and reranked based on resident positive preferences.
         """
         from_date = (datetime.now() - timedelta(days=interval_days)).strftime('%Y-%m-%d')
         
-        # Split topic into sub-topics if multiple are provided
+        # 1. Parse sub-topics
         sub_topics = self.split_topics(topic)
         if not sub_topics:
-            sub_topics = [topic]
+            sub_topics = [topic] if topic else []
         
-        # Expand sub-topics using LLM semantic expansion if enabled
+        # 2. Build independent search queries pool
         search_queries = []
         for st in sub_topics:
+            st_clean = st.strip()
+            if not st_clean:
+                continue
+            if st_clean not in search_queries:
+                search_queries.append(st_clean)
+            
+            # If compound topic contains ' and ', also index key constituent phrases
+            if " and " in st_clean.lower():
+                for sub in st_clean.split(" and "):
+                    sub_c = sub.strip()
+                    if len(sub_c) > 3 and sub_c not in search_queries:
+                        search_queries.append(sub_c)
+            
+            # Expand sub-topics using LLM semantic expansion if enabled
             if enable_expansion:
-                expanded = self.expand_topics_with_llm(st, llm=llm)
+                expanded = self.expand_topics_with_llm(st_clean, llm=llm)
                 for eq in expanded:
                     if eq not in search_queries:
                         search_queries.append(eq)
-            else:
-                if st not in search_queries:
-                    search_queries.append(st)
-        
-        # Collect all raw results across search queries
+
+        # 3. Add positive keywords as independent parallel queries
+        if positive_keywords and isinstance(positive_keywords, list):
+            for pk in positive_keywords:
+                if pk and isinstance(pk, str):
+                    pk_clean = pk.strip()
+                    if pk_clean and len(pk_clean) > 2 and pk_clean not in search_queries:
+                        search_queries.append(pk_clean)
+
+        logger.info(f"[LiteratureWatcher] Searching with {len(search_queries)} independent queries: {search_queries}")
+
+        # 4. Collect raw results across independent queries
         all_raw_results = []
-        seen_ids = set()  # Deduplicate across sub-topics/queries
+        seen_ids = set()
         
         for q in search_queries:
-            # Expand search topic with positive keywords if available
-            search_topic = q
-            if positive_keywords and isinstance(positive_keywords, list):
-                valid_pos = [kw.strip() for kw in positive_keywords if kw and isinstance(kw, str)]
-                if valid_pos:
-                    search_topic = f"{q} {' '.join(valid_pos[:3])}"
-
-            raw_results = self.search_openalex(search_topic, from_date=from_date)
-            
+            raw_results = self.search_openalex(q, from_date=from_date, limit=15)
             for raw in raw_results:
                 raw_id = raw.get('id', '')
                 if raw_id and raw_id not in seen_ids:
@@ -329,19 +288,39 @@ class WatcherService:
         
         new_papers = []
         neg_kws = [kw.lower().strip() for kw in negative_keywords] if negative_keywords and isinstance(negative_keywords, list) else []
+        pos_kws = [kw.lower().strip() for kw in positive_keywords] if positive_keywords and isinstance(positive_keywords, list) else []
 
         for matched_topic, raw in all_raw_results:
-            # Safe access helpers for nested None values
             primary_loc = raw.get('primary_location') or {}
             source_info = primary_loc.get('source') or {}
             ids_info = raw.get('ids') or {}
             author_list = raw.get('authorships') or raw.get('memberships') or []
+            
+            abstract_text = self._extract_abstract(raw)
+            title_text = raw.get('title') or ''
+            full_text_lower = f"{title_text} {abstract_text}".lower()
+
+            # Filter out papers matching negative keywords
+            if neg_kws:
+                if any(neg_kw in full_text_lower for neg_kw in neg_kws if neg_kw):
+                    logger.info(f"Filtering out paper '{title_text}' due to negative keyword match.")
+                    continue
+
+            # Calculate preference relevance score for reranking
+            relevance_score = 0.0
+            for pk in pos_kws:
+                if pk and pk in full_text_lower:
+                    relevance_score += 2.0
+            for st in sub_topics:
+                if st and st.lower() in full_text_lower:
+                    relevance_score += 1.5
+            relevance_score += min((raw.get('cited_by_count') or 0) * 0.1, 5.0)
 
             paper = {
                 'id': raw.get('id', ''),
                 'doi': raw.get('doi', '').replace('https://doi.org/', '') if raw.get('doi') else '',
-                'title': raw.get('title', ''),
-                'abstract': self._extract_abstract(raw),
+                'title': title_text,
+                'abstract': abstract_text,
                 'publication_date': raw.get('publication_date', ''),
                 'authors': ", ".join([
                     (a.get('author') or {}).get('display_name', '')
@@ -351,16 +330,10 @@ class WatcherService:
                 'source': source_info.get('display_name', 'OpenAlex'),
                 'url': raw.get('doi') or ids_info.get('mag', ''),
                 'citations': raw.get('cited_by_count', 0),
-                'topic': matched_topic
+                'topic': matched_topic,
+                'relevance_score': round(relevance_score, 2),
             }
 
-            # Filter out papers matching negative keywords
-            if neg_kws:
-                text_content = f"{paper['title']} {paper['abstract']}".lower()
-                if any(neg_kw in text_content for neg_kw in neg_kws if neg_kw):
-                    logger.info(f"Filtering out paper '{paper['title']}' due to negative keyword match.")
-                    continue
-            
             if not self.history.is_duplicate(
                 doi=paper['doi'], 
                 title=paper['title'], 
@@ -368,7 +341,9 @@ class WatcherService:
                 external_id=paper['id']
             ):
                 new_papers.append(paper)
-                
+
+        # Sort candidates by relevance score and citations descending
+        new_papers.sort(key=lambda p: (p.get('relevance_score', 0), p.get('citations', 0)), reverse=True)
         return new_papers
 
     def _extract_abstract(self, raw_work):
