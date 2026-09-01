@@ -4435,7 +4435,34 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         result = election.tally()
 
-        # 3. Optionally include full proposal content
+        # 3. Add Voter details (who voted and who is pending)
+        voted_voters = list(election.votes.keys())
+        effective_eligible = set(election.eligible_voters) - set(election.excluded_voters)
+        pending = list(effective_eligible - set(voted_voters))
+
+        result["election_id"] = election.election_id
+        result["group_id"] = election.group_id
+        result["status"] = election.status
+        result["voted_nodes"] = voted_voters
+        result["pending_nodes"] = pending
+        result["eligible_voters"] = list(effective_eligible)
+        result["eligible_voters_count"] = len(effective_eligible)
+        result["voted_count"] = len(voted_voters)
+
+        # Detailed breakdown of cast ballots
+        ballots_detail = []
+        for vid, ballot in election.votes.items():
+            for v in ballot:
+                ballots_detail.append({
+                    "voter_id": v.voter_id,
+                    "approval": v.approval,
+                    "candidate_id": v.candidate_id,
+                    "reason": v.reason,
+                    "timestamp": v.timestamp.isoformat() if hasattr(v.timestamp, "isoformat") else str(v.timestamp)
+                })
+        result["ballots"] = ballots_detail
+
+        # 4. Optionally include full proposal content
         if include_content and election.proposal_id:
             proposal = self.governance_manager.proposals.get(election.proposal_id)
             if proposal:

@@ -646,16 +646,17 @@ async def cast_ballot(election_id: str, ballot_json: str) -> str:
 @tool
 async def get_election_status(election_id: str, include_content: bool = True) -> str:
     """
-    Get the status and current tally of an election.
+    Get the status, tally, voted nodes, and pending/absent voters of an election.
     If include_content is True, it will also return the full text of the proposal.
     """
     try:
+        import json
         import app.services.agent_service
 
         status = await app.services.agent_service.agent_service.get_election_info(
             election_id, include_content=include_content
         )
-        return str(status)
+        return json.dumps(status, ensure_ascii=False, indent=2)
     except Exception as e:
         return f"Error getting status: {e!s}"
 
