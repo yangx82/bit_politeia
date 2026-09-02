@@ -48,9 +48,11 @@ def test_election_lifecycle(governance_manager):
 
 
 def test_quorum_failure(governance_manager):
+    from datetime import datetime, timezone, timedelta
     candidates = ["cand1"]
     election = governance_manager.initiate_election("group_1", candidates)
     election.eligible_voters = {"v1", "v2", "v3", "v4", "v5"}
+    election.end_time = datetime.now(timezone.utc) - timedelta(minutes=1)
 
     # Only 3 votes (60%)
     governance_manager.receive_ballot(election.election_id, [Vote("v1", "cand1", approval=True)])
