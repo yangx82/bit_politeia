@@ -1159,9 +1159,25 @@ class EvolutionService:
 
                 os.makedirs(os.path.dirname(full_path), exist_ok=True)
                 
-                # Write proposed code to target file
-                with open(full_path, "w", encoding="utf-8") as f:
-                    f.write(aip.proposed_diff.strip() + "\n")
+                # Safe write: if target file already exists and is large, append patch rather than overwriting
+                if os.path.exists(full_path) and os.path.getsize(full_path) > len(aip.proposed_diff) * 2:
+                    with open(full_path, "r", encoding="utf-8") as rf:
+                        existing_content = rf.read()
+
+                    if aip.proposed_diff.strip() in existing_content:
+                        logger.info(f"[EvolutionLanding] Patch already present in {full_path}")
+                    else:
+                        append_content = (
+                            f"\n\n# ========================================================\n"
+                            f"# [Autonomous Evolution Patch] {aip.aip_id}: {aip.title}\n"
+                            f"# ========================================================\n"
+                            f"{aip.proposed_diff.strip()}\n"
+                        )
+                        with open(full_path, "a", encoding="utf-8") as af:
+                            af.write(append_content)
+                else:
+                    with open(full_path, "w", encoding="utf-8") as f:
+                        f.write(aip.proposed_diff.strip() + "\n")
                 
                 # Syntax verification
                 import py_compile

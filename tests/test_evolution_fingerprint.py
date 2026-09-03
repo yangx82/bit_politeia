@@ -155,3 +155,52 @@ def test_governance_fast_reject():
     assert res3.get("early_rejected") is True
     assert res3.get("passed") is False
     assert election.status == "early_rejected"
+
+
+def test_governance_early_pass_and_aip_landing():
+    """Verify that receiving approvals > 50% triggers early_passed and marks proposal as passed."""
+    import json
+    from backend.app.p2p_community.governance import Proposal
+
+    gov = GovernanceManager(node_id="node_test_gov")
+    candidates = ["cand1"]
+    election = gov.initiate_election("group_early_pass", candidates)
+    election.election_type = ElectionType.PROPOSAL_VOTE
+    election.eligible_voters = {"v1", "v2", "v3", "v4", "v5"}
+
+    # Create proposal associated with election
+    prop = Proposal(
+        proposal_id="prop_test_123",
+        initiator_id="node_test_gov",
+        group_id="group_early_pass",
+        content=json.dumps({
+            "type": "architecture_evolution",
+            "aip": {
+                "aip_id": "AIP-TEST-999",
+                "title": "Test Auto Landing",
+            }
+        }),
+        timestamp="2026-09-03T00:00:00Z",
+    )
+    gov.proposals[prop.proposal_id] = prop
+    election.proposal_id = prop.proposal_id
+
+    # 1st vote: Approval (1/5)
+    gov.receive_ballot(election.election_id, [Vote("v1", "cand1", approval=True, reason="Great spec")])
+    assert election.tally().get("early_passed") is False
+
+    # 2nd vote: Approval (2/5)
+    gov.receive_ballot(election.election_id, [Vote("v2", "cand1", approval=True, reason="Solid thread-safety")])
+    assert election.tally().get("early_passed") is False
+
+    # 3rd vote: Approval (3/5, > 50%) -> Early-Pass MUST trigger immediately!
+    gov.receive_ballot(election.election_id, [Vote("v3", "cand1", approval=True, reason="Well tested")])
+    res3 = election.tally()
+    assert res3.get("early_passed") is True
+    assert res3.get("passed") is True
+    assert election.status == "early_passed"
+
+    # Finalization moves election to finished and marks proposal as passed
+    gov.finalize_expired_elections()
+    assert prop.status == "passed"
+

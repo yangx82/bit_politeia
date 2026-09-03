@@ -237,10 +237,21 @@ class Election:
                 early_rejected = True
                 passed = False
 
+            # Early-Pass Early Termination:
+            # If approvals strictly exceed 50% of total eligible voters, mathematically the proposal HAS passed.
+            early_passed = False
+            if effective_voters:
+                if approvals > len(effective_voters) / 2:
+                    early_passed = True
+                    passed = True
+                elif len(self.votes) >= len(effective_voters) and passed:
+                    early_passed = True
+
             return {
                 "valid": True,
                 "passed": passed,
                 "early_rejected": early_rejected,
+                "early_passed": early_passed,
                 "approvals": approvals,
                 "rejections": rejections,
                 "total_votes": total_cast,
@@ -717,7 +728,15 @@ class GovernanceManager:
                 # Ensure timezone-aware comparison
                 if end_time.tzinfo is None:
                     end_time = end_time.replace(tzinfo=UTC)
-                if now > end_time or getattr(e, "status", "") == "early_rejected":
+                # Dynamically check for early pass or early reject on proposal votes
+                if e.election_type == ElectionType.PROPOSAL_VOTE and e.status not in ["early_rejected", "early_passed"]:
+                    t = e.tally()
+                    if t.get("early_rejected"):
+                        e.status = "early_rejected"
+                    elif t.get("early_passed"):
+                        e.status = "early_passed"
+
+                if now > end_time or getattr(e, "status", "") in ["early_rejected", "early_passed"]:
                     expired_ids.append(eid)
 
             if not expired_ids:
@@ -727,7 +746,7 @@ class GovernanceManager:
                 election = self.active_elections.pop(eid, None)
                 if not election:
                     continue
-                if election.status != "early_rejected":
+                if election.status not in ["early_rejected", "early_passed"]:
                     election.status = "finished"
 
                 # Special handling for RESEARCH_EVALUATION elections
@@ -757,6 +776,7 @@ class GovernanceManager:
                         proposal = self.proposals[election.proposal_id]
                         if tally_res.get("passed"):
                             proposal.status = "passed"
+                            self._handle_aip_passed(proposal)
                         else:
                             proposal.status = "failed"
                             try:
@@ -776,6 +796,84 @@ class GovernanceManager:
 
         self.save_state()
         return expired_ids
+
+    def _handle_aip_passed(self, proposal: Proposal):
+        """When an AIP passes community vote, trigger automated code landing & GitHub PR for proposing node."""
+        import json
+        import asyncio
+
+        aip_id = None
+        try:
+            c_data = json.loads(proposal.content) if isinstance(proposal.content, str) else proposal.content
+            if isinstance(c_data, dict) and c_data.get("type") == "architecture_evolution":
+                aip_id = c_data.get("aip", {}).get("aip_id")
+        except Exception:
+            pass
+
+        if not aip_id:
+            aip_id = proposal.proposal_id
+
+        try:
+            from app.services.evolution_service import evolution_service
+            from app.services.crypto_service import crypto_service
+
+            my_id = crypto_service.get_node_id()
+
+            # Find matching AIP proposal (handling legacy prefix if needed)
+            aip = evolution_service.aips.get(aip_id)
+            if not aip and aip_id:
+                suffix = aip_id.split("-")[-1]
+                for k, v in evolution_service.aips.items():
+                    if k.endswith(suffix):
+                        aip = v
+                        aip_id = k
+                        break
+
+            if aip:
+                aip.status = "passed"
+                evolution_service._save_aips()
+                evolution_service.record_approval_success()
+
+            # Determine if this node is the proposer
+            is_my_proposal = (
+                proposal.initiator_id in [my_id, "self"]
+                or proposal.initiator_id.startswith(my_id[:8])
+                or (aip and (aip.initiator_id in [my_id, "self"] or aip.initiator_id.startswith(my_id[:8])))
+            )
+
+            if is_my_proposal and aip:
+                if getattr(aip, "status", "") == "pr_submitted":
+                    logger.info(f"[Governance] AIP {aip_id} has already been pushed to GitHub. Skipping duplicate push.")
+                    return
+
+                logger.info(f"[Governance] AIP {aip_id} PASSED! Proposing node ({my_id[:8]}) automatically pushing code to GitHub & creating PR...")
+
+                try:
+                    from app.services.agent_service import agent_service
+                except ImportError:
+                    agent_service = None
+
+                async def _landing_job():
+                    try:
+                        res = await evolution_service.submit_pr(
+                            aip_id=aip_id,
+                            agent_service=agent_service,
+                            auto_apply=True,
+                            base_branch="feature/autonomous-evolution-engine",
+                        )
+                        logger.info(f"[Governance] Automated landing result for {aip_id}: {res}")
+                    except Exception as landing_err:
+                        logger.error(f"[Governance] Automated landing failed for {aip_id}: {landing_err}", exc_info=True)
+
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_landing_job())
+                except RuntimeError:
+                    import threading
+                    threading.Thread(target=lambda: asyncio.run(_landing_job()), daemon=True).start()
+
+        except Exception as e:
+            logger.error(f"[Governance] Error handling passed AIP {aip_id}: {e}", exc_info=True)
 
     def receive_ballot(self, election_id: str, votes: list[Vote]) -> bool:
         # First, sync state to ensure we're not voting in something that just expired
@@ -824,7 +922,7 @@ class GovernanceManager:
 
         election.votes[voter_id] = votes
 
-        # Check early fast-reject for proposal vote
+        # Check early termination (Fast-Reject or Early-Pass) for proposal vote
         if election.election_type == ElectionType.PROPOSAL_VOTE:
             tally_res = election.tally()
             if tally_res.get("early_rejected"):
@@ -832,6 +930,12 @@ class GovernanceManager:
                 logger.info(
                     f"[Governance] Fast-Reject triggered for election {election_id}: "
                     f"{tally_res.get('rejections')} rejections exceeded half of eligible voters."
+                )
+            elif tally_res.get("early_passed"):
+                election.status = "early_passed"
+                logger.info(
+                    f"[Governance] Early-Pass triggered for election {election_id}: "
+                    f"{tally_res.get('approvals')} approvals reached majority."
                 )
 
         self.save_state()
