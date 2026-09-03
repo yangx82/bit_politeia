@@ -5659,3 +5659,817 @@ async def nightly_maintenance_pipeline_proxy():
 
 
 agent_service = AgentService()
+
+
+# ========================================================
+# [Autonomous Evolution Patch] AIP-83980595: Adaptive Tool Result Pruning v4: Production-Ready Thread-Safe LRU Cache with Full-Content SHA-256, tiktoken Estimation, and Pruned Content Retrieval API
+# ========================================================
+import json
+import hashlib
+import threading
+from typing import Dict, Optional
+from dataclasses import dataclass
+from collections import OrderedDict
+
+
+@dataclass
+class ToolResult:
+    tool_name: str
+    raw_output: str
+    token_count: int
+    importance_score: float
+    pruned_output: Optional[str] = None
+
+
+class AdaptiveToolResultPruner:
+    """Thread-safe adaptive tool result pruner with bounded LRU cache."""
+
+    TOOL_BUDGETS = {
+        'file_read': 2000,
+        'web_search': 1500,
+        'shell_command': 3000,
+        'database_query': 2500,
+        'default': 1000,
+    }
+
+    IMPORTANCE_WEIGHTS = {
+        'error': 1.0,
+        'structured_data': 0.8,
+        'code_output': 0.7,
+        'search_results': 0.6,
+        'file_content': 0.5,
+        'default': 0.5,  # FIX #6: Added missing 'default' key
+    }
+
+    def __init__(self, total_budget: int = 16000, max_cache_size: int = 256):
+        self.total_budget = total_budget
+        self.max_cache_size = max_cache_size
+        self.cache: OrderedDict[str, ToolResult] = OrderedDict()  # FIX #2: Bounded LRU
+        self._lock = threading.Lock()  # FIX #3: Thread-safety
+        
+        # FIX #4: Initialize tiktoken encoder with fallback
+        try:
+            import tiktoken
+            self._tokenizer = tiktoken.get_encoding('cl100k_base')
+        except ImportError:
+            self._tokenizer = None
+
+    def compute_result_hash(self, tool_name: str, output: str) -> str:
+        """FIX #1: Hash FULL content, not just first 500 chars."""
+        key_data = f"{tool_name}:{output}"  # Full output, no truncation
+        return hashlib.sha256(key_data.encode()).hexdigest()[:16]
+
+    def estimate_tokens(self, text: str) -> int:
+        """FIX #4: Use tiktoken for accurate token estimation."""
+        if self._tokenizer is not None:
+            return len(self._tokenizer.encode(text))
+        # Fallback if tiktoken unavailable
+        return len(text) // 4
+
+    def score_importance(self, tool_name: str, output: str) -> float:
+        """Score importance based on content type and keywords."""
+        base_weight = self.IMPORTANCE_WEIGHTS.get('default', 0.5)  # FIX #6: Safe access
+        
+        error_keywords = ['error', 'exception', 'traceback', 'failed', 'critical']
+        if any(kw in output.lower() for kw in error_keywords):
+            base_weight = max(base_weight, self.IMPORTANCE_WEIGHTS['error'])
+        
+        try:
+            json.loads(output)
+            base_weight = max(base_weight, self.IMPORTANCE_WEIGHTS['structured_data'])
+        except (json.JSONDecodeError, ValueError):
+            pass
+        
+        return min(base_weight, 1.0)
+
+    def prune_result(self, tool_name: str, output: str, budget: int) -> str:
+        """Prune output to fit within token budget."""
+        current_tokens = self.estimate_tokens(output)
+        if current_tokens <= budget:
+            return output
+        
+        lines = output.split('\n')
+        if len(lines) > 20:
+            header = '\n'.join(lines[:5])
+            tail = '\n'.join(lines[-5:])
+            summary = f"\n... [{len(lines) - 10} lines truncated, {current_tokens - budget} tokens saved] ...\n"
+            return f"{header}{summary}{tail}"
+        else:
+            char_budget = budget * 4
+            return output[:char_budget] + '\n... [truncated] ...'
+
+    def process_tool_result(self, tool_name: str, output: str) -> str:
+        """Process and cache tool result with thread-safety."""
+        result_hash = self.compute_result_hash(tool_name, output)
+        
+        # FIX #3: Thread-safe cache access
+        with self._lock:
+            if result_hash in self.cache:
+                # Mark as most recently used
+                self.cache.move_to_end(result_hash)
+                return f"[Duplicate of previous {tool_name} result - cached, hash={result_hash}]"
+        
+        importance = self.score_importance(tool_name, output)
+        category = self._categorize_tool(tool_name)
+        budget = int(self.TOOL_BUDGETS.get(category, self.TOOL_BUDGETS['default']) * importance)
+        pruned = self.prune_result(tool_name, output, budget)
+        
+        # FIX #3: Thread-safe cache insertion with LRU eviction
+        with self._lock:
+            # FIX #2: Evict LRU entry if cache is full
+            if len(self.cache) >= self.max_cache_size:
+                self.cache.popitem(last=False)  # Remove least recently used
+            
+            self.cache[result_hash] = ToolResult(
+                tool_name=tool_name,
+                raw_output=output,
+                token_count=self.estimate_tokens(output),
+                importance_score=importance,
+                pruned_output=pruned,
+            )
+        
+        return pruned
+
+    def get_cached_result(self, result_hash: str) -> Optional[ToolResult]:
+        """FIX #5: Retrieve cached ToolResult by hash (pruned content retrieval API)."""
+        with self._lock:
+            if result_hash in self.cache:
+                self.cache.move_to_end(result_hash)  # Mark as recently used
+                return self.cache[result_hash]
+        return None
+
+    def get_full_output(self, result_hash: str) -> Optional[str]:
+        """FIX #5: Retrieve full (unpruned) output from cache by hash."""
+        result = self.get_cached_result(result_hash)
+        return result.raw_output if result else None
+
+    def get_pruned_output(self, result_hash: str) -> Optional[str]:
+        """FIX #5: Retrieve pruned output from cache by hash."""
+        result = self.get_cached_result(result_hash)
+        return result.pruned_output if result else None
+
+    def _categorize_tool(self, tool_name: str) -> str:
+        """Categorize tool by name for budget allocation."""
+        name_lower = tool_name.lower()
+        if 'file' in name_lower or 'read' in name_lower:
+            return 'file_read'
+        elif 'search' in name_lower or 'web' in name_lower:
+            return 'web_search'
+        elif 'shell' in name_lower or 'command' in name_lower or 'exec' in name_lower:
+            return 'shell_command'
+        elif 'database' in name_lower or 'query' in name_lower:
+            return 'database_query'
+        return 'default'
+
+    def clear_cache(self):
+        """Clear all cached results (thread-safe)."""
+        with self._lock:
+            self.cache.clear()
+
+    def get_cache_stats(self) -> Dict[str, int]:
+        """Get cache statistics (thread-safe)."""
+        with self._lock:
+            return {
+                'size': len(self.cache),
+                'max_size': self.max_cache_size,
+                'utilization': len(self.cache) / self.max_cache_size if self.max_cache_size > 0 else 0
+            }
+
+
+# Basic test cases
+def test_adaptive_pruner():
+    """Verify all 6 fixes are working."""
+    pruner = AdaptiveToolResultPruner(max_cache_size=3)
+    
+    # Test #1: Full-content hashing (no false cache hits)
+    output1 = "A" * 1000
+    output2 = "A" * 1000 + "B"  # Same prefix, different content
+    hash1 = pruner.compute_result_hash("tool", output1)
+    hash2 = pruner.compute_result_hash("tool", output2)
+    assert hash1 != hash2, "Fix #1 failed: Different outputs should have different hashes"
+    
+    # Test #2: Bounded LRU cache
+    for i in range(5):
+        pruner.process_tool_result(f"tool_{i}", f"output_{i}")
+    stats = pruner.get_cache_stats()
+    assert stats['size'] <= 3, "Fix #2 failed: Cache exceeded max_size"
+    
+    # Test #3: Thread-safety (basic smoke test)
+    import threading
+    results = []
+    def worker():
+        for i in range(100):
+            pruner.process_tool_result("concurrent", f"data_{i}")
+            results.append(pruner.get_cache_stats())
+    
+    threads = [threading.Thread(target=worker) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert all(s['size'] <= 3 for s in results), "Fix #3 failed: Thread-safety violation"
+    
+    # Test #4: tiktoken estimation
+    token_count = pruner.estimate_tokens("Hello world")
+    assert token_count > 0, "Fix #4 failed: Token estimation returned 0"
+    
+    # Test #5: Pruned content retrieval API
+    test_hash = pruner.compute_result_hash("test", "test_output")
+    pruner.process_tool_result("test", "test_output")
+    result = pruner.get_cached_result(test_hash)
+    assert result is not None, "Fix #5 failed: Cannot retrieve cached result"
+    assert result.raw_output == "test_output", "Fix #5 failed: Full output mismatch"
+    
+    # Test #6: IMPORTANCE_WEIGHTS has 'default' key
+    assert 'default' in pruner.IMPORTANCE_WEIGHTS, "Fix #6 failed: Missing 'default' key"
+    score = pruner.score_importance("unknown_tool", "plain text")
+    assert score == 0.5, "Fix #6 failed: Default weight not applied"
+    
+    print("All 6 fixes verified successfully!")
+
+
+if __name__ == "__main__":
+    test_adaptive_pruner()
+
+
+# ========================================================
+# [Autonomous Evolution Patch] AIP-5A40-12445B: Adaptive Vector Caching based on Socially dominant male mice in
+# ========================================================
+#!/usr/bin/env python3
+"""
+Adaptive Vector Caching with Thread-Safe TTL Calculation
+Inspired by social dominance hierarchy models in behavioral biology.
+
+Implements adaptive TTL (Time-To-Live) for cached vectors where
+access frequency and recency determine cache priority, analogous
+to social dominance ranks in group-housed male mice.
+"""
+
+import threading
+import time
+import math
+import logging
+from typing import Dict, Optional, Any, Tuple
+from dataclasses import dataclass, field
+from collections import OrderedDict
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CacheEntry:
+    """Represents a single cached vector with adaptive TTL metadata."""
+    key: str
+    value: Any
+    created_at: float
+    last_accessed: float
+    access_count: int = 0
+    base_ttl: float = 60.0
+    current_ttl: float = 60.0
+    dominance_score: float = 0.0
+    hit_weight: float = 1.0
+
+    def is_expired(self, current_time: float) -> bool:
+        """Check if this entry has exceeded its adaptive TTL."""
+        return (current_time - self.last_accessed) > self.current_ttl
+
+    def age_ratio(self, current_time: float) -> float:
+        """Return ratio of age to current TTL (0.0 = fresh, 1.0+ = expired)."""
+        if self.current_ttl <= 0:
+            return float('inf')
+        return (current_time - self.last_accessed) / self.current_ttl
+
+
+class AdaptiveTTLCalculator:
+    """
+    Thread-safe adaptive TTL calculator using dominance hierarchy model.
+
+    The TTL adapts based on:
+    - hit_rate: Frequency of cache hits (0.0 to 1.0)
+    - access_recency: How recently the entry was accessed
+    - dominance_score: Computed priority based on access patterns
+
+    Inspired by social dominance in male mice groups where
+    high-access entries (dominant individuals) receive extended
+    resource access (longer TTL).
+    """
+
+    # Class-level constants for bounds
+    MIN_TTL = 1.0
+    MAX_TTL = 3600.0
+    DEFAULT_BASE_TTL = 60.0
+    DECAY_FACTOR = 0.5
+    GROWTH_FACTOR = 2.0
+    DOMINANCE_THRESHOLD = 0.7
+
+    def __init__(self, base_ttl: float = 60.0, min_ttl: float = 1.0, max_ttl: float = 3600.0):
+        self._lock = threading.Lock()
+        self._base_ttl = self._clamp_ttl(base_ttl)
+        self._min_ttl = self._clamp_ttl(min_ttl)
+        self._max_ttl = self._clamp_ttl(max_ttl)
+        self._global_hit_rate = 0.5
+        self._total_accesses = 0
+        self._total_hits = 0
+
+    @staticmethod
+    def _clamp_value(value: float, min_val: float, max_val: float) -> float:
+        """Clamp a value within bounds with type safety."""
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            logger.warning(f"Invalid value '{value}' for clamping, using midpoint.")
+            return (min_val + max_val) / 2.0
+        return max(min_val, min(max_val, v))
+
+    @classmethod
+    def _clamp_ttl(cls, ttl: float) -> float:
+        """Clamp TTL to valid range."""
+        return cls._clamp_value(ttl, cls.MIN_TTL, cls.MAX_TTL)
+
+    @staticmethod
+    def _clamp_hit_rate(hit_rate: float) -> float:
+        """Clamp hit_rate to [0.0, 1.0] with explicit bounds checking."""
+        try:
+            hr = float(hit_rate)
+        except (TypeError, ValueError):
+            logger.warning(f"Invalid hit_rate '{hit_rate}', defaulting to 0.5")
+            return 0.5
+        return max(0.0, min(1.0, hr))
+
+    def update_global_stats(self, was_hit: bool) -> None:
+        """Thread-safe update of global cache statistics."""
+        with self._lock:
+            self._total_accesses += 1
+            if was_hit:
+                self._total_hits += 1
+            if self._total_accesses > 0:
+                self._global_hit_rate = self._total_hits / self._total_accesses
+
+    def compute_dominance_score(
+        self,
+        access_count: int,
+        hit_rate: float,
+        recency_factor: float
+    ) -> float:
+        """
+        Compute dominance score analogous to social hierarchy rank.
+
+        Args:
+            access_count: Number of times this entry was accessed.
+            hit_rate: Ratio of hits to total accesses for this entry.
+            recency_factor: Normalized recency (0.0 = old, 1.0 = very recent).
+
+        Returns:
+            Dominance score in [0.0, 1.0].
+        """
+        hit_rate = self._clamp_hit_rate(hit_rate)
+        recency_factor = self._clamp_value(recency_factor, 0.0, 1.0)
+
+        try:
+            # Log-scaled access frequency (diminishing returns)
+            access_score = math.log1p(access_count) / math.log1p(100)
+            access_score = max(0.0, min(1.0, access_score))
+
+            # Weighted combination: dominance = f(hit_rate, access, recency)
+            dominance = (
+                0.4 * hit_rate +
+                0.35 * access_score +
+                0.25 * recency_factor
+            )
+            return max(0.0, min(1.0, dominance))
+        except (ValueError, OverflowError, ZeroDivisionError) as e:
+            logger.error(f"Error computing dominance score: {e}")
+            return 0.0
+
+    def compute_adaptive_ttl(
+        self,
+        hit_rate: float,
+        dominance_score: float,
+        base_ttl: Optional[float] = None
+    ) -> float:
+        """
+        Compute adaptive TTL based on dominance hierarchy model.
+
+        High-dominance entries (frequently accessed, high hit rate)
+        receive extended TTL. Low-dominance entries get shorter TTL
+        to free cache space.
+
+        Args:
+            hit_rate: Cache hit rate for this entry [0.0, 1.0].
+            dominance_score: Computed dominance score [0.0, 1.0].
+            base_ttl: Optional override for base TTL.
+
+        Returns:
+            Adaptive TTL in seconds, clamped to [min_ttl, max_ttl].
+        """
+        hit_rate = self._clamp_hit_rate(hit_rate)
+        dominance_score = self._clamp_value(dominance_score, 0.0, 1.0)
+
+        effective_base = base_ttl if base_ttl is not None else self._base_ttl
+        effective_base = self._clamp_ttl(effective_base)
+
+        try:
+            # Exponential scaling: dominant entries get longer TTL
+            # TTL = base * (growth ^ dominance) with decay for low dominance
+            if dominance_score >= self.DOMINANCE_THRESHOLD:
+                # High dominance: extend TTL
+                scale = self.GROWTH_FACTOR ** (dominance_score - 0.5)
+            else:
+                # Low dominance: decay TTL
+                scale = self.DECAY_FACTOR ** (0.5 - dominance_score)
+
+            # Modulate by hit rate for additional refinement
+            hit_modulator = 0.5 + 0.5 * hit_rate  # Range [0.5, 1.0]
+
+            adaptive_ttl = effective_base * scale * hit_modulator
+            return self._clamp_ttl(adaptive_ttl)
+
+        except (ValueError, OverflowError, ZeroDivisionError) as e:
+            logger.error(f"Error computing adaptive TTL: {e}, falling back to base_ttl")
+            return effective_base
+
+    def get_global_hit_rate(self) -> float:
+        """Thread-safe read of global hit rate."""
+        with self._lock:
+            return self._global_hit_rate
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Return current cache statistics."""
+        with self._lock:
+            return {
+                "total_accesses": self._total_accesses,
+                "total_hits": self._total_hits,
+                "global_hit_rate": round(self._global_hit_rate, 4),
+                "base_ttl": self._base_ttl,
+                "min_ttl": self._min_ttl,
+                "max_ttl": self._max_ttl,
+            }
+
+
+class AdaptiveVectorCache:
+    """
+    Thread-safe adaptive vector cache with dominance-based TTL management.
+
+    Provides O(1) get/put operations with automatic eviction of
+    expired entries based on adaptive TTL calculation.
+    """
+
+    def __init__(
+        self,
+        max_size: int = 1000,
+        base_ttl: float = 60.0,
+        cleanup_interval: float = 10.0
+    ):
+        self._lock = threading.RLock()
+        self._cache: OrderedDict[str, CacheEntry] = OrderedDict()
+        self._max_size = max(1, int(max_size))
+        self._ttl_calculator = AdaptiveTTLCalculator(base_ttl=base_ttl)
+        self._cleanup_interval = cleanup_interval
+        self._last_cleanup = time.time()
+
+    def _needs_cleanup(self) -> bool:
+        """Check if periodic cleanup is due."""
+        return (time.time() - self._last_cleanup) > self._cleanup_interval
+
+    def _evict_expired(self, current_time: float) -> int:
+        """Remove expired entries. Returns count of evicted entries."""
+        expired_keys = [
+            k for k, v in self._cache.items()
+            if v.is_expired(current_time)
+        ]
+        for k in expired_keys:
+            del self._cache[k]
+        return len(expired_keys)
+
+    def _evict_lowest_dominance(self) -> None:
+        """Evict the entry with lowest dominance score when at capacity."""
+        if not self._cache:
+            return
+        min_key = min(self._cache, key=lambda k: self._cache[k].dominance_score)
+        del self._cache[min_key]
+
+    def put(self, key: str, value: Any, base_ttl: Optional[float] = None) -> None:
+        """
+        Insert or update a cache entry with adaptive TTL.
+
+        Args:
+            key: Cache key (vector identifier).
+            value: The vector or data to cache.
+            base_ttl: Optional per-entry base TTL override.
+        """
+        current_time = time.time()
+        effective_ttl = self._ttl_calculator.compute_adaptive_ttl(
+            hit_rate=0.5,  # New entries start with neutral hit rate
+            dominance_score=0.5,
+            base_ttl=base_ttl
+        )
+
+        with self._lock:
+            if key in self._cache:
+                entry = self._cache[key]
+                entry.value = value
+                entry.last_accessed = current_time
+                entry.access_count += 1
+                entry.current_ttl = effective_ttl
+                self._cache.move_to_end(key)
+            else:
+                if len(self._cache) >= self._max_size:
+                    self._evict_lowest_dominance()
+                entry = CacheEntry(
+                    key=key,
+                    value=value,
+                    created_at=current_time,
+                    last_accessed=current_time,
+                    access_count=1,
+                    base_ttl=base_ttl or self._ttl_calculator._base_ttl,
+                    current_ttl=effective_ttl,
+                    dominance_score=0.5,
+                    hit_weight=1.0
+                )
+                self._cache[key] = entry
+
+            # Periodic cleanup
+            if self._needs_cleanup():
+                self._evict_expired(current_time)
+                self._last_cleanup = current_time
+
+    def get(self, key: str) -> Optional[Any]:
+        """
+        Retrieve a cached vector, updating its adaptive TTL on hit.
+
+        Args:
+            key: Cache key to look up.
+
+        Returns:
+            Cached value or None if not found/expired.
+        """
+        current_time = time.time()
+
+        with self._lock:
+            if key not in self._cache:
+                self._ttl_calculator.update_global_stats(was_hit=False)
+                return None
+
+            entry = self._cache[key]
+
+            # Check expiration
+            if entry.is_expired(current_time):
+                del self._cache[key]
+                self._ttl_calculator.update_global_stats(was_hit=False)
+                return None
+
+            # Cache hit: update metadata
+            entry.access_count += 1
+            entry.last_accessed = current_time
+            self._cache.move_to_end(key)
+
+            # Compute per-entry hit rate
+            entry_hit_rate = min(1.0, entry.access_count / max(1, entry.access_count + 1))
+
+            # Compute recency factor
+            age = current_time - entry.created_at
+            recency_factor = max(0.0, 1.0 - (age / max(1.0, entry.current_ttl * 10)))
+
+            # Update dominance score
+            entry.dominance_score = self._ttl_calculator.compute_dominance_score(
+                access_count=entry.access_count,
+                hit_rate=entry_hit_rate,
+                recency_factor=recency_factor
+            )
+
+            # Recompute adaptive TTL
+            entry.current_ttl = self._ttl_calculator.compute_adaptive_ttl(
+                hit_rate=entry_hit_rate,
+                dominance_score=entry.dominance_score,
+                base_ttl=entry.base_ttl
+            )
+
+            self._ttl_calculator.update_global_stats(was_hit=True)
+            return entry.value
+
+    def invalidate(self, key: str) -> bool:
+        """Remove a specific key from cache. Returns True if key existed."""
+        with self._lock:
+            if key in self._cache:
+                del self._cache[key]
+                return True
+            return False
+
+    def clear(self) -> None:
+        """Clear all cache entries."""
+        with self._lock:
+            self._cache.clear()
+
+    def size(self) -> int:
+        """Return current number of cached entries."""
+        with self._lock:
+            return len(self._cache)
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Return comprehensive cache statistics."""
+        with self._lock:
+            stats = self._ttl_calculator.get_stats()
+            stats["cache_size"] = len(self._cache)
+            stats["max_size"] = self._max_size
+            if self._cache:
+                scores = [e.dominance_score for e in self._cache.values()]
+                stats["avg_dominance"] = round(sum(scores) / len(scores), 4)
+                stats["max_dominance"] = round(max(scores), 4)
+                stats["min_dominance"] = round(min(scores), 4)
+            return stats
+
+
+# ==============================================================================
+# UNIT TESTS
+# ==============================================================================
+
+def run_unit_tests() -> None:
+    """Self-contained unit test suite for adaptive vector caching."""
+    print("=" * 60)
+    print("Running Adaptive Vector Cache Unit Tests")
+    print("=" * 60)
+    passed = 0
+    failed = 0
+
+    def assert_test(condition: bool, test_name: str) -> None:
+        nonlocal passed, failed
+        if condition:
+            print(f"  [PASS] {test_name}")
+            passed += 1
+        else:
+            print(f"  [FAIL] {test_name}")
+            failed += 1
+
+    # --- Test 1: Input Bounds Checking ---
+    print("\n[Test Group 1: Input Bounds Checking]")
+    calc = AdaptiveTTL
+
+
+# ========================================================
+# [Autonomous Evolution Patch] AIP-E1C2EFF9: Adaptive Tool Result Pruning with Fuzzy Semantic Deduplication, LRU Bounded Cache, and Structured-Output Safety (v4 — Syntax Fixed)
+# ========================================================
+import hashlib
+import threading
+import re
+import json
+from typing import Dict, List, Tuple, Optional
+from collections import OrderedDict
+from difflib import SequenceMatcher
+
+
+class LRUBoundedCache:
+    """FIX-3: Thread-safe LRU cache with OrderedDict and bounded eviction."""
+
+    def __init__(self, max_size: int = 1000):
+        self._cache: OrderedDict[str, str] = OrderedDict()
+        self._max_size = max_size
+        self._lock = threading.Lock()
+
+    def get(self, key: str) -> Optional[str]:
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                return self._cache[key]
+            return None
+
+    def put(self, key: str, value: str) -> None:
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            self._cache[key] = value
+            while len(self._cache) > self._max_size:
+                self._cache.popitem(last=False)
+
+    def contains(self, key: str) -> bool:
+        with self._lock:
+            return key in self._cache
+
+    @property
+    def size(self) -> int:
+        with self._lock:
+            return len(self._cache)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._cache.clear()
+
+
+class StructuredOutputDetector:
+    """FIX-4: Detects structured outputs that must NEVER be sentence-split."""
+
+    _CODE_BLOCK_RE = re.compile(r'^```', re.MULTILINE)
+    _JSON_RE = re.compile(r'^\s*[{\[]')
+    _STACK_TRACE_RE = re.compile(r'(Traceback|Error|Exception|at\s+\w+\()', re.IGNORECASE)
+    _XML_HTML_RE = re.compile(r'<[a-zA-Z][^>]*>')
+    _URL_RE = re.compile(r'https?://|www\.')
+
+    @classmethod
+    def is_structured(cls, text: str) -> bool:
+        """Returns True if text contains structured content that should not be sentence-split."""
+        if cls._CODE_BLOCK_RE.search(text):
+            return True
+        if cls._JSON_RE.match(text):
+            try:
+                json.loads(text)
+                return True
+            except json.JSONDecodeError:
+                if text.count('{') > 2 or text.count('[') > 2:
+                    return True
+        if cls._STACK_TRACE_RE.search(text):
+            return True
+        if cls._XML_HTML_RE.search(text):
+            return True
+        url_count = len(cls._URL_RE.findall(text))
+        if url_count >= 3:
+            return True
+        return False
+
+
+class ToolResultPruner:
+    """Main pruning engine with all 6 fixes."""
+
+    ERROR_KEYWORDS = {'error', 'exception', 'traceback', 'fatal', 'critical', 'panic', 'failed', 'failure'}
+    STANDARD_KEYWORDS = {'result', 'found', 'success', 'completed', 'output', 'return'}
+    ERROR_WEIGHT = 5.0
+    STANDARD_WEIGHT = 2.0
+
+    def __init__(self, similarity_threshold: float = 0.85, max_cache_size: int = 1000):
+        self.similarity_threshold = similarity_threshold
+        self.result_cache = LRUBoundedCache(max_size=max_cache_size)
+        self._recent_results: List[str] = []
+        self._recent_lock = threading.Lock()
+        self._max_recent = 50
+
+    def _compute_content_hash(self, text: str) -> str:
+        return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+    def _is_fuzzy_duplicate(self, text1: str, text2: str) -> bool:
+        """FIX-1 & FIX-2: Actively uses similarity_threshold and SequenceMatcher."""
+        if len(text1) < 50 or len(text2) < 50:
+            return text1.strip() == text2.strip()
+        sample1 = text1[:500]
+        sample2 = text2[:500]
+        matcher = SequenceMatcher(None, sample1, sample2)
+        ratio = matcher.ratio()
+        return ratio >= self.similarity_threshold
+
+    def _score_relevance(self, sentence: str) -> float:
+        """FIX-5: Error diagnostics get 5x priority over standard results."""
+        lower = sentence.lower()
+        score = 0.0
+        for keyword in self.ERROR_KEYWORDS:
+            if keyword in lower:
+                score += self.ERROR_WEIGHT
+        for keyword in self.STANDARD_KEYWORDS:
+            if keyword in lower:
+                score += self.STANDARD_WEIGHT
+        return score
+
+    def extract_key_sentences(self, text: str, max_sentences: int = 10, max_tokens: int = 500) -> str:
+        """FIX-4: Structured outputs are never sentence-split, only token-truncated."""
+        if StructuredOutputDetector.is_structured(text):
+            tokens = text.split()
+            if len(tokens) > max_tokens:
+                return ' '.join(tokens[:max_tokens]) + '... [truncated]'
+            return text
+
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        scored = [(self._score_relevance(s), i, s) for i, s in enumerate(sentences)]
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        top_sentences = [s[2] for s in scored[:max_sentences]]
+        top_sentences.sort(key=lambda s: sentences.index(s))
+        result = ' '.join(top_sentences)
+        tokens = result.split()
+        if len(tokens) > max_tokens:
+            result = ' '.join(tokens[:max_tokens]) + '... [truncated]'
+        return result
+
+    def prune_result(self, tool_name: str, result_text: str) -> str:
+        """Main entry point: deduplicate and prune tool results."""
+        content_hash = self._compute_content_hash(result_text)
+        if self.result_cache.contains(content_hash):
+            cached = self.result_cache.get(content_hash)
+            if cached:
+                return f"[Duplicate of recent {tool_name} output - pruned]"
+
+        with self._recent_lock:
+            for recent in self._recent_results:
+                if self._is_fuzzy_duplicate(result_text, recent):
+                    self.result_cache.put(content_hash, result_text)
+                    return f"[Similar to recent {tool_name} output - pruned]"
+
+        pruned = self.extract_key_sentences(result_text)
+        self.result_cache.put(content_hash, pruned)
+        with self._recent_lock:
+            self._recent_results.append(result_text)
+            if len(self._recent_results) > self._max_recent:
+                self._recent_results.pop(0)
+        return pruned
+
+    def get_stats(self) -> Dict[str, int]:
+        with self._recent_lock:
+            recent_count = len(self._recent_results)
+        return {
+            'cache_size': self.result_cache.size,
+            'recent_count': recent_count
+        }
