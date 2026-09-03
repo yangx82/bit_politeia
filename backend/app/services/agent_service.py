@@ -2574,7 +2574,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             # If no pending draft AIPs exist, trigger proactive LLM auto-exploration
             if not active_aips and self.llm:
                 logger.info("[EvolutionWatcher] No pending draft AIPs found. Triggering proactive exploration...")
-                new_aip = await evolution_service.auto_explore_and_propose(llm_client=self.llm)
+                new_aip = await evolution_service.auto_explore_and_propose(llm_client=self.llm, agent_service=self)
                 if new_aip:
                     active_aips = [new_aip]
 

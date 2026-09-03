@@ -152,8 +152,58 @@ class EvolutionService:
                     for k, v in data.items():
                         self.aips[k] = AIPProposal.from_dict(v)
                 self.consolidate_duplicates()
+                self._migrate_legacy_self_aips()
             except Exception as e:
                 logger.error(f"[EvolutionService] Failed to load AIPs: {e}")
+
+    def _get_local_node_id(self) -> str:
+        """Resolves the real local node ID from crypto_service, p2p_service, or governance."""
+        try:
+            from app.services.crypto_service import crypto_service
+            nid = crypto_service.get_node_id()
+            if nid and nid not in ["unknown", "self", ""]:
+                return nid
+        except Exception:
+            pass
+
+        try:
+            from app.services.p2p_service import p2p_service
+            if p2p_service.local_node and p2p_service.local_node.node_id:
+                nid = p2p_service.local_node.node_id
+                if nid and nid not in ["unknown", "self", ""]:
+                    return nid
+        except Exception:
+            pass
+
+        return "5a40d9e65ff88c11a22fe5bd35c7b4f8f9efe4792b1026b3538aaed52fb4cdfa"
+
+    def _migrate_legacy_self_aips(self):
+        """Migrates legacy proposals with initiator_id == 'self' or 'AIP-SELF-' to use the real local node ID."""
+        real_id = self._get_local_node_id()
+        node_prefix = real_id.replace("node_", "").replace("-", "")[:4].upper()
+        migrated = False
+
+        updated_aips = {}
+        for aid, aip in list(self.aips.items()):
+            changed = False
+            if aip.initiator_id in ["self", "unknown", ""]:
+                aip.initiator_id = real_id
+                changed = True
+
+            new_id = aid
+            if aid.startswith("AIP-SELF-"):
+                new_id = aid.replace("AIP-SELF-", f"AIP-{node_prefix}-")
+                aip.aip_id = new_id
+                changed = True
+
+            updated_aips[new_id] = aip
+            if changed:
+                migrated = True
+
+        if migrated:
+            self.aips = updated_aips
+            self._save_aips()
+            logger.info(f"[EvolutionService] Migrated legacy 'self' AIP IDs to use node prefix '{node_prefix}'")
 
     def consolidate_duplicates(self):
         """Consolidates duplicate AIPs sharing the same or near-identical titles into single canonical entries."""
@@ -192,13 +242,17 @@ class EvolutionService:
     def _generate_deterministic_aip_id(self, initiator_id: str, title: str, proposed_diff: str = "") -> str:
         """
         Generates a globally unique, deterministic AIP ID based on node namespace and content hash.
-        Format: AIP-{NODE_PREFIX}-{CONTENT_HASH_6} (e.g., AIP-5FAA-A1B2C3).
+        Format: AIP-{NODE_PREFIX}-{CONTENT_HASH_6} (e.g., AIP-5A40-A1B2C3).
         Automatically resolves collisions by deriving version suffixes.
         """
         import hashlib
-        raw_node = (initiator_id or "SELF").replace("node_", "").replace("-", "")
+        resolved_initiator = initiator_id
+        if not resolved_initiator or resolved_initiator in ["self", "unknown"]:
+            resolved_initiator = self._get_local_node_id()
+
+        raw_node = resolved_initiator.replace("node_", "").replace("-", "")
         node_prefix = raw_node[:4].upper() if len(raw_node) >= 4 else raw_node.upper().ljust(4, "X")
-        
+
         content_key = f"{title.strip().lower()}::{proposed_diff.strip()}"
         content_hash = hashlib.sha256(content_key.encode("utf-8")).hexdigest()[:6].upper()
         base_id = f"AIP-{node_prefix}-{content_hash}"
@@ -348,10 +402,14 @@ class EvolutionService:
             target_files=target_files,
         )
 
-        aip_id = self._generate_deterministic_aip_id(initiator_id, title, proposed_diff)
+        resolved_initiator = initiator_id
+        if not resolved_initiator or resolved_initiator in ["self", "unknown"]:
+            resolved_initiator = self._get_local_node_id()
+
+        aip_id = self._generate_deterministic_aip_id(resolved_initiator, title, proposed_diff)
         aip = AIPProposal(
             aip_id=aip_id,
-            initiator_id=initiator_id,
+            initiator_id=resolved_initiator,
             title=title,
             description=corrected_desc,
             target_files=target_files,
@@ -468,9 +526,14 @@ class EvolutionService:
             research_sources = [lit_url] if lit_url else ["https://arxiv.org/abs/2304.03442"]
 
             # Step 4: Create proposal through pre-flight gate & deterministic ID
-            initiator_id = "self"
-            if agent_service and hasattr(agent_service, "node_id") and agent_service.node_id:
-                initiator_id = agent_service.node_id
+            initiator_id = self._get_local_node_id()
+            if agent_service:
+                if hasattr(agent_service, "node_id") and agent_service.node_id:
+                    initiator_id = agent_service.node_id
+                elif hasattr(agent_service, "status") and hasattr(agent_service.status, "node_id") and agent_service.status.node_id:
+                    initiator_id = agent_service.status.node_id
+                elif hasattr(agent_service, "governance_manager") and agent_service.governance_manager and agent_service.governance_manager.node_id:
+                    initiator_id = agent_service.governance_manager.node_id
 
             aip = self.create_aip(
                 initiator_id=initiator_id,
