@@ -2566,6 +2566,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             except (ImportError, ValueError):
                 from app.services.evolution_service import evolution_service
 
+            # Check if evolution engine is in cooldown backoff
+            in_cd, cd_msg = evolution_service.is_in_cooldown()
+            if in_cd:
+                logger.warning(f"[EvolutionWatcher] Skipping self-evolution cycle: {cd_msg}")
+                return
+
             active_aips = [
                 aip for aip in evolution_service.aips.values()
                 if aip.status in ["draft", "proposed", "revised_draft", "stalled"]
@@ -2611,6 +2617,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 is_success = loop_res.get("success", False)
                 if is_success:
                     has_approved = True
+                    evolution_service.record_approval_success()
+                else:
+                    evolution_service.record_rejection_strike(
+                        reason=f"AIP {aip.aip_id} failed inner evolution loop after {rounds_used} rounds.",
+                        aip_id=aip.aip_id,
+                    )
 
                 target_str = ", ".join(aip.target_files) if aip.target_files else "系统核心架构"
                 report_item = (

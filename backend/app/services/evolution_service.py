@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 UTC = timezone.utc
 from typing import Any
 
@@ -141,6 +141,10 @@ class EvolutionService:
         os.makedirs(self.data_dir, exist_ok=True)
         self.aips_file = os.path.join(self.data_dir, "aips.json")
         self.aips: dict[str, AIPProposal] = {}
+        self.consecutive_rejections: int = 0
+        self.cooldown_until: datetime | None = None
+        # User defined cooldown ladder: 1 hour -> 2 hours -> 6 hours
+        self.cooldown_ladder = [timedelta(hours=1), timedelta(hours=2), timedelta(hours=6)]
         self._load_aips()
 
     def _load_aips(self):
@@ -155,6 +159,150 @@ class EvolutionService:
                 self._migrate_legacy_self_aips()
             except Exception as e:
                 logger.error(f"[EvolutionService] Failed to load AIPs: {e}")
+
+    def _compute_ast_fingerprint(self, code_str: str) -> str:
+        """
+        Computes a normalized structural AST fingerprint of code,
+        invariant to docstrings, comments, variable names, and formatting.
+        """
+        import ast
+        import hashlib
+        import re
+
+        clean_code = (code_str or "").strip()
+        if not clean_code:
+            return ""
+
+        try:
+            tree = ast.parse(clean_code)
+
+            # Walk and normalize identifiers and strip docstrings
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    node.name = "_FUNC_"
+                    if (
+                        node.body
+                        and isinstance(node.body[0], ast.Expr)
+                        and isinstance(node.body[0].value, ast.Constant)
+                        and isinstance(node.body[0].value.value, str)
+                    ):
+                        node.body.pop(0)
+                elif isinstance(node, ast.ClassDef):
+                    node.name = "_CLASS_"
+                    if (
+                        node.body
+                        and isinstance(node.body[0], ast.Expr)
+                        and isinstance(node.body[0].value, ast.Constant)
+                        and isinstance(node.body[0].value.value, str)
+                    ):
+                        node.body.pop(0)
+                elif isinstance(node, ast.Module):
+                    if (
+                        node.body
+                        and isinstance(node.body[0], ast.Expr)
+                        and isinstance(node.body[0].value, ast.Constant)
+                        and isinstance(node.body[0].value.value, str)
+                    ):
+                        node.body.pop(0)
+                elif isinstance(node, ast.arg):
+                    node.arg = "_ARG_"
+                elif isinstance(node, ast.Name):
+                    node.id = "_VAR_"
+                elif isinstance(node, ast.Attribute):
+                    node.attr = "_ATTR_"
+
+            raw_dump = ast.dump(tree, annotate_fields=False, include_attributes=False)
+            return hashlib.sha256(raw_dump.encode("utf-8")).hexdigest()
+        except Exception:
+            lines = [
+                re.sub(r"\s+", "", line.split("#")[0])
+                for line in clean_code.splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            ]
+            normalized_text = "\n".join(lines)
+            return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+
+    def _is_duplicate_proposal(self, proposed_diff: str, exclude_aip_id: str = "") -> tuple[bool, str, str]:
+        """
+        Checks if the proposed diff is structurally duplicate to any existing proposal.
+        Returns (is_duplicate, duplicate_aip_id, duplicate_title).
+        """
+        new_fp = self._compute_ast_fingerprint(proposed_diff)
+        if not new_fp:
+            return False, "", ""
+
+        for aid, aip in self.aips.items():
+            if aid == exclude_aip_id:
+                continue
+            if not aip.proposed_diff:
+                continue
+            existing_fp = self._compute_ast_fingerprint(aip.proposed_diff)
+            if existing_fp == new_fp:
+                return True, aid, aip.title
+
+        return False, "", ""
+
+    def is_in_cooldown(self) -> tuple[bool, str]:
+        """Checks if proposal broadcasting is currently in cooldown."""
+        now = datetime.now(timezone.utc)
+        if self.cooldown_until and now < self.cooldown_until:
+            remaining = int((self.cooldown_until - now).total_seconds() / 60)
+            return True, f"In cooldown for next {remaining}m due to {self.consecutive_rejections} consecutive rejection(s)."
+        return False, ""
+
+    def record_rejection_strike(self, reason: str = "", aip_id: str = ""):
+        """Records a rejection strike and sets cooldown ladder (1h -> 2h -> 6h)."""
+        self.consecutive_rejections += 1
+        ladder_idx = min(self.consecutive_rejections - 1, len(self.cooldown_ladder) - 1)
+        duration = self.cooldown_ladder[ladder_idx]
+        self.cooldown_until = datetime.now(timezone.utc) + duration
+        logger.warning(
+            f"[EvolutionCooldown] Recorded strike #{self.consecutive_rejections} for AIP '{aip_id}'. "
+            f"Cooldown set until {self.cooldown_until.isoformat()} ({duration}). Reason: {reason[:100]}"
+        )
+        self._record_aip_lesson(
+            aip_id=aip_id,
+            trigger_error=f"AIP Rejected (Strike #{self.consecutive_rejections}): {reason[:200]}",
+            corrective_action="Avoid repeating this pattern. Ensure scope consistency, thread locks, test assertions, and literature relevance.",
+        )
+
+    def record_approval_success(self):
+        """Resets rejection strikes upon successful proposal approval."""
+        self.consecutive_rejections = 0
+        self.cooldown_until = None
+        logger.info("[EvolutionCooldown] Proposal passed. Cooldown strikes reset to 0.")
+
+    def _record_aip_lesson(self, aip_id: str, trigger_error: str, corrective_action: str):
+        """Records a negative reflection into L3 MongoDB memory store."""
+        try:
+            from app.services.resident_memory_service import resident_memory_service
+            resident_memory_service.record_reflection(
+                session_id="evolution_reflections",
+                trigger_error=trigger_error,
+                corrective_action=corrective_action,
+                context_snippet=aip_id or "AIP",
+            )
+            logger.info(f"[EvolutionService] Logged reflection lesson for {aip_id} to L3 memory store.")
+        except Exception as e:
+            logger.warning(f"[EvolutionService] Failed to record L3 reflection: {e}")
+
+    def _get_recent_lessons(self, limit: int = 5) -> list[str]:
+        """Fetches recent reflection lessons from L3 MongoDB."""
+        lessons = []
+        try:
+            from app.services.resident_memory_service import resident_memory_service
+            reflections = resident_memory_service.get_reflections(
+                trigger_error=None,
+                limit=limit,
+            )
+            for r in reflections:
+                err = r.get("trigger_error", "")
+                act = r.get("corrective_action", "")
+                if err:
+                    lessons.append(f"- 【教训/禁区】{err} ➔ 修正方向: {act}")
+        except Exception as e:
+            logger.warning(f"[EvolutionService] Failed to fetch L3 reflections: {e}")
+        return lessons
 
     def _get_local_node_id(self) -> str:
         """Resolves the real local node ID from crypto_service, p2p_service, or governance."""
@@ -358,23 +506,35 @@ class EvolutionService:
             if pattern in clean_code:
                 return False, description, f"Rejected: Contains forbidden dangerous pattern '{pattern}'."
 
-        # 3. Detect Inflation & Apply Scope-Correction
+        # 3. Check for Duplicate AST Fingerprint
+        is_dup, dup_id, dup_title = self._is_duplicate_proposal(clean_code)
+        if is_dup:
+            return False, description, f"Rejected: Proposed code AST is structurally duplicate of '{dup_id}' ({dup_title})."
+
+        # 4. Detect Inflation & Apply Scope-Correction
         # Count non-empty non-comment code lines
         code_lines = [l for l in clean_code.splitlines() if l.strip() and not l.strip().startswith("#")]
         num_code_lines = len(code_lines)
 
         corrected_desc = description.strip()
-        has_scope_tag = "[Scope-Corrected" in corrected_desc or "Non-Goals" in corrected_desc
+        has_scope_tag = (
+            "[Scope-Corrected" in corrected_desc
+            or "Non-Goals" in corrected_desc
+            or "[Atomic Enhancement" in corrected_desc
+        )
 
-        # If code is small (< 25 lines) but description claims full-scale architecture, auto-append Scope-Corrected disclaimer
+        # Dynamic Scope Consistency:
+        # Check if unit test assertions exist
+        has_tests = any(kw in clean_code for kw in ["assert ", "pytest", "unittest", "def test_"])
         inflation_keywords = ["entire system", "complete engine", "full pipeline", "multi-tier framework", "end-to-end"]
-        is_inflated = any(kw in corrected_desc.lower() for kw in inflation_keywords) or (num_code_lines < 15 and not has_scope_tag)
+        is_inflated = any(kw in corrected_desc.lower() for kw in inflation_keywords) or (num_code_lines < 30 and not has_scope_tag)
 
         if is_inflated and not has_scope_tag:
             target_name = os.path.basename(target_files[0]) if target_files else "system"
+            test_status_note = "includes assertions" if has_tests else "requires unit test"
             scope_notice = (
-                f"\n\n[Scope-Corrected: This proposal strictly implements the atomic '{title}' helper logic "
-                f"({num_code_lines} LOC) for {target_name}. Wider integration/orchestration is intentionally out-of-scope.]"
+                f"\n\n[Scope-Corrected | Atomic Enhancement: This proposal strictly implements the atomic '{title}' helper logic "
+                f"({num_code_lines} LOC, {test_status_note}) for {target_name}. Wider integration/orchestration is intentionally out-of-scope.]"
             )
             corrected_desc += scope_notice
             logger.info(f"[EvolutionService] Pre-flight: Auto-applied Scope-Correction for concise diff ({num_code_lines} LOC).")
@@ -439,19 +599,31 @@ class EvolutionService:
         if not llm_client:
             return None
 
+        # Check cooldown state machine
+        in_cd, cd_msg = self.is_in_cooldown()
+        if in_cd:
+            logger.warning(f"[EvolutionService] auto_explore_and_propose skipped: {cd_msg}")
+            return None
+
         try:
-            # Step 1: Fetch real academic literature inspiration
+            # Step 1: Fetch real academic literature inspiration & recent reflection lessons
             lit_item = self._fetch_real_literature_inspiration()
             lit_title = lit_item.get("title", "")
             lit_url = lit_item.get("url", "")
             lit_topic = lit_item.get("topic", "")
+
+            lessons = self._get_recent_lessons(limit=5)
+            lessons_text = ""
+            if lessons:
+                lessons_text = "\n\n【历史失败教训与禁区 (Lessons Learned - 必须严格规避，不得重复犯错)】:\n" + "\n".join(lessons)
 
             # Step 2: Architecture Planning Prompt
             plan_prompt = (
                 f"You are the Lead Architecture Planner for Bit Politeia (a decentralized P2P AI Agent framework).\n"
                 f"We are driving autonomous evolution grounded in verified academic research:\n"
                 f"- Grounding Paper: \"{lit_title}\" ({lit_url})\n"
-                f"- Domain Topic: {lit_topic}\n\n"
+                f"- Domain Topic: {lit_topic}\n"
+                f"{lessons_text}\n\n"
                 f"Design a concrete, highly actionable Agent Improvement Proposal (AIP) addressing bottlenecks in Bit Politeia:\n"
                 f"1. Memory compaction, TTL adaptivity, or LRU vector caching\n"
                 f"2. P2P Gossip deduplication, message batching, and backoff\n"
@@ -481,7 +653,8 @@ class EvolutionService:
                 f"TASK: Write production-ready, thread-safe Python code implementing the following specification:\n"
                 f"Title: {title}\n"
                 f"Target Files: {target_files}\n"
-                f"Specification: {coding_spec}\n\n"
+                f"Specification: {coding_spec}\n"
+                f"{lessons_text}\n\n"
                 f"MANDATORY QUALITY CRITERIA:\n"
                 f"1. Thread Safety: Use `threading.Lock()` or async primitives if maintaining state.\n"
                 f"2. Input Validation: Explicit bounds checking (e.g. `hit_rate = max(0.0, min(1.0, float(hit_rate)))`).\n"
@@ -522,6 +695,15 @@ class EvolutionService:
                     "            else:\n"
                     "                self._stats['misses'] += 1\n"
                 )
+
+            # Prevent duplicate proposal submission
+            is_dup, dup_id, dup_title = self._is_duplicate_proposal(proposed_diff)
+            if is_dup:
+                logger.warning(
+                    f"[EvolutionService] Auto-generated code AST is duplicate of existing proposal '{dup_id}' ({dup_title}). "
+                    f"Skipping proposal creation to avoid duplicate spam."
+                )
+                return None
 
             research_sources = [lit_url] if lit_url else ["https://arxiv.org/abs/2304.03442"]
 

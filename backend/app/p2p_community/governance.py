@@ -229,9 +229,18 @@ class Election:
             if total_cast > 0 and (approvals / total_cast) > 0.5:
                 passed = True
 
+            # Fast-Reject Early Termination:
+            # If rejections strictly exceed 50% of total eligible voters, mathematically the proposal CANNOT pass.
+            early_rejected = False
+            effective_voters = self.eligible_voters - self.excluded_voters
+            if effective_voters and rejections > len(effective_voters) / 2:
+                early_rejected = True
+                passed = False
+
             return {
                 "valid": True,
                 "passed": passed,
+                "early_rejected": early_rejected,
                 "approvals": approvals,
                 "rejections": rejections,
                 "total_votes": total_cast,
@@ -708,7 +717,7 @@ class GovernanceManager:
                 # Ensure timezone-aware comparison
                 if end_time.tzinfo is None:
                     end_time = end_time.replace(tzinfo=UTC)
-                if now > end_time:
+                if now > end_time or getattr(e, "status", "") == "early_rejected":
                     expired_ids.append(eid)
 
             if not expired_ids:
@@ -718,33 +727,52 @@ class GovernanceManager:
                 election = self.active_elections.pop(eid, None)
                 if not election:
                     continue
-                election.status = "finished"
-            
-            # Special handling for RESEARCH_EVALUATION elections
-            if election.election_type == ElectionType.RESEARCH_EVALUATION:
-                evaluation_count = len(election.votes)
-                eligible_count = len(election.eligible_voters - election.excluded_voters)
-                required_count = max(2, min(eligible_count, (eligible_count + 1) // 2))
-                
-                if evaluation_count >= required_count:
-                    # Enough evaluations - mark for reward distribution
-                    election.payout_status = "pending"
-                    logger.info(f"Research election {eid[:8]} expired with sufficient evaluations ({evaluation_count}/{required_count}), payout pending")
-                else:
-                    # Not enough evaluations - no rewards
-                    election.payout_status = "insufficient_evaluations"
-                    logger.warning(f"Research election {eid[:8]} expired with insufficient evaluations ({evaluation_count}/{required_count}), no rewards")
-                
-                # Update proposal status
-                if election.proposal_id and election.proposal_id in self.proposals:
-                    proposal = self.proposals[election.proposal_id]
+                if election.status != "early_rejected":
+                    election.status = "finished"
+
+                # Special handling for RESEARCH_EVALUATION elections
+                if election.election_type == ElectionType.RESEARCH_EVALUATION:
+                    evaluation_count = len(election.votes)
+                    eligible_count = len(election.eligible_voters - election.excluded_voters)
+                    required_count = max(2, min(eligible_count, (eligible_count + 1) // 2))
+
                     if evaluation_count >= required_count:
-                        proposal.status = "evaluated"
+                        election.payout_status = "pending"
+                        logger.info(f"Research election {eid[:8]} with sufficient evaluations ({evaluation_count}/{required_count}), payout pending")
                     else:
-                        proposal.status = "evaluation_failed"
-            
-            self.finished_elections[eid] = election
-            logger.info(f"Governance: Finalized expired election {eid}")
+                        election.payout_status = "insufficient_evaluations"
+                        logger.warning(f"Research election {eid[:8]} with insufficient evaluations ({evaluation_count}/{required_count}), no rewards")
+
+                    # Update proposal status
+                    if election.proposal_id and election.proposal_id in self.proposals:
+                        proposal = self.proposals[election.proposal_id]
+                        if evaluation_count >= required_count:
+                            proposal.status = "evaluated"
+                        else:
+                            proposal.status = "evaluation_failed"
+
+                elif election.election_type == ElectionType.PROPOSAL_VOTE:
+                    tally_res = election.tally()
+                    if election.proposal_id and election.proposal_id in self.proposals:
+                        proposal = self.proposals[election.proposal_id]
+                        if tally_res.get("passed"):
+                            proposal.status = "passed"
+                        else:
+                            proposal.status = "failed"
+                            try:
+                                from app.services.evolution_service import evolution_service
+                                from app.services.crypto_service import crypto_service
+                                my_id = crypto_service.get_node_id()
+                                if proposal.initiator_id in [my_id, "self"] or proposal.initiator_id.startswith(my_id[:8]):
+                                    evolution_service.record_rejection_strike(
+                                        reason=f"Proposal {proposal.proposal_id} rejected in governance voting ({tally_res.get('rejections', 0)} rejections).",
+                                        aip_id=proposal.proposal_id,
+                                    )
+                            except Exception as ex:
+                                logger.warning(f"Failed to record evolution rejection strike: {ex}")
+
+                self.finished_elections[eid] = election
+                logger.info(f"Governance: Finalized election {eid} (status={election.status})")
 
         self.save_state()
         return expired_ids
@@ -795,6 +823,17 @@ class GovernanceManager:
                     return False
 
         election.votes[voter_id] = votes
+
+        # Check early fast-reject for proposal vote
+        if election.election_type == ElectionType.PROPOSAL_VOTE:
+            tally_res = election.tally()
+            if tally_res.get("early_rejected"):
+                election.status = "early_rejected"
+                logger.info(
+                    f"[Governance] Fast-Reject triggered for election {election_id}: "
+                    f"{tally_res.get('rejections')} rejections exceeded half of eligible voters."
+                )
+
         self.save_state()
         return True
 
