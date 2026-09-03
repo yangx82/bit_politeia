@@ -26,6 +26,165 @@ from .p2p_service import p2p_service
 
 logger = logging.getLogger(__name__)
 p2p_logger = logging.getLogger("p2p_network")
+
+# AIP-SELF-12445B: Adaptive Vector Cache with Dominance Hierarchy
+# Implements LRU eviction with TTL expiration and dominance-based priority
+import hashlib
+import threading
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
+
+@dataclass
+class CacheEntry:
+    """Cache entry with TTL and dominance tracking."""
+    key: str
+    value: Any
+    timestamp: float
+    ttl: int
+    dominance_score: float = 0.5
+    
+    def is_expired(self) -> bool:
+        """Check if entry has exceeded TTL."""
+        return (time.time() - self.timestamp) > self.ttl
+
+
+class AdaptiveVectorCache:
+    """
+    LRU cache with TTL expiration and dominance-based eviction.
+    
+    Implements adaptive caching inspired by social hierarchy dynamics:
+    - High-dominance vectors get longer TTL and priority retention
+    - Low-dominance vectors are evicted first when cache is full
+    - Thread-safe with RLock for concurrent access
+    """
+    
+    def __init__(self, max_size: int = 1000, default_ttl: int = 3600):
+        self.max_size = max_size
+        self.default_ttl = default_ttl
+        self._cache: OrderedDict[str, CacheEntry] = OrderedDict()
+        self._lock = threading.RLock()
+        self._stats = {"hits": 0, "misses": 0, "evictions": 0}
+    
+    def get(self, key: str) -> Optional[Any]:
+        """Retrieve value from cache, returns None if missing/expired."""
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                self._stats["misses"] += 1
+                return None
+            
+            # Check TTL expiration
+            if entry.is_expired():
+                del self._cache[key]
+                self._stats["misses"] += 1
+                return None
+            
+            # Move to end (most recently used)
+            self._cache.move_to_end(key)
+            self._stats["hits"] += 1
+            return entry.value
+    
+    def set(self, key: str, value: Any, ttl: Optional[int] = None, dominance: float = 0.5) -> None:
+        """Store value in cache with optional TTL and dominance score."""
+        with self._lock:
+            # Clamp dominance to [0, 1]
+            dominance = max(0.0, min(1.0, dominance))
+            
+            # If key exists, update it
+            if key in self._cache:
+                self._cache[key].value = value
+                self._cache[key].timestamp = time.time()
+                self._cache[key].dominance_score = dominance
+                self._cache.move_to_end(key)
+                return
+            
+            # Evict if at capacity
+            while len(self._cache) >= self.max_size:
+                self._evict_lowest_dominance()
+            
+            # Create new entry
+            entry = CacheEntry(
+                key=key,
+                value=value,
+                timestamp=time.time(),
+                ttl=ttl or self.default_ttl,
+                dominance_score=dominance
+            )
+            self._cache[key] = entry
+    
+    def _evict_lowest_dominance(self) -> None:
+        """Evict entry with lowest dominance score (LRU among ties)."""
+        if not self._cache:
+            return
+        
+        # Find entry with lowest dominance
+        min_key = min(self._cache.keys(), key=lambda k: (self._cache[k].dominance_score, self._cache[k].timestamp))
+        del self._cache[min_key]
+        self._stats["evictions"] += 1
+    
+    def _evict_expired(self) -> int:
+        """Remove all expired entries. Returns count of evicted entries."""
+        with self._lock:
+            expired_keys = [k for k, v in self._cache.items() if v.is_expired()]
+            for key in expired_keys:
+                del self._cache[key]
+                self._stats["evictions"] += 1
+            return len(expired_keys)
+    
+    def clear(self) -> None:
+        """Clear all cache entries."""
+        with self._lock:
+            self._cache.clear()
+    
+    def stats(self) -> Dict[str, int]:
+        """Return cache statistics."""
+        with self._lock:
+            return {
+                **self._stats,
+                "size": len(self._cache),
+                "max_size": self.max_size
+            }
+    
+    def compute_adaptive_ttl(self, base_ttl: int, dominance: float, hit_rate: float) -> int:
+        """
+        Compute TTL based on dominance hierarchy and access patterns.
+        
+        Higher dominance → longer TTL (dominant vectors persist longer)
+        Higher hit rate → longer TTL (frequently accessed vectors persist)
+        """
+        # Clamp inputs
+        dominance = max(0.0, min(1.0, dominance))
+        hit_rate = max(0.0, min(1.0, hit_rate))
+        
+        # Base TTL scaled by dominance (0.5x to 2.0x)
+        dominance_factor = 0.5 + dominance * 1.5
+        
+        # Hit rate bonus (up to 1.5x)
+        hit_bonus = 1.0 + hit_rate * 0.5
+        
+        adaptive_ttl = int(base_ttl * dominance_factor * hit_bonus)
+        
+        # Clamp to reasonable bounds
+        return max(60, min(adaptive_ttl, 86400))  # 1 min to 24 hours
+
+
+# Global adaptive vector cache instance
+_adaptive_vector_cache: Optional[AdaptiveVectorCache] = None
+
+
+def get_adaptive_vector_cache() -> AdaptiveVectorCache:
+    """Get or create the global adaptive vector cache."""
+    global _adaptive_vector_cache
+    if _adaptive_vector_cache is None:
+        max_size = int(os.environ.get("VECTOR_CACHE_MAX_SIZE", "1000"))
+        default_ttl = int(os.environ.get("VECTOR_CACHE_DEFAULT_TTL", "3600"))
+        _adaptive_vector_cache = AdaptiveVectorCache(max_size=max_size, default_ttl=default_ttl)
+        logger.info(f"[AdaptiveVectorCache] Initialized: max_size={max_size}, default_ttl={default_ttl}s")
+    return _adaptive_vector_cache
+
+
 try:
     import langchain
     langchain.debug = True
