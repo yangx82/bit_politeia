@@ -166,29 +166,8 @@ class P2PService:
             # Standardize: Always use Hex Node ID for sender_id if it's a 64-char string
             # (NetworkManager/MessageProtocol handle normalization, but we want it clean here)
 
-            # Call receive_message directly puts it in inbox.jsonl
+            # Call receive_message directly: stores to inbox and dispatches to message_bus immediately
             await self.local_node.receive_message(msg_data)
-
-            # CRITICAL: Also publish to the P2P channel on the message bus immediately!
-            # This allows agent_service to pick it up without waiting for the 30s scheduler.
-            from ..bus.events import InboundMessage
-            from ..bus.queue import message_bus
-
-            # Determine effective session_id (Group vs Direct)
-            effective_session_id = peer_id
-            m_type = str(msg_data.get("message_type")).lower()
-            if m_type == "group":
-                effective_session_id = msg_data.get("recipient_id") or peer_id
-
-            inbound = InboundMessage(
-                channel="p2p",
-                sender_id=peer_id,
-                session_id=effective_session_id,  # Target for replies/session grouping
-                content=message,
-                metadata=msg_data,
-            )
-            await message_bus.publish_inbound(inbound)
-            logger.info(f"WebRTC message from {peer_id[:8]} dispatched to bus.")
         else:
             logger.warning(f"P2PService: Node not ready. Buffering message from {peer_id[:8]}")
             self.early_messages.append(msg_data)

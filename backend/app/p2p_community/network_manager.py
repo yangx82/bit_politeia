@@ -532,6 +532,10 @@ class NetworkManager:
             logger.warning(f"Invalid message type {msg_type}, defaulting to DIRECT")
             m_type = MessageType.DIRECT
 
+        # 1. IM Enhancement: Determine channel and peek next sequence ID BEFORE signing
+        channel_id = synckey_manager.get_channel_id(sender_id, target_id)
+        next_seq = synckey_manager.peek_next_seq(channel_id)
+
         signed_msg = self.message_protocol.create_message(
             sender_id=sender_id,
             recipient_id=target_id,
@@ -539,13 +543,13 @@ class NetworkManager:
             content=content,
             message_id=message_id,
             timestamp=timestamp,
+            seq_id=next_seq,
         )
 
-        # 1. IM Enhancement: Assign monotonic sequence ID (SyncKey)
-        channel_id = synckey_manager.get_channel_id(sender_id, target_id)
-        signed_msg = synckey_manager.assign_next_seq(channel_id, signed_msg)
+        # 2. IM Enhancement: Record outbound message with its signed seq_id
+        synckey_manager.record_outbound_message(channel_id, signed_msg)
 
-        # 2. IM Enhancement: Track Sent Receipt
+        # 3. IM Enhancement: Track Sent Receipt
         receipt_pipeline.track_sent(signed_msg.message_id, sender_id, target_id)
 
         return await self.route_message(signed_msg)

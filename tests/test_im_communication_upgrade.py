@@ -392,3 +392,110 @@ async def test_inbox_session_batching_and_formatting():
     assert msg_obj2.metadata["batched_count"] == 1
     assert m_ids2 == ["msg_003"]
     assert msg_obj2.content == "Hello from peer 2"
+
+
+def test_signed_message_seq_id_cryptographic_integrity():
+    """Verify that messages signed with assigned seq_id maintain valid cryptographic signatures."""
+    from app.services.crypto_service import CryptoService
+
+    crypto = CryptoService()
+    public_key_pem = crypto.get_public_key_string()
+    protocol = MessageProtocol(crypto)
+
+    sender_id = crypto.get_node_id()
+    recipient_id = "peer_test_node_id"
+
+    # Sign with seq_id = 5
+    msg = protocol.create_message(
+        sender_id=sender_id,
+        recipient_id=recipient_id,
+        message_type=MessageType.DIRECT,
+        content={"text": "Hello with signed seq_id"},
+        seq_id=5,
+    )
+
+    assert msg.seq_id == 5
+    assert protocol.verify_message(msg, public_key_pem) is True
+
+    # Simulate wire transfer
+    wire_dict = msg.to_dict()
+    reconstructed = SignedMessage.from_dict(wire_dict)
+    assert reconstructed.seq_id == 5
+    assert protocol.verify_message(reconstructed, public_key_pem) is True
+
+
+def test_signed_message_legacy_fallback_verification():
+    """Verify that legacy messages (signed with seq_id=0, but mutated to seq_id>0) still verify via fallback."""
+    from app.services.crypto_service import CryptoService
+
+    crypto = CryptoService()
+    public_key_pem = crypto.get_public_key_string()
+    protocol = MessageProtocol(crypto)
+
+    sender_id = crypto.get_node_id()
+    recipient_id = "peer_test_node_id"
+
+    # Simulate legacy behavior: message signed with seq_id=0
+    legacy_msg = protocol.create_message(
+        sender_id=sender_id,
+        recipient_id=recipient_id,
+        message_type=MessageType.DIRECT,
+        content={"text": "Legacy unpatched message"},
+        seq_id=0,
+    )
+
+    # Legacy sender mutates seq_id to 12 after signing
+    legacy_msg.seq_id = 12
+
+    # Wire transfer
+    wire_dict = legacy_msg.to_dict()
+    reconstructed = SignedMessage.from_dict(wire_dict)
+
+    # Our patched protocol should successfully verify using the fallback rule
+    assert protocol.verify_message(reconstructed, public_key_pem) is True
+
+
+@pytest.mark.anyio
+async def test_receive_message_immediate_bus_dispatch(monkeypatch):
+    """Verify that incoming chat messages are immediately dispatched to message_bus without waiting for 30s poll."""
+    from app.bus.queue import message_bus
+    from app.p2p_community.models import Node
+    from app.services.crypto_service import CryptoService
+
+    crypto = CryptoService()
+    node = Node(
+        node_id="node_receiver_1",
+        network_manager=None,
+        public_key=crypto.get_public_key_string(),
+    )
+
+    # Mock message_bus.publish_inbound
+    dispatched = []
+
+    async def mock_publish(inbound):
+        dispatched.append(inbound)
+
+    monkeypatch.setattr(message_bus, "publish_inbound", mock_publish)
+
+    msg_payload = {
+        "message_id": "realtime_msg_999",
+        "sender_id": "sender_alice",
+        "recipient_id": "node_receiver_1",
+        "message_type": "direct",
+        "content": {"text": "Urgent realtime message"},
+        "timestamp": datetime.now(UTC).isoformat(),
+        "signature": "mock_sig",
+        "nonce": "n999",
+        "seq_id": 1,
+    }
+
+    await node.receive_message(msg_payload)
+
+    assert len(dispatched) == 1
+    inbound = dispatched[0]
+    assert inbound.channel == "p2p"
+    assert inbound.sender_id == "sender_alice"
+    assert inbound.session_id == "sender_alice"
+    assert inbound.content == "Urgent realtime message"
+    assert inbound.metadata["message_id"] == "realtime_msg_999"
+

@@ -10,7 +10,12 @@ from app.services.agent_service import agent_service
 from app.services.p2p_service import p2p_service
 
 
-@pytest.mark.asyncio
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.mark.anyio
 async def test_delta_state_sync():
     """Verify that state sync request filtering (delta state sync) correctly identifies updates."""
     # Store originals
@@ -76,6 +81,7 @@ async def test_delta_state_sync():
     
     mock_gm.proposals = {"prop_1": prop_1, "prop_2": prop_2}
     mock_gm.active_elections = {"prop_2": elec_2}
+    mock_gm.get_election_for_proposal = MagicMock(side_effect=lambda pid: mock_gm.active_elections.get(pid))
     agent_service.governance_manager = mock_gm
 
     try:

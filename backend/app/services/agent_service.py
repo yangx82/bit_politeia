@@ -1797,7 +1797,9 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         while True:
             try:
                 msg: InboundMessage = await self.message_bus.consume_inbound()
-                await self.process_bus_message(msg)
+                # Non-blocking dispatch ensures that slow LLM inference never blocks message ingestion,
+                # history persistence, or realtime frontend gateway broadcasting.
+                asyncio.create_task(self.process_bus_message(msg))
             except Exception as e:
                 logger.error(f"Error in bus listener: {e}")
                 await asyncio.sleep(1)
@@ -1858,15 +1860,20 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             except Exception as le:
                 logger.debug(f"Could not calculate latency: {le}")
 
+        user_msg_id = msg.metadata.get("message_id")
+        if user_msg_id:
+            self.processed_message_ids.add(user_msg_id)
+
         user_msg_obj = Message(
-            id=msg.metadata.get("message_id") or str(uuid.uuid4()),
+            id=user_msg_id or str(uuid.uuid4()),
             content=msg.content,
             sender=formatted_sender,
             timestamp=msg_ts,
             session_id=history_session_id,
             msg_type="chat",
         )
-        self.history.append(user_msg_obj)
+        if not (user_msg_id and any(m.id == user_msg_id for m in self.history)):
+            self.history.append(user_msg_obj)
         self.resident_memory.log_interaction(
             formatted_sender,
             msg.content,
@@ -2386,15 +2393,16 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         except Exception as le:
                             logger.debug(f"Could not calculate latency (Polling): {le}")
 
-                    self.history.append(
-                        Message(
-                            id=m_id or str(uuid.uuid4()),
-                            content=text_content,
-                            sender=s_id,
-                            timestamp=msg_ts,
-                            session_id=effective_session_id,
+                    if not (m_id and any(m.id == m_id for m in self.history)):
+                        self.history.append(
+                            Message(
+                                id=m_id or str(uuid.uuid4()),
+                                content=text_content,
+                                sender=s_id,
+                                timestamp=msg_ts,
+                                session_id=effective_session_id,
+                            )
                         )
-                    )
                     self.resident_memory.log_interaction(
                         s_id,
                         text_content,
@@ -3208,7 +3216,15 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         )
 
     async def get_history(self) -> list[Message]:
-        return self.history
+        seen = set()
+        deduped = []
+        for m in self.history:
+            if m.id and m.id in seen:
+                continue
+            if m.id:
+                seen.add(m.id)
+            deduped.append(m)
+        return deduped
 
     async def get_status(self) -> AgentStatus:
         """Get current agent status including ledger and network info."""

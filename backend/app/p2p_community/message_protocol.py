@@ -61,6 +61,7 @@ class SignedMessage:
     seq_id: int = 0  # 单调递增序列号 (SyncKey)
     parents: list[str] = None  # Event DAG 因果父事件ID列表
     receipt_status: str | None = None  # 回执状态: delivered, thinking, replied
+    raw_timestamp_str: str | None = None  # 保留原始时间戳字符串用于兼容验签
 
     def __post_init__(self):
         if self.parents is None:
@@ -83,7 +84,8 @@ class SignedMessage:
 
     @classmethod
     def from_dict(cls, data: dict) -> "SignedMessage":
-        ts = data["timestamp"]
+        raw_ts = data.get("timestamp")
+        ts = raw_ts
         if isinstance(ts, str):
             ts = datetime.fromisoformat(ts)
 
@@ -99,13 +101,23 @@ class SignedMessage:
             seq_id=data.get("seq_id", 0),
             parents=data.get("parents", []),
             receipt_status=data.get("receipt_status"),
+            raw_timestamp_str=raw_ts if isinstance(raw_ts, str) else None,
         )
 
-    def get_signable_content(self) -> bytes:
+    def get_signable_content(
+        self, seq_id_override: int | None = None, ts_str_override: str | None = None
+    ) -> bytes:
         """
         Get the content that should be signed.
         Uses deterministic JSON serialization (canonical-like).
         """
+        if ts_str_override is not None:
+            ts_str = ts_str_override
+        else:
+            ts_str = self.timestamp.isoformat(timespec="microseconds")
+
+        effective_seq_id = self.seq_id if seq_id_override is None else seq_id_override
+
         signable = {
             "message_id": self.message_id,
             "sender_id": self.sender_id,
@@ -113,9 +125,9 @@ class SignedMessage:
             "message_type": self.message_type.value,
             "content": self.content,
             # Use timespec='microseconds' to ensure consistent decimal places
-            "timestamp": self.timestamp.isoformat(timespec="microseconds"),
+            "timestamp": ts_str,
             "nonce": self.nonce,
-            "seq_id": self.seq_id,
+            "seq_id": effective_seq_id,
             "parents": self.parents,
             "receipt_status": self.receipt_status,
         }
@@ -182,6 +194,9 @@ class MessageProtocol:
         content: dict[str, Any],
         message_id: str | None = None,
         timestamp: datetime | None = None,
+        seq_id: int = 0,
+        parents: list[str] | None = None,
+        receipt_status: str | None = None,
     ) -> SignedMessage:
         """
         Create a new signed message.
@@ -191,6 +206,9 @@ class MessageProtocol:
             recipient_id: Recipient's node ID or group ID
             message_type: Type of message
             content: Message content dictionary
+            seq_id: Monotonic sequence ID (assigned before signing)
+            parents: Causal parent message IDs
+            receipt_status: Optional lifecycle receipt state
 
         Returns:
             Signed message ready for transmission
@@ -204,19 +222,22 @@ class MessageProtocol:
             timestamp=timestamp or datetime.now(UTC),
             signature="",  # Will be set after signing
             nonce=self._generate_nonce(),
+            seq_id=seq_id,
+            parents=parents or [],
+            receipt_status=receipt_status,
         )
 
-        # Sign the message
+        # Sign the message with its final seq_id and signable payload
         signable_content = message.get_signable_content()
         signature = self.crypto_service.sign_message(signable_content.decode("utf-8"))
         message.signature = signature
 
-        logger.debug(f"Created signed message {message.message_id} from {sender_id}")
+        logger.debug(f"Created signed message {message.message_id} from {sender_id} with seq_id={seq_id}")
         return message
 
     def verify_message(self, message: SignedMessage, sender_public_key: str) -> bool:
         """
-        Verify a message's signature.
+        Verify a message's signature with backward-compatible candidate fallbacks.
 
         Args:
             message: The signed message to verify
@@ -226,13 +247,51 @@ class MessageProtocol:
             True if signature is valid, False otherwise
         """
         try:
-            signable_content = message.get_signable_content()
-            # Note: In production, use proper signature verification
-            # This is a simplified check
             if hasattr(self.crypto_service, "verify_signature"):
-                return self.crypto_service.verify_signature(
-                    signable_content.decode("utf-8"), message.signature, sender_public_key
+                candidates = []
+                # 1. Standard candidate: current message fields with standard microseconds isoformat
+                candidates.append(message.get_signable_content())
+
+                # 2. Legacy fallback: if seq_id != 0, try seq_id = 0 (unpatched peer that mutated seq_id after signing)
+                if message.seq_id != 0:
+                    candidates.append(message.get_signable_content(seq_id_override=0))
+
+                # 3. Timestamp variants (e.g. ISO with Z vs +00:00 or original wire string)
+                if message.raw_timestamp_str:
+                    raw_ts = message.raw_timestamp_str
+                    candidates.append(message.get_signable_content(ts_str_override=raw_ts))
+                    if message.seq_id != 0:
+                        candidates.append(message.get_signable_content(seq_id_override=0, ts_str_override=raw_ts))
+                    if raw_ts.endswith("Z"):
+                        alt_ts = raw_ts[:-1] + "+00:00"
+                        candidates.append(message.get_signable_content(ts_str_override=alt_ts))
+                        if message.seq_id != 0:
+                            candidates.append(message.get_signable_content(seq_id_override=0, ts_str_override=alt_ts))
+                    elif "+00:00" in raw_ts:
+                        alt_ts = raw_ts.replace("+00:00", "Z")
+                        candidates.append(message.get_signable_content(ts_str_override=alt_ts))
+                        if message.seq_id != 0:
+                            candidates.append(message.get_signable_content(seq_id_override=0, ts_str_override=alt_ts))
+
+                seen = set()
+                for cand in candidates:
+                    if cand in seen:
+                        continue
+                    seen.add(cand)
+                    try:
+                        if self.crypto_service.verify_signature(
+                            cand.decode("utf-8"), message.signature, sender_public_key
+                        ):
+                            return True
+                    except Exception as ve:
+                        logger.debug(f"Candidate verify failed: {ve}")
+                        continue
+
+                logger.warning(
+                    f"Signature verification failed for message {message.message_id} from {message.sender_id[:8]}"
                 )
+                return False
+
             # Fallback: Just check signature exists (for testing)
             return bool(message.signature)
         except Exception as e:

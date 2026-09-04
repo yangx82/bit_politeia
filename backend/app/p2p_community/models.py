@@ -208,16 +208,27 @@ class Node:
                 # If key is missing (new node joining), fallback to sanity check rather than dropping.
                 if self.network_manager and hasattr(self.network_manager, "message_protocol"):
                     is_valid = self.network_manager.message_protocol.verify_message(msg_obj, public_key)
+                    msg_type_lower = str(msg_data.get("message_type", "")).lower()
+                    is_governance = msg_type_lower in ("proposal", "vote", "election")
+
                     if not is_valid:
-                        if has_pem_key:
+                        if has_pem_key and is_governance:
                             logger.warning(
-                                f"[Security] Received message {m_id} from {sender_id[:8]} with INVALID signature. Dropping."
+                                f"[Security] Received governance message {m_id} from {sender_id[:8]} with INVALID signature. Dropping."
                             )
                             return
+                        elif has_pem_key:
+                            msg_data["signature_verified"] = False
+                            logger.warning(
+                                f"[Security] Received {msg_type_lower} message {m_id} from {sender_id[:8]} with unverified signature. Ingesting with warning."
+                            )
                         else:
+                            msg_data["signature_verified"] = False
                             logger.info(
                                 f"[Security] Public key for node {sender_id[:8]} not in topology yet. Ingesting with basic integrity check."
                             )
+                    else:
+                        msg_data["signature_verified"] = True
             except Exception as ve:
                 logger.error(f"[Security] Failed to verify message {m_id}: {ve}")
 
@@ -290,6 +301,42 @@ class Node:
                 f.write(json.dumps(msg_data, default=json_serial) + "\n")
         except Exception as e:
             logger.error(f"Failed to persist inbox message: {e}")
+
+        # 5. Immediate Dispatch to Message Bus for Chat/Group/Gossip Messages
+        if msg_type_str in ("direct", "group", "gossip", "p2p"):
+            try:
+                from ..bus.events import InboundMessage
+                from ..bus.queue import message_bus
+                from ..services.agent_service import agent_service
+
+                if m_id and agent_service:
+                    agent_service.processed_message_ids.add(m_id)
+
+                effective_session_id = sender_id
+                if msg_type_str == "group":
+                    effective_session_id = msg_data.get("recipient_id") or sender_id
+
+                text_content = msg_data.get("content")
+                if isinstance(text_content, dict) and "text" in text_content:
+                    text_payload = text_content["text"]
+                elif isinstance(text_content, str):
+                    text_payload = text_content
+                else:
+                    text_payload = str(text_content)
+
+                inbound = InboundMessage(
+                    channel="p2p",
+                    sender_id=sender_id,
+                    session_id=effective_session_id,
+                    content=text_payload,
+                    metadata=msg_data,
+                )
+                await message_bus.publish_inbound(inbound)
+                logger.info(
+                    f"P2P message {m_id or ''} from {sender_id[:8]} dispatched to message bus immediately."
+                )
+            except Exception as be:
+                logger.error(f"Failed to dispatch inbound P2P message to bus: {be}")
 
     def get_structure_info(self):
         """

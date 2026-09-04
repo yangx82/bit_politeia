@@ -76,9 +76,35 @@ class SyncKeyManager:
         sorted_peers = sorted([peer_a, peer_b])
         return f"dm_{sorted_peers[0]}_{sorted_peers[1]}"
 
+    def peek_next_seq(self, channel_id: str) -> int:
+        """
+        Returns what the next monotonic seq_id will be and advances the counter.
+        Used to sign messages with their true seq_id prior to hashing/signing.
+        """
+        with self._lock:
+            current = self._latest_seq.get(channel_id, 0)
+            next_seq = current + 1
+            self._latest_seq[channel_id] = next_seq
+        self._save_state()
+        return next_seq
+
+    def record_outbound_message(self, channel_id: str, message: SignedMessage):
+        """
+        Indexes an outbound message after it has already been created and signed.
+        """
+        with self._lock:
+            if channel_id not in self._channel_history:
+                self._channel_history[channel_id] = []
+
+            self._channel_history[channel_id].append(message.to_dict())
+            if len(self._channel_history[channel_id]) > self.max_history:
+                self._channel_history[channel_id] = self._channel_history[channel_id][-self.max_history:]
+        self._save_state()
+
     def assign_next_seq(self, channel_id: str, message: SignedMessage) -> SignedMessage:
         """
         Assigns the next monotonic sequence ID to an outbound message and indexes it.
+        Kept for backward compatibility.
         """
         with self._lock:
             current = self._latest_seq.get(channel_id, 0)
