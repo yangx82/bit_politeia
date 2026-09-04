@@ -165,7 +165,7 @@ def fix_wsl_mtu():
         try:
             with open("/sys/class/net/eth0/mtu") as f:
                 cur_mtu = int(f.read().strip())
-            if cur_mtu > 1500:
+            if cur_mtu > 1400:
                 import subprocess
                 subprocess.run(["sudo", "-n", "ip", "link", "set", "dev", "eth0", "mtu", "1400"], check=False, capture_output=True)
         except Exception:
