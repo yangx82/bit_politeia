@@ -229,22 +229,30 @@ class Election:
             if total_cast > 0 and (approvals / total_cast) > 0.5:
                 passed = True
 
-            # Fast-Reject Early Termination:
-            # If rejections strictly exceed 50% of total eligible voters, mathematically the proposal CANNOT pass.
-            early_rejected = False
             effective_voters = self.eligible_voters - self.excluded_voters
-            if effective_voters and rejections > len(effective_voters) / 2:
-                early_rejected = True
-                passed = False
+            total_effective = len(effective_voters) if effective_voters else 0
+            rem_voters = max(0, total_effective - len(self.votes))
+
+            # Fast-Reject Early Termination:
+            # If maximum possible approvals (current approvals + all remaining uncast votes) <= 50% of total voters,
+            # or if rejections strictly exceed 50% of total voters, mathematically the proposal CANNOT pass under any circumstance.
+            early_rejected = False
+            if total_effective > 0:
+                if (approvals + rem_voters) <= (total_effective / 2):
+                    early_rejected = True
+                    passed = False
+                elif rejections > (total_effective / 2):
+                    early_rejected = True
+                    passed = False
 
             # Early-Pass Early Termination:
             # If approvals strictly exceed 50% of total eligible voters, mathematically the proposal HAS passed.
             early_passed = False
-            if effective_voters:
-                if approvals > len(effective_voters) / 2:
+            if total_effective > 0:
+                if approvals > (total_effective / 2):
                     early_passed = True
                     passed = True
-                elif len(self.votes) >= len(effective_voters) and passed:
+                elif len(self.votes) >= total_effective and passed:
                     early_passed = True
 
             return {
@@ -656,6 +664,7 @@ class GovernanceManager:
         content: str,
         duration_minutes: int = 60,
         eligible_voters: set[str] | None = None,
+        auto_approve: bool = False,
     ) -> tuple[Proposal, Election]:
         proposal_id = str(uuid.uuid4())
         proposal = Proposal(
@@ -665,6 +674,10 @@ class GovernanceManager:
 
         # Immediately start voting (Simulating Host action)
         election_id = str(uuid.uuid4())
+        voters_set = set(eligible_voters) if eligible_voters is not None else set()
+        if auto_approve and self.node_id and voters_set:
+            voters_set.add(self.node_id)
+
         election = Election(
             election_id=election_id,
             group_id=group_id,
@@ -673,8 +686,18 @@ class GovernanceManager:
             start_time=datetime.now(UTC),
             end_time=datetime.now(UTC) + timedelta(minutes=duration_minutes),
             proposal_id=proposal_id,
-            eligible_voters=eligible_voters if eligible_voters is not None else set(),
+            eligible_voters=voters_set,
         )
+
+        if auto_approve and self.node_id:
+            initiator_vote = Vote(
+                voter_id=self.node_id,
+                approval=True,
+                reason="Proposal Initiator: Auto-voted APPROVE upon creation",
+                timestamp=datetime.now(UTC),
+            )
+            election.votes[self.node_id] = [initiator_vote]
+
         self.active_elections[election_id] = election
         self.save_state()
         return proposal, election
@@ -746,8 +769,8 @@ class GovernanceManager:
                 election = self.active_elections.pop(eid, None)
                 if not election:
                     continue
-                if election.status not in ["early_rejected", "early_passed"]:
-                    election.status = "finished"
+                # Mark status as finished so it is uniformly archived
+                election.status = "finished"
 
                 # Special handling for RESEARCH_EVALUATION elections
                 if election.election_type == ElectionType.RESEARCH_EVALUATION:
@@ -780,8 +803,12 @@ class GovernanceManager:
                         else:
                             proposal.status = "failed"
                             try:
-                                from app.services.evolution_service import evolution_service
-                                from app.services.crypto_service import crypto_service
+                                try:
+                                    from app.services.evolution_service import evolution_service
+                                    from app.services.crypto_service import crypto_service
+                                except (ImportError, ModuleNotFoundError):
+                                    from ..services.evolution_service import evolution_service
+                                    from ..services.crypto_service import crypto_service
                                 my_id = crypto_service.get_node_id()
                                 if proposal.initiator_id in [my_id, "self"] or proposal.initiator_id.startswith(my_id[:8]):
                                     evolution_service.record_rejection_strike(
@@ -814,8 +841,12 @@ class GovernanceManager:
             aip_id = proposal.proposal_id
 
         try:
-            from app.services.evolution_service import evolution_service
-            from app.services.crypto_service import crypto_service
+            try:
+                from app.services.evolution_service import evolution_service
+                from app.services.crypto_service import crypto_service
+            except (ImportError, ModuleNotFoundError):
+                from ..services.evolution_service import evolution_service
+                from ..services.crypto_service import crypto_service
 
             my_id = crypto_service.get_node_id()
 
@@ -850,8 +881,11 @@ class GovernanceManager:
 
                 try:
                     from app.services.agent_service import agent_service
-                except ImportError:
-                    agent_service = None
+                except (ImportError, ModuleNotFoundError):
+                    try:
+                        from ..services.agent_service import agent_service
+                    except Exception:
+                        agent_service = None
 
                 async def _landing_job():
                     try:

@@ -245,6 +245,13 @@ class P2PService:
                 )
                 logger.info(f"[Governance] Ingested P2P {event_type} event: status={success}")
 
+                # Realtime Trigger: Immediately wake up agent to evaluate and vote upon proposal/research arrival
+                if success and event_type in ("proposal", "research_eval"):
+                    safe_create_task(
+                        agent_service.check_governance_proposals(),
+                        name=f"p2p_gov_trigger_{event_type}",
+                    )
+
                 # GOSSIP FORWARD: Ensure propagation
                 recipient_id = message.get("recipient_id")
                 if recipient_id and self.network_manager and recipient_id in self.network_manager.groups:
@@ -298,8 +305,13 @@ class P2PService:
             elif sync_type == "proposal_sync":
                 from .agent_service import agent_service
                 if agent_service and agent_service.governance_manager:
-                    agent_service.governance_manager.receive_p2p_event("proposal", content)
+                    success = agent_service.governance_manager.receive_p2p_event("proposal", content)
                     logger.debug(f"[StateSync] Ingested history proposal sync from {sender_id[:8]}")
+                    if success:
+                        safe_create_task(
+                            agent_service.check_governance_proposals(),
+                            name="sync_gov_trigger_proposal",
+                        )
             return True
 
         return False

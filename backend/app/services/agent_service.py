@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 UTC = timezone.utc
@@ -93,6 +94,7 @@ class AgentService:
         self.history: list[Message] = []
         self.processed_message_ids: set[str] = set()  # For de-duplication
         self.notified_governance_ids: set[str] = set()  # Track proposals shared with agent
+        self.governance_notify_attempts: dict[str, float] = {}  # election_id -> last notify timestamp for retries
         self.notified_error_signatures: set[str] = (
             set()
         )  # Track error signatures for self-reflection
@@ -241,7 +243,7 @@ class AgentService:
                 self.scheduler.add_job(
                     "app.services.agent_service:check_governance_proposals_proxy",
                     "interval",
-                    minutes=10,
+                    minutes=2,
                     next_run_time=datetime.now(UTC),
                     id="governance_monitor_job",
                     replace_existing=True,
@@ -3635,12 +3637,17 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         # Fetch eligible voters from group members
         eligible_voters = set()
-        if p2p_service.local_node and group_id in p2p_service.local_node.network_manager.groups:
+        if (
+            p2p_service.local_node
+            and hasattr(p2p_service.local_node, "network_manager")
+            and p2p_service.local_node.network_manager
+            and group_id in p2p_service.local_node.network_manager.groups
+        ):
             group = p2p_service.local_node.network_manager.groups[group_id]
             eligible_voters = group.members.copy()
 
         proposal, election = self.governance_manager.initiate_proposal(
-            group_id, content, duration_minutes, eligible_voters=eligible_voters
+            group_id, content, duration_minutes, eligible_voters=eligible_voters, auto_approve=True
         )
 
         # Broadcast via P2P - Wait for broadcast to complete with timeout (Fixed: was asyncio.create_task without await)
@@ -4822,22 +4829,34 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         self.governance_manager.finalize_expired_elections()
 
         active_elections = self.governance_manager.active_elections
-        my_id = p2p_service.local_node.node_id if p2p_service.local_node else None
+        my_id = None
+        if p2p_service.local_node:
+            my_id = p2p_service.local_node.node_id
+        if not my_id:
+            try:
+                from .crypto_service import crypto_service
+                my_id = crypto_service.get_node_id()
+            except Exception:
+                pass
         if not my_id:
             return
 
         logger.debug(f"Governance Monitor: Checking {len(active_elections)} active elections...")
         found_new = False
+        now_ts = time.time()
 
         # 1. Check active elections for agent votes
-        for eid, election in active_elections.items():
+        for eid, election in list(active_elections.items()):
             if election.election_type != ElectionType.PROPOSAL_VOTE:
                 continue
 
-            if my_id in election.votes:
+            # Check if this node has already voted
+            if my_id in election.votes or any(k.startswith(my_id[:8]) for k in election.votes):
                 continue
 
-            if eid in self.notified_governance_ids:
+            # Cooldown check: if already attempted recently, wait 300s (5 mins) before retry
+            last_attempt = self.governance_notify_attempts.get(eid, 0.0)
+            if now_ts - last_attempt < 300.0:
                 continue
 
             proposal_id = election.proposal_id
@@ -4848,8 +4867,26 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 )
                 continue
 
+            # Check if this is an Architecture Evolution AIP proposal
+            is_aip = False
+            aip_info = ""
+            try:
+                c_data = json.loads(proposal.content) if isinstance(proposal.content, str) else proposal.content
+                if isinstance(c_data, dict) and c_data.get("type") == "architecture_evolution":
+                    is_aip = True
+                    aip_meta = c_data.get("aip", {})
+                    aip_info = (
+                        f"\n【自主演化 AIP 提案】\n"
+                        f"- AIP ID: {aip_meta.get('aip_id')}\n"
+                        f"- 演化标题: {aip_meta.get('title')}\n"
+                        f"- 目标模块: {aip_meta.get('target_module')}\n"
+                        f"- 审计建议: 请先使用 `audit_p2p_aip_proposal` 工具进行 5 维合规性评估，再根据报告调用 `cast_vote`。\n"
+                    )
+            except Exception:
+                pass
+
             logger.info(
-                f"Governance Monitor: New unhandled proposal detected: {proposal_id}. Awakening agent..."
+                f"Governance Monitor: Unhandled proposal detected: {proposal_id} (Election {eid[:8]}). Awakening agent..."
             )
 
             poke_msg = InboundMessage(
@@ -4857,17 +4894,21 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 sender_id="system",
                 session_id="resident",
                 content=(
-                    f"[治理监控]: 系统检测到一项新的社区提案 (ID: {proposal_id}) 需要您的评审。\n"
+                    f"[治理监控]: 系统检测到一项社区提案 (ID: {proposal_id}) 需要您的评审与投票。\n"
                     f"提案发起人: {proposal.initiator_id[:8]}\n"
                     f"提案内容: {proposal.content}\n"
                     f"投票截止日期: {election.end_time}\n"
-                    f"所在小组: {proposal.group_id}\n\n"
-                    f"[自治指令]: 请评估该提案的价值和风险。您可以直接调用 `cast_vote` 工具进行投票，或者如果您认为该提案需要更深入的研究，请使用 `publish_research` 发表您的专业见解以引导社区共识。"
+                    f"所在小组: {proposal.group_id}\n"
+                    f"{aip_info}\n"
+                    f"[自治指令]: 请评估该提案的价值和风险。您可以直接调用 `cast_vote` 工具进行投票：\n"
+                    f"cast_vote(election_id='{eid}', approval=True/False, reason='您的评审理由')\n"
+                    f"或者若认为该提案需要更深入研究，请使用 `publish_research` 发表您的专业见解引导社区共识。"
                 ),
             )
 
-            asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
+            self.governance_notify_attempts[eid] = now_ts
             self.notified_governance_ids.add(eid)
+            asyncio.create_task(self._run_ralph_wiggum_loop(poke_msg))
             found_new = True
 
         # 2. Check finished elections for pending payouts - NOTIFY ONLY, do NOT auto-execute
