@@ -27,8 +27,11 @@ class AIPProposal:
     proposed_diff: str = ""
     research_sources: list[str] = field(default_factory=list)
     sandbox_results: dict[str, Any] = field(default_factory=dict)
-    status: str = "draft"  # draft, proposed, debating, voting, sandbox_passed, pr_submitted, merged, rejected
+    status: str = "draft"  # draft, proposed, debating, voting, sandbox_passed, pr_submitted, merged, rejected, preflight_rejected
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    signature: str = ""
+    public_key: str = ""
+    quality_report: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -44,6 +47,9 @@ class AIPProposal:
             "timestamp": self.timestamp.isoformat()
             if isinstance(self.timestamp, datetime)
             else self.timestamp,
+            "signature": self.signature,
+            "public_key": self.public_key,
+            "quality_report": self.quality_report,
         }
 
     @classmethod
@@ -61,6 +67,9 @@ class AIPProposal:
             timestamp=datetime.fromisoformat(data["timestamp"])
             if isinstance(data.get("timestamp"), str)
             else data.get("timestamp", datetime.now(UTC)),
+            signature=data.get("signature", ""),
+            public_key=data.get("public_key", ""),
+            quality_report=data.get("quality_report", {}),
         )
 
 
@@ -1096,6 +1105,27 @@ class GovernanceManager:
                             remote_aip_id = aip_data.get("aip_id")
                             if remote_aip_id:
                                 remote_aip = ES_AIPProposal.from_dict(aip_data)
+                                # Validate remote identity signature if present
+                                if remote_aip.signature and remote_aip.public_key:
+                                    from ..services.aip_quality_gate import ProposalSignatureVerifier
+                                    is_valid, err_msg = ProposalSignatureVerifier.verify_proposal_signature(
+                                        aip_id=remote_aip.aip_id,
+                                        initiator_id=remote_aip.initiator_id,
+                                        title=remote_aip.title,
+                                        description=remote_aip.description,
+                                        proposed_diff=remote_aip.proposed_diff,
+                                        signature=remote_aip.signature,
+                                        public_key_pem=remote_aip.public_key,
+                                    )
+                                    if not is_valid:
+                                        logger.warning(
+                                            f"Governance P2P: Dropping spoofed/invalid remote AIP {remote_aip_id}: {err_msg}"
+                                        )
+                                        self.proposals.pop(proposal.proposal_id, None)
+                                        if election_data and isinstance(election_data, dict):
+                                            self.active_elections.pop(election_data.get("election_id"), None)
+                                        return False
+
                                 evolution_service.aips[remote_aip_id] = remote_aip
                                 evolution_service._save_aips()
                                 logger.info(f"Governance P2P: Ingested remote AIP {remote_aip_id} into EvolutionService")

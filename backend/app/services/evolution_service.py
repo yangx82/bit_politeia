@@ -155,6 +155,12 @@ class EvolutionService:
                     data = json.load(f)
                     for k, v in data.items():
                         self.aips[k] = AIPProposal.from_dict(v)
+                        if self.aips[k].proposed_diff:
+                            try:
+                                from .aip_quality_gate import quality_gate_service
+                                quality_gate_service.register_fingerprint(k, self.aips[k].proposed_diff)
+                            except Exception:
+                                pass
                 self.consolidate_duplicates()
                 self._migrate_legacy_self_aips()
             except Exception as e:
@@ -567,6 +573,25 @@ class EvolutionService:
             resolved_initiator = self._get_local_node_id()
 
         aip_id = self._generate_deterministic_aip_id(resolved_initiator, title, proposed_diff)
+
+        # Cryptographic signing using local private key
+        sig = ""
+        pubkey = ""
+        try:
+            from .crypto_service import crypto_service
+            from .aip_quality_gate import ProposalSignatureVerifier
+            payload = ProposalSignatureVerifier.get_canonical_proposal_payload(
+                aip_id=aip_id,
+                initiator_id=resolved_initiator,
+                title=title,
+                description=corrected_desc,
+                proposed_diff=proposed_diff,
+            )
+            sig = crypto_service.sign_message(payload)
+            pubkey = crypto_service.get_public_key_string()
+        except Exception as e:
+            logger.warning(f"[EvolutionService] Failed to cryptographically sign AIP {aip_id}: {e}")
+
         aip = AIPProposal(
             aip_id=aip_id,
             initiator_id=resolved_initiator,
@@ -576,9 +601,18 @@ class EvolutionService:
             proposed_diff=proposed_diff,
             research_sources=research_sources,
             status="draft" if is_valid else "preflight_rejected",
+            signature=sig,
+            public_key=pubkey,
         )
         self.aips[aip_id] = aip
         self._save_aips()
+
+        try:
+            from .aip_quality_gate import quality_gate_service
+            quality_gate_service.register_fingerprint(aip_id, proposed_diff)
+        except Exception:
+            pass
+
         logger.info(f"[EvolutionService] Created {aip_id}: '{title}' (Pre-flight: {feedback})")
         return aip
 
@@ -769,6 +803,24 @@ class EvolutionService:
                 if "research_sources" in res_json:
                     aip.research_sources = res_json.get("research_sources")
                 aip.status = "revised_draft"
+
+                # Re-sign revised proposal
+                try:
+                    from .crypto_service import crypto_service
+                    from .aip_quality_gate import ProposalSignatureVerifier, quality_gate_service
+                    payload = ProposalSignatureVerifier.get_canonical_proposal_payload(
+                        aip_id=aip.aip_id,
+                        initiator_id=aip.initiator_id,
+                        title=aip.title,
+                        description=aip.description,
+                        proposed_diff=aip.proposed_diff,
+                    )
+                    aip.signature = crypto_service.sign_message(payload)
+                    aip.public_key = crypto_service.get_public_key_string()
+                    quality_gate_service.register_fingerprint(aip.aip_id, aip.proposed_diff)
+                except Exception as e:
+                    logger.warning(f"[EvolutionService] Failed to re-sign revised AIP {aip.aip_id}: {e}")
+
                 self._save_aips()
                 logger.info(f"[EvolutionService] Successfully revised {aip.aip_id} based on audit feedback.")
                 return aip
@@ -881,6 +933,30 @@ class EvolutionService:
         aip = self.aips.get(aip_id)
         if not aip:
             return Vote(voter_id="self", approval=False, reason=f"AIP {aip_id} not found")
+
+        # --- Layer 1 Deterministic Quality Gate Evaluation ---
+        try:
+            from .aip_quality_gate import quality_gate_service
+            report = await quality_gate_service.evaluate_proposal(
+                aip_id=aip.aip_id,
+                initiator_id=aip.initiator_id,
+                title=aip.title,
+                description=aip.description,
+                proposed_diff=aip.proposed_diff,
+                research_sources=aip.research_sources,
+                signature=aip.signature,
+                public_key=aip.public_key,
+                require_signature=bool(aip.signature or aip.public_key),
+                exclude_aip_id=aip.aip_id,
+            )
+            aip.quality_report = report.to_dict()
+            if not report.passed:
+                p0_messages = [i.message for i in report.issues if i.severity.value == "P0"]
+                reason_msg = "❌ P0 Quality Gate Rejected: " + "; ".join(p0_messages)
+                logger.warning(f"[EvolutionAudit] {aip.aip_id} failed P0 Quality Gate: {reason_msg}")
+                return Vote(voter_id="self", approval=False, reason=reason_msg)
+        except Exception as e:
+            logger.error(f"[EvolutionAudit] Quality gate evaluation failed with exception: {e}")
 
         rejection_reasons = []
         positive_factors = []
