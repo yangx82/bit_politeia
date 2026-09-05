@@ -140,6 +140,7 @@ class AgentService:
 
         load_dotenv_safe()
         self.p2p_reply_delay = 60
+        self.p2p_random_delay_max = float(os.getenv("AGENT_P2P_RANDOM_DELAY_MAX", "10.0"))
 
         # Initialization logic (Moved to __init__)
         self.tools_map = {getattr(t, "name", getattr(t, "__name__", str(t))): t for t in AGENT_TOOLS}
@@ -765,6 +766,7 @@ class AgentService:
         personality: str = None,
         p2p_reply_delay: int = 5,
         p2p_cooldown_seconds: int = 300,
+        p2p_random_delay_max: float = 10.0,
         agent_language: str = "中文",
         ralph_wiggum_mode: bool = False,
         llm_timeout: float = 300.0,
@@ -789,6 +791,7 @@ class AgentService:
             self.status.personality = personality
         self.p2p_reply_delay = p2p_reply_delay
         self.p2p_cooldown_seconds = p2p_cooldown_seconds
+        self.p2p_random_delay_max = p2p_random_delay_max
         self.agent_language = agent_language
         self.ralph_wiggum_mode = ralph_wiggum_mode
         self.llm_timeout = llm_timeout
@@ -806,6 +809,7 @@ class AgentService:
                 "verbose_llm": self.verbose_llm,
                 "bootstrap_verify": self.bootstrap_verify,
                 "p2p_reply_delay": self.p2p_reply_delay,
+                "p2p_random_delay_max": self.p2p_random_delay_max,
                 "agent_language": self.agent_language,
                 "ralph_wiggum_mode": self.ralph_wiggum_mode,
                 "llm_timeout": self.llm_timeout,
@@ -1089,6 +1093,7 @@ class AgentService:
         research_field = os.getenv("AGENT_RESEARCH_FIELD", "AI Governance")
         p2p_reply_delay = int(os.getenv("AGENT_P2P_REPLY_DELAY", "5"))
         p2p_cooldown_seconds = int(os.getenv("AGENT_P2P_COOLDOWN_SECONDS", "300"))
+        p2p_random_delay_max = float(os.getenv("AGENT_P2P_RANDOM_DELAY_MAX", "10.0"))
         agent_language = os.getenv("AGENT_LANGUAGE", "中文")
         ralph_wiggum_mode = os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true"
         llm_timeout = max(180.0, float(os.getenv("AGENT_LLM_TIMEOUT", "180.0")))
@@ -1108,6 +1113,7 @@ class AgentService:
                 "personality": personality,
                 "p2p_reply_delay": p2p_reply_delay,
                 "p2p_cooldown_seconds": p2p_cooldown_seconds,
+                "p2p_random_delay_max": p2p_random_delay_max,
                 "agent_language": agent_language,
                 "ralph_wiggum_mode": ralph_wiggum_mode,
                 "llm_timeout": llm_timeout,
@@ -1295,6 +1301,7 @@ class AgentService:
             "bootstrap_verify": os.getenv("AGENT_BOOTSTRAP_VERIFY", "true").lower() == "true",
             "p2p_reply_delay": int(os.getenv("AGENT_P2P_REPLY_DELAY", "5")),
             "p2p_cooldown_seconds": int(os.getenv("AGENT_P2P_COOLDOWN_SECONDS", "300")),
+            "p2p_random_delay_max": float(os.getenv("AGENT_P2P_RANDOM_DELAY_MAX", "10.0")),
             "agent_language": os.getenv("AGENT_LANGUAGE", "中文"),
             "ralph_wiggum_mode": os.getenv("AGENT_RALPH_WIGGUM_MODE", "false").lower() == "true",
             "verbose_llm": os.getenv("AGENT_VERBOSE_LLM", "true").lower() == "true",
@@ -1321,6 +1328,7 @@ class AgentService:
                 "bootstrap_url": "AGENT_BOOTSTRAP_URL",
                 "bootstrap_verify": "AGENT_BOOTSTRAP_VERIFY",
                 "p2p_reply_delay": "AGENT_P2P_REPLY_DELAY",
+                "p2p_random_delay_max": "AGENT_P2P_RANDOM_DELAY_MAX",
                 "agent_language": "AGENT_LANGUAGE",
                 "ralph_wiggum_mode": "AGENT_RALPH_WIGGUM_MODE",
                 "verbose_llm": "AGENT_VERBOSE_LLM",
@@ -1410,33 +1418,56 @@ class AgentService:
         if msg.sender_id and msg.channel == "p2p":
             asyncio.create_task(p2p_service.warmup_webrtc(msg.sender_id))
 
-        # Refactored P2P Delay: Move delay to cognitive layer (Pipeline Start)
-        delay_val = getattr(self, "p2p_reply_delay", 60)
+        # P2P Wakeup Delay & Jitter:
+        # For messages awakened via P2P (including direct peer, group, and governance),
+        # apply the configured base delay/cooldown AND add an additional 0~10s random jitter
+        # to desynchronize simultaneous LLM calls across nodes in the network.
+        is_p2p = (
+            msg.channel == "p2p"
+            or bool(msg.metadata and msg.metadata.get("package_type") in ("direct", "group", "p2p", "gossip"))
+            or bool(msg.metadata and msg.metadata.get("message_type") in ("direct", "group", "p2p", "gossip"))
+            or bool(msg.metadata and msg.metadata.get("recipient_type") == "group")
+            or str(msg.session_id).startswith("grp_")
+        )
+        is_continuation = bool(msg.metadata and msg.metadata.get("epoch", 0) > 0)
 
-        if msg.channel == "p2p" and delay_val > 0:
-            # Calculate remaining delay relative to message timestamp
-            # This ensures that the total delay is consistent regardless of transit time.
+        if is_p2p and not is_continuation:
             now = datetime.now(UTC)
-            # Ensure msg.timestamp is offset-aware for comparison
             msg_ts = msg.timestamp
             if msg_ts.tzinfo is None:
                 msg_ts = msg_ts.replace(tzinfo=UTC)
-                
-            target_time = msg_ts + timedelta(seconds=delay_val)
-            remaining_seconds = (target_time - now).total_seconds()
 
-            if remaining_seconds > 0:
-                # 1. Notify Gateway that we are thinking (so UI shows status)
+            # 1. Configured base delay (p2p_reply_delay)
+            delay_val = max(0, getattr(self, "p2p_reply_delay", 60))
+            remaining_base_delay = 0.0
+            if delay_val > 0:
+                target_time = msg_ts + timedelta(seconds=delay_val)
+                remaining_base_delay = max(0.0, (target_time - now).total_seconds())
+
+            # 2. Random delay (0~10s jitter)
+            import random
+            random_max = float(os.getenv("AGENT_P2P_RANDOM_DELAY_MAX", getattr(self, "p2p_random_delay_max", 10.0)))
+            random_min = float(os.getenv("AGENT_P2P_RANDOM_DELAY_MIN", getattr(self, "p2p_random_delay_min", 0.0)))
+            random_delay = round(random.uniform(max(0.0, random_min), max(random_min, random_max)), 2)
+
+            total_delay = remaining_base_delay + random_delay
+
+            if total_delay > 0:
+                logger.info(
+                    f"P2P Wakeup Delay & Jitter: waiting {total_delay:.2f}s before invoking LLM "
+                    f"for message from {msg.sender_id} (session: {msg.session_id[:12]}, "
+                    f"base remaining: {remaining_base_delay:.2f}s, random jitter: {random_delay:.2f}s)"
+                )
                 ui_session_id = self._normalize_session_id(msg.session_id)
                 await self.message_bus.publish_outbound(
                     OutboundMessage(
                         channel="gateway",
                         session_id=ui_session_id,
-                        content=f"... (Finalizing research... {int(remaining_seconds)}s remaining) ...",
+                        content=f"... (Finalizing research... {max(1, int(total_delay))}s remaining) ...",
                         type="thought",
                     )
                 )
-                await asyncio.sleep(remaining_seconds)
+                await asyncio.sleep(total_delay)
         
         context = PipelineContext(session=session, input_message=msg)
         self.active_pipelines[session.session_id] = context

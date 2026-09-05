@@ -42,6 +42,7 @@ class ConfigRequest(BaseModel):
     name: str | None = "Agent"
     personality: str | None = "Professional and helpful"
     p2p_reply_delay: int = 60
+    p2p_random_delay_max: float = 10.0
     agent_language: str = "中文"
     ralph_wiggum_mode: bool = False
 

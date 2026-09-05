@@ -644,6 +644,31 @@ async def cast_ballot(election_id: str, ballot_json: str) -> str:
 
 
 @tool
+async def cast_vote(election_id: str, approval: bool = True, reason: str = "") -> str:
+    """
+    Cast a direct vote (approval or rejection) on an active governance proposal election.
+    Args:
+        election_id: The UUID of the election/proposal.
+        approval: True to approve/support the proposal, False to reject/oppose.
+        reason: Mandatory or recommended reasoning for your vote.
+    """
+    try:
+        try:
+            from app.services.agent_service import agent_service
+        except (ImportError, ModuleNotFoundError):
+            from backend.app.services.agent_service import agent_service
+
+        result = await agent_service.cast_vote(
+            election_id=election_id,
+            approval=approval,
+            reason=reason,
+        )
+        return f"Vote result: {result}"
+    except Exception as e:
+        return f"Failed to vote: {e!s}"
+
+
+@tool
 async def get_election_status(election_id: str, include_content: bool = True) -> str:
     """
     Get the status, tally, voted nodes, and pending/absent voters of an election.
@@ -1118,6 +1143,7 @@ AGENT_TOOLS = [
     publish_research,
     update_group_core_nodes,
     cast_ballot,
+    cast_vote,
     get_election_status,
     list_elections,
     apply_to_join_group,

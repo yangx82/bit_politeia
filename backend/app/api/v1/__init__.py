@@ -40,6 +40,7 @@ async def configure_agent(request: ConfigRequest):
         name=request.name,
         personality=request.personality,
         p2p_reply_delay=getattr(request, "p2p_reply_delay", 60),
+        p2p_random_delay_max=getattr(request, "p2p_random_delay_max", 10.0),
         agent_language=getattr(request, "agent_language", "中文"),
         ralph_wiggum_mode=getattr(request, "ralph_wiggum_mode", False),
     )

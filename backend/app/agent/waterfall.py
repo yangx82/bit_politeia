@@ -13,7 +13,10 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from app.services.spill_store import spill_store
+try:
+    from app.services.spill_store import spill_store
+except (ImportError, ModuleNotFoundError):
+    from backend.app.services.spill_store import spill_store
 
 logger = logging.getLogger(__name__)
 
