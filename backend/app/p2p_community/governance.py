@@ -200,16 +200,7 @@ class Election:
         return self.participation_rate >= quorum_ratio
 
     def tally(self) -> dict[str, Any]:
-        # Only mark as invalid if the election has ENDED and quorum is not met.
-        # If it's still active, it's always valid to encourage participation.
         now = datetime.now(UTC)
-        if now > self.end_time and not self.is_quorum_met():
-            return {
-                "valid": False,
-                "reason": f"Quorum not met (<{int(self.participation_rate * 100)}%). Required: 80%.",
-                "winners": [],
-                "participation_rate": self.participation_rate,
-            }
 
         if self.election_type == ElectionType.PROPOSAL_VOTE:
             # Tally for Proposal
@@ -255,8 +246,21 @@ class Election:
                 elif len(self.votes) >= total_effective and passed:
                     early_passed = True
 
+            # Validity evaluation:
+            # 1. If early_passed or early_rejected is triggered, majority consensus is mathematically guaranteed.
+            #    Outcome is binding and valid regardless of remaining voter turnout.
+            # 2. If active (now <= end_time), valid = True to encourage ongoing participation.
+            # 3. If ended without early termination and participation < quorum, then valid = False (流拍).
+            valid = True
+            reason = None
+            if not early_passed and not early_rejected:
+                if now > self.end_time and not self.is_quorum_met():
+                    valid = False
+                    passed = False
+                    reason = f"Quorum not met (<{int(self.participation_rate * 100)}%). Required: 80%."
+
             return {
-                "valid": True,
+                "valid": valid,
                 "passed": passed,
                 "early_rejected": early_rejected,
                 "early_passed": early_passed,
@@ -264,6 +268,7 @@ class Election:
                 "rejections": rejections,
                 "total_votes": total_cast,
                 "participation_rate": self.participation_rate,
+                "reason": reason,
             }
 
         elif self.election_type == ElectionType.RESEARCH_EVALUATION:
@@ -284,11 +289,20 @@ class Election:
 
             avg_amount = total_amount / len(evaluations) if evaluations else 0.0
 
+            valid = True
+            reason = None
+            if now > self.end_time and not self.is_quorum_met():
+                valid = False
+                reason = f"Quorum not met (<{int(self.participation_rate * 100)}%). Required: 80%."
+
             return {
-                "valid": True,
+                "valid": valid,
                 "evaluations": evaluations,
                 "average_amount": avg_amount,
                 "total_evaluators": len(evaluations),
+                "total_votes": len(self.votes),
+                "participation_rate": self.participation_rate,
+                "reason": reason,
             }
 
         # Original Tally for Candidates
@@ -310,14 +324,22 @@ class Election:
             if len(winners) >= self.target_positions:
                 break
 
+        valid = True
+        reason = None
+        if now > self.end_time and not self.is_quorum_met():
+            valid = False
+            winners = []
+            reason = f"Quorum not met (<{int(self.participation_rate * 100)}%). Required: 80%."
+
         return {
-            "valid": True,
+            "valid": valid,
             "winners": winners,
             "counts": counts,
             "approvals": sum(counts.values()),  # Total positive votes for all candidates
             "rejections": 0,
             "total_votes": self.total_votes,
             "participation_rate": self.participation_rate,
+            "reason": reason,
         }
 
     def to_dict(self) -> dict:

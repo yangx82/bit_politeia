@@ -581,19 +581,55 @@ class AgentService:
             "triggered ralph wiggum auto-heal",
             "llm 限制提示",
             "llm 服务提示",
+            "llm 配额限制提示",
             "message refused:",
             "security suppression:",
             "fatal_llm_request_validation_error",
             "fatal_parallel_tool_calls_unsupported",
             "fatal_no_model_loaded",
             "fatal_sglang_fc_parser_error",
+            "fatal_rate_limit_exceeded",
             "token_length_exceeded",
             "api_error:",
             "connection error",
+            # 429 Rate Limit & Concurrency Quota Exhaustion
+            "error code: 429",
+            "error code:429",
+            "status code 429",
+            "status code: 429",
+            "status: 429",
+            "code: 429",
+            "code 429",
+            "429 too many requests",
+            "429 rate limit",
+            "rate_limit_exceeded",
+            "rate limit reached",
+            "rate limit exceeded",
+            "insufficient_quota",
+            "quota exceeded",
+            "quota_exceeded",
+            "并发配额超限",
+            "配额超限",
+            "并发超限",
+            "超出并发",
+            "速率限制",
+            "concurrency limit reached",
         ]
         for pattern in error_indicators:
             if pattern in text:
                 return True
+
+        # Regex context check for 429 in error or quota situations
+        import re
+        if re.search(r'\b429\b', text):
+            rate_limit_keywords = [
+                "error", "code", "rate", "limit", "quota", "request", "too many",
+                "concurrent", "concurrency", "exceeded", "http", "status",
+                "错误", "配额", "超限", "限制", "并发", "频次"
+            ]
+            if any(kw in text for kw in rate_limit_keywords):
+                return True
+
         return False
 
     def _is_pure_acknowledgment_rules(self, content: str) -> bool:
@@ -1432,6 +1468,18 @@ class AgentService:
         is_continuation = bool(msg.metadata and msg.metadata.get("epoch", 0) > 0)
 
         if is_p2p and not is_continuation:
+            text_content = msg.content
+            if isinstance(text_content, dict) and "text" in text_content:
+                text_content = text_content["text"]
+            elif not isinstance(text_content, str):
+                text_content = str(text_content)
+
+            if self._is_automated_error_notification(text_content) or self._is_pure_acknowledgment_rules(text_content):
+                logger.info(
+                    f"Pipeline suppression: message from {msg.sender_id} is an automated error/rate-limit/pure-ack notification. Aborting LLM invocation before delay."
+                )
+                return "[NO_RESPONSE_NEEDED]", False, "SUPPRESSED_AUTOMATED_ERROR_OR_ACK"
+
             now = datetime.now(UTC)
             msg_ts = msg.timestamp
             if msg_ts.tzinfo is None:
@@ -1928,13 +1976,37 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 )
             )
 
-        # 1.7 Loop Prevention: Check for pure acknowledgment/status confirmations
-        if msg.channel == "p2p":
+        # 1.7 Loop Prevention: Check for pure acknowledgment/status confirmations & automated error/429 notifications
+        is_p2p_channel = (
+            msg.channel in ("p2p", "group")
+            or bool(msg.metadata and msg.metadata.get("package_type") in ("direct", "group", "p2p", "gossip"))
+            or bool(msg.metadata and msg.metadata.get("message_type") in ("direct", "group", "p2p", "gossip"))
+            or bool(msg.metadata and msg.metadata.get("recipient_type") == "group")
+            or str(msg.session_id).startswith("grp_")
+        )
+
+        if is_p2p_channel:
             text_content = msg.content
             if isinstance(text_content, dict) and "text" in text_content:
                 text_content = text_content["text"]
             elif not isinstance(text_content, str):
                 text_content = str(text_content)
+
+            # Check for 429 / automated error notifications explicitly first
+            if self._is_automated_error_notification(text_content):
+                logger.info(
+                    f"Loop prevention (Bus): message from {msg.sender_id} is an automated error/rate-limit notification (429/quota/error). Storing in history without triggering LLM pipeline."
+                )
+                s_id_short = msg.sender_id[:8] if msg.sender_id else "unknown"
+                await self.message_bus.publish_outbound(
+                    OutboundMessage(
+                        channel="gateway",
+                        session_id=history_session_id,
+                        content=f"Loop prevention: received error/rate-limit notification (Error 429 / 并发配额超限) from {s_id_short}. Stored in history without triggering LLM.",
+                        type="thought",
+                    )
+                )
+                return
 
             if await self.is_pure_acknowledgment(text_content):
                 logger.info(
@@ -2298,15 +2370,23 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         sender_ids = list(dict.fromkeys(it["sender_id"] for it in items if it.get("sender_id")))
         primary_sender = items[-1]["sender_id"]
 
-        # Check if all messages are pure acknowledgments
+        # Check if all messages are pure acknowledgments or automated error notifications
         all_pure_ack = True
+        actionable_items = []
         for it in items:
-            if not await self.is_pure_acknowledgment(it["text_content"]):
+            text = it.get("text_content", "")
+            is_ack_or_err = self._is_automated_error_notification(text) or await self.is_pure_acknowledgment(text)
+            if not is_ack_or_err:
                 all_pure_ack = False
-                break
+                actionable_items.append(it)
 
-        if len(items) == 1:
-            it = items[0]
+        if not actionable_items:
+            all_pure_ack = True
+
+        effective_items = actionable_items if actionable_items else items
+
+        if len(effective_items) == 1:
+            it = effective_items[0]
             msg_obj = InboundMessage(
                 channel="p2p",
                 sender_id=it["sender_id"],
@@ -2323,7 +2403,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         # Multi-message backlog batch: check context budget and apply Hybrid Compaction
         summary_text, recent_items = await compaction_engine.compact_inbox_backlog(
-            items,
+            effective_items,
             llm_client=self.llm,
             max_backlog_chars=16000,
             keep_recent_count=4,
@@ -3631,7 +3711,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
     async def _check_compliance(self, content: str, recipient_id: str) -> tuple[bool, str]:
         """Audit message content against community rules."""
-        if not self.llm or "[security suppression:" in content.lower():
+        if not self.llm or "[security suppression:" in content.lower() or self._is_automated_error_notification(content):
             return True, ""
 
 

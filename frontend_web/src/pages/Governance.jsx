@@ -194,9 +194,9 @@ const Governance = () => {
             || proposalScope.includes('architecture')
             || proposalScope.includes('evolution')
             || proposalScope.includes('aip')
-            || proposalId.startsWith('AIP-')
-            || electionContent.toUpperCase().includes('AIP-')
-            || proposalContent.toUpperCase().includes('AIP-')
+            || proposalId.startsWith('AIP')
+            || /(?:^|[^\w])AIP(?:[^\w]|$)/i.test(electionContent)
+            || /(?:^|[^\w])AIP(?:[^\w]|$)/i.test(proposalContent)
             || electionContent.includes('架构')
             || electionContent.includes('进化')
             || proposalContent.includes('架构')
@@ -208,20 +208,23 @@ const Governance = () => {
             rawType.includes('research')
             || proposalScope.includes('research')
             || Boolean(proposal?.pdf_hash)
-            || electionContent.toLowerCase().includes('research')
-            || proposalContent.toLowerCase().includes('research')
-            || electionContent.includes('科研')
-            || proposalContent.includes('科研')
-            || electionContent.includes('论文')
-            || proposalContent.includes('论文')
-            || electionContent.includes('成果')
-            || proposalContent.includes('成果')
-            || electionContent.toLowerCase().includes('paper')
-            || proposalContent.toLowerCase().includes('paper')
+            || (election.metadata && election.metadata.type === 'research_evaluation')
+            || (proposal?.metadata && proposal.metadata.type === 'research_evaluation')
+            || electionContent.toLowerCase().includes('research evaluation')
+            || electionContent.includes('科研成果评定')
+            || electionContent.includes('科研评估')
         );
 
         // Determine display title and type styling
-        let title = election.content || "Community Governance Action";
+        let displayTitle = election.content || "Community Governance Action";
+        if (proposal?.content) {
+            const firstLine = proposal.content.split('\n')[0].replace(/^#+\s*/, '').trim();
+            if (firstLine) {
+                displayTitle = firstLine;
+            }
+        }
+
+        let title = displayTitle;
         let typeBadgeClass = "bg-emerald-100 text-emerald-800 border-emerald-200";
         let typeLabel = "社区治理提案";
         let TypeIcon = Scale;
@@ -232,7 +235,7 @@ const Governance = () => {
             typeLabel = "核心节点选举";
             TypeIcon = Crown;
         } else if (isAip) {
-            title = proposal?.content || election.content || "AIP 架构自主进化提案";
+            title = displayTitle || "AIP 架构自主进化提案";
             typeBadgeClass = "bg-indigo-100 text-indigo-800 border-indigo-200";
             typeLabel = "AIP 架构进化";
             TypeIcon = Cpu;
@@ -324,7 +327,17 @@ const Governance = () => {
                                 ) : (
                                     /* Archive Outcome Badge: clear distinction between Early-Pass (green) & Fast-Reject (rose) */
                                     <>
-                                        {!isQuorumMet ? (
+                                        {tally.early_passed ? (
+                                            <span className="px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-400 flex items-center gap-1.5 shadow-sm">
+                                                <span className="text-amber-500 text-sm leading-none font-black">⚡</span>
+                                                快速通过 (Early Passed)
+                                            </span>
+                                        ) : tally.early_rejected ? (
+                                            <span className="px-2.5 py-1 rounded-md text-xs font-bold bg-rose-100 text-rose-800 border border-rose-400 flex items-center gap-1.5 shadow-sm">
+                                                <span className="text-rose-600 text-sm leading-none font-black">⚡</span>
+                                                提前否决 (Fast Rejected)
+                                            </span>
+                                        ) : !isQuorumMet ? (
                                             <span className="px-2.5 py-1 rounded-md text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-300 flex items-center gap-1.5 shadow-sm">
                                                 <AlertCircle size={13} className="text-amber-600" />
                                                 ⚠️ 流拍 · 投票率未达法定门槛 (&lt;80%)
@@ -341,20 +354,10 @@ const Governance = () => {
                                                     ❌ 无人胜选 (得票未过半)
                                                 </span>
                                             )
-                                        ) : tally.early_passed ? (
-                                            <span className="px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-400 flex items-center gap-1.5 shadow-sm">
-                                                <span className="text-amber-500 text-sm leading-none font-black">⚡</span>
-                                                快速通过 (Early Passed)
-                                            </span>
                                         ) : tally.passed ? (
                                             <span className="px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-300 flex items-center gap-1.5 shadow-sm">
                                                 <CheckCircle2 size={13} className="text-emerald-600" />
                                                 决议通过 (Passed)
-                                            </span>
-                                        ) : tally.early_rejected ? (
-                                            <span className="px-2.5 py-1 rounded-md text-xs font-bold bg-rose-100 text-rose-800 border border-rose-400 flex items-center gap-1.5 shadow-sm">
-                                                <span className="text-rose-600 text-sm leading-none font-black">⚡</span>
-                                                提前否决 (Fast Rejected)
                                             </span>
                                         ) : (
                                             <span className="px-2.5 py-1 rounded-md text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-300 flex items-center gap-1.5 shadow-sm">
@@ -432,8 +435,14 @@ const Governance = () => {
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <span className="text-slate-500">参投率: {participation}%</span>
-                                        <span className={`text-[11px] font-medium ${isQuorumMet ? 'text-emerald-600' : 'text-amber-600'}`}>
-                                            {isQuorumMet ? '✅ 法定有效 (≥80%)' : '⚠️ 未达法定门槛 (<80%)'}
+                                        <span className={`text-[11px] font-medium ${(isQuorumMet || tally.early_passed || tally.early_rejected) ? 'text-emerald-600' : 'text-amber-600'}`}>
+                                            {tally.early_passed
+                                                ? '⚡ 多数决提前通过'
+                                                : tally.early_rejected
+                                                    ? '⚡ 多数决提前否决'
+                                                    : isQuorumMet
+                                                        ? '✅ 法定有效 (≥80%)'
+                                                        : '⚠️ 未达法定门槛 (<80%)'}
                                         </span>
                                     </div>
                                 </>
