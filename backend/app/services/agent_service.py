@@ -241,6 +241,17 @@ class AgentService:
                     id="periodic_p2p_batch_job",
                     replace_existing=True,
                 )
+                # Daily Group-Ranked AIP Proposal Audit & Archiving Job
+                target_hour, _, _, _ = self.get_node_group_rank_hour()
+                self.scheduler.add_job(
+                    "app.services.agent_service:daily_group_aip_audit_proxy",
+                    "cron",
+                    hour=target_hour,
+                    minute=0,
+                    misfire_grace_time=3600,
+                    id="daily_group_aip_audit_job",
+                    replace_existing=True,
+                )
                 self.scheduler.add_job(
                     "app.services.agent_service:sync_network_proxy",
                     "interval",
@@ -2009,6 +2020,46 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         )
 
         if is_p2p_channel:
+            # Intercept AIP discussion archive messages sent to core node for persistent archiving
+            content_dict = {}
+            if isinstance(msg.content, dict):
+                content_dict = msg.content
+            elif isinstance(msg.content, str) and "aip_archive" in msg.content:
+                try:
+                    content_dict = json.loads(msg.content)
+                except Exception:
+                    content_dict = {}
+
+            is_archive_pkg = (
+                (msg.metadata and msg.metadata.get("package_type") == "aip_archive")
+                or (isinstance(content_dict, dict) and content_dict.get("type") == "aip_archive")
+            )
+            if is_archive_pkg:
+                aip_id = content_dict.get("aip_id") or (msg.metadata or {}).get("aip_id", "unknown")
+                filename = content_dict.get("filename") or (msg.metadata or {}).get("filename") or f"AIP_{aip_id}_Archive.md"
+                md_text = content_dict.get("content") or (msg.metadata or {}).get("content", "")
+
+                archive_dir = os.path.join(self.data_dir, "archives")
+                os.makedirs(archive_dir, exist_ok=True)
+                target_path = os.path.join(archive_dir, filename)
+                try:
+                    with open(target_path, "w", encoding="utf-8") as f:
+                        f.write(md_text)
+                    logger.info(f"[AIPArchive] Core node saved archive document: {target_path}")
+                except Exception as fe:
+                    logger.error(f"[AIPArchive] Failed to write archive document {target_path}: {fe}")
+
+                s_id_short = msg.sender_id[:8] if msg.sender_id else "unknown"
+                await self.message_bus.publish_outbound(
+                    OutboundMessage(
+                        channel="gateway",
+                        session_id=history_session_id,
+                        content=f"【AIP 归档】核心节点已成功接收并归档来自节点 {s_id_short} 的提案 `{aip_id}` 研讨纪要文档 (`{filename}`)。",
+                        type="thought",
+                    )
+                )
+                return
+
             text_content = msg.content
             if isinstance(text_content, dict) and "text" in text_content:
                 text_content = text_content["text"]
@@ -3145,6 +3196,257 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 logger.info(f"[EvolutionWatcher] Dispatched self-evolution report for {len(processed_reports)} AIP(s) to resident.")
         except Exception as e:
             logger.error(f"[EvolutionWatcher] Error in self-evolution cycle: {e}")
+
+    def _get_local_node_id(self) -> str:
+        """Resolves the local node ID from p2p_service, reputation_manager, or crypto_service."""
+        if p2p_service.local_node and p2p_service.local_node.node_id:
+            return p2p_service.local_node.node_id
+        if self.reputation_manager and self.reputation_manager.node_id:
+            return self.reputation_manager.node_id
+        try:
+            from .crypto_service import crypto_service
+            return crypto_service.get_node_id()
+        except Exception:
+            return "self"
+
+    def get_node_group_rank_hour(self) -> tuple[int, int, str, list[str]]:
+        """
+        Calculates the node's rank within its primary group and derives the daily execution hour.
+        Returns:
+            (target_hour, rank, group_id, core_node_ids)
+            where target_hour = rank % 24 (or overridden by DAILY_AIP_TASK_HOUR).
+        """
+        local_nid = self._get_local_node_id()
+        env_hour = os.getenv("DAILY_AIP_TASK_HOUR")
+
+        my_groups = p2p_service.get_my_groups() if p2p_service._initialized else []
+        if not my_groups:
+            if p2p_service.network_manager and p2p_service.network_manager.groups:
+                my_groups = list(p2p_service.network_manager.groups.keys())
+
+        if not my_groups:
+            default_hour = int(env_hour) if env_hour is not None else 1
+            return default_hour, 1, "default_group", []
+
+        group_id = my_groups[0]
+        group = p2p_service.network_manager.get_group(group_id) if p2p_service.network_manager else None
+
+        members = list(group.members) if group and group.members else [local_nid]
+        if local_nid not in members:
+            members.append(local_nid)
+
+        rankings: list[tuple[str, float]] = []
+        if self.reputation_manager:
+            rankings = self.reputation_manager.get_group_rankings(members)
+        else:
+            rankings = [(nid, 10.0) for nid in members]
+
+        # Deterministic sorting: sort by score desc, then node_id asc
+        rankings = sorted(rankings, key=lambda x: (-x[1], str(x[0])))
+
+        try:
+            rank_idx = [nid for nid, _ in rankings].index(local_nid)
+            rank = rank_idx + 1
+        except ValueError:
+            rank = 1
+
+        target_hour = int(env_hour) if env_hour is not None else (rank % 24)
+
+        core_node_ids = []
+        if group and group.core_node_ids:
+            core_node_ids = [cid for cid in group.core_node_ids if cid != local_nid]
+
+        if not core_node_ids:
+            candidates = [nid for nid, _ in rankings if nid != local_nid]
+            if candidates:
+                core_node_ids = [candidates[0]]
+
+        logger.info(
+            f"[AgentService] Daily AIP Schedule: Node {local_nid[:8]} is Rank {rank} in group '{group_id}' "
+            f"-> Scheduled at Hour {target_hour}:00 (Core nodes: {[c[:8] for c in core_node_ids] or 'self'})."
+        )
+        return target_hour, rank, group_id, core_node_ids
+
+    async def run_daily_group_aip_audit(self) -> dict[str, Any]:
+        """
+        Daily scheduled task executed at hour n (where n is the node's group rank).
+        1. Confirms whether an AIP proposal has been successfully submitted by this node within the last 24h.
+        2. If yes: logs and skips execution.
+        3. If no: selects the most important draft generated in the last 24h,
+           broadcasts it to the group discussion channel,
+           generates a standardized Markdown archive document,
+           saves it locally in backend/data/archives/,
+           and dispatches it via P2P to the group's core node(s) for archival.
+        """
+        logger.info("[DailyAIPAudit] Starting daily group-ranked AIP audit...")
+        try:
+            try:
+                from .evolution_service import evolution_service
+            except (ImportError, ValueError):
+                from app.services.evolution_service import evolution_service
+
+            target_hour, rank, group_id, core_node_ids = self.get_node_group_rank_hour()
+            local_nid = self._get_local_node_id()
+
+            # 1. Verify 24h submission status
+            has_submitted, recent_aip = evolution_service.check_recent_aip_submission(
+                hours=24, initiator_id=local_nid
+            )
+            if has_submitted and recent_aip:
+                msg = (
+                    f"【每日 AIP 审计】组内声誉排名第 {rank} 名 (执行窗口: {target_hour}:00)："
+                    f"前 24h 内已成功提交 AIP 提案 `{recent_aip.aip_id}` ('{recent_aip.title}', 状态: {recent_aip.status})，"
+                    f"无需重复发起草案研讨，本次任务正常完成并跳过。"
+                )
+                logger.info(f"[DailyAIPAudit] {msg}")
+                if self.message_bus:
+                    await self.message_bus.publish_outbound(
+                        OutboundMessage(
+                            channel="gateway",
+                            session_id="resident",
+                            content=msg,
+                            type="thought",
+                        )
+                    )
+                return {
+                    "status": "skipped",
+                    "reason": "already_submitted_24h",
+                    "aip_id": recent_aip.aip_id,
+                    "rank": rank,
+                    "hour": target_hour,
+                }
+
+            # 2. Select top draft
+            top_draft = evolution_service.get_most_important_draft(hours=24, initiator_id=local_nid)
+            if not top_draft:
+                if self.llm:
+                    logger.info("[DailyAIPAudit] No draft in 24h. Triggering proactive auto_explore_and_propose...")
+                    top_draft = await evolution_service.auto_explore_and_propose(
+                        llm_client=self.llm, agent_service=self
+                    )
+
+            if not top_draft:
+                logger.warning("[DailyAIPAudit] No draft proposals available for group discussion.")
+                return {
+                    "status": "skipped",
+                    "reason": "no_draft_available",
+                    "rank": rank,
+                    "hour": target_hour,
+                }
+
+            # 3. Broadcast to group discussion
+            discussion_text = (
+                f"📢 **【AIP 提案每日协同研讨】** (发起节点组内排名: 第 {rank} 名)\n\n"
+                f"本节点在过去 24 小时内未正式提交 AIP 提案，依照自治共识流程，现将 24h 内最高价值提案草案提交全组审阅讨论：\n\n"
+                f"- **提案编号**: `{top_draft.aip_id}`\n"
+                f"- **提案标题**: **{top_draft.title}**\n"
+                f"- **架构动机**: {top_draft.description}\n"
+                f"- **涉及模块**: `{', '.join(top_draft.target_files or ['system'])}`\n"
+                f"- **理论支撑**: {top_draft.research_sources[0] if top_draft.research_sources else '内部架构演化需求'}\n\n"
+                f"请组内各节点协作审阅其 AST 结构与安全性。讨论纪要已生成规范 Markdown 文档并送交核心节点归档留存。"
+            )
+
+            try:
+                await p2p_service.broadcast_to_group(
+                    group_id=group_id,
+                    text=discussion_text,
+                    subject=f"[AIP讨论] {top_draft.aip_id}: {top_draft.title}",
+                )
+                logger.info(f"[DailyAIPAudit] Broadcasted discussion for {top_draft.aip_id} to group '{group_id}'")
+            except Exception as be:
+                logger.warning(f"[DailyAIPAudit] Failed to broadcast to group '{group_id}': {be}")
+
+            # 4. Generate structured Markdown archive document and save locally
+            md_content = evolution_service.generate_group_discussion_archive_md(
+                aip=top_draft,
+                group_id=group_id,
+                sender_rank=rank,
+            )
+            saved_path = evolution_service.save_archive_document(
+                aip_id=top_draft.aip_id,
+                md_content=md_content,
+            )
+            archive_filename = os.path.basename(saved_path)
+
+            # 5. Dispatch archive to core nodes via P2P
+            sent_core_nodes = []
+            for core_id in core_node_ids:
+                try:
+                    payload = {
+                        "type": "aip_archive",
+                        "aip_id": top_draft.aip_id,
+                        "filename": archive_filename,
+                        "content": md_content,
+                        "summary": f"AIP {top_draft.aip_id} 小组研讨与存档纪要",
+                        "sender_rank": rank,
+                        "group_id": group_id,
+                    }
+                    from ..p2p_community.message_protocol import MessageType
+                    await p2p_service.send_message(
+                        recipient_id=core_id,
+                        content=payload,
+                        msg_type=MessageType.DIRECT.value,
+                    )
+                    sent_core_nodes.append(core_id)
+                    logger.info(f"[DailyAIPAudit] Dispatched archive for {top_draft.aip_id} to core node {core_id[:8]}")
+                except Exception as ce:
+                    logger.warning(f"[DailyAIPAudit] Failed to send archive to core node {core_id[:8]}: {ce}")
+
+            # 6. Gateway thought notification
+            core_desc = ", ".join([c[:8] for c in sent_core_nodes]) or "本地存盘"
+            thought_msg = (
+                f"【每日 AIP 审计完成】组内声誉排名第 {rank} 名 (执行窗口: {target_hour}:00)："
+                f"已将最重要的提案草案 `{top_draft.aip_id}` ('{top_draft.title}') 提交小组 `{group_id}` 讨论，"
+                f"生成 Markdown 归档文档 `{archive_filename}` 并已定向发送给核心节点 ({core_desc}) 存档。"
+            )
+            logger.info(f"[DailyAIPAudit] {thought_msg}")
+            if self.message_bus:
+                await self.message_bus.publish_outbound(
+                    OutboundMessage(
+                        channel="gateway",
+                        session_id="resident",
+                        content=thought_msg,
+                        type="thought",
+                    )
+                )
+
+            return {
+                "status": "completed",
+                "aip_id": top_draft.aip_id,
+                "title": top_draft.title,
+                "rank": rank,
+                "hour": target_hour,
+                "archive_path": saved_path,
+                "core_nodes": sent_core_nodes,
+            }
+
+        except Exception as e:
+            logger.error(f"[DailyAIPAudit] Failed daily group AIP audit: {e}", exc_info=True)
+            return {"status": "error", "error": str(e)}
+
+    def reschedule_daily_group_aip_job(self) -> int:
+        """
+        Recalculates group rank and updates the daily APScheduler cron job hour.
+        Returns the new target hour.
+        """
+        target_hour, rank, _, _ = self.get_node_group_rank_hour()
+        if hasattr(self, "scheduler") and self.scheduler:
+            try:
+                self.scheduler.add_job(
+                    "app.services.agent_service:daily_group_aip_audit_proxy",
+                    "cron",
+                    hour=target_hour,
+                    minute=0,
+                    misfire_grace_time=3600,
+                    id="daily_group_aip_audit_job",
+                    replace_existing=True,
+                )
+                logger.info(
+                    f"[AgentService] Rescheduled 'daily_group_aip_audit_job' for hour {target_hour}:00 (rank {rank})"
+                )
+            except Exception as e:
+                logger.warning(f"[AgentService] Failed to reschedule daily_group_aip_audit_job: {e}")
+        return target_hour
 
     async def run_literature_watcher(self):
         """Periodic task to watch for new literature, evaluate quality, and share with community.
@@ -6202,6 +6504,12 @@ async def process_periodic_p2p_backlog_proxy():
     """Proxy for agent_service.process_periodic_p2p_backlog"""
     if agent_service:
         await agent_service.process_periodic_p2p_backlog()
+
+
+async def daily_group_aip_audit_proxy():
+    """Proxy for agent_service.run_daily_group_aip_audit"""
+    if agent_service:
+        await agent_service.run_daily_group_aip_audit()
 
 
 agent_service = AgentService()
