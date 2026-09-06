@@ -1124,6 +1124,28 @@ async def submit_aip_pr(aip_id: str) -> str:
         return f"Error submitting PR for {aip_id}: {e!s}"
 
 
+@tool
+async def configure_p2p_processing_mode(mode: str = "periodic", interval_minutes: int = 5) -> str:
+    """
+    Configure the P2P and group message processing mode for the agent.
+
+    Args:
+        mode: Processing mode. Options: 'instant' (immediate LLM response per message),
+              'periodic' (batch process accumulated messages per session every N minutes).
+        interval_minutes: Interval in minutes for periodic batch processing (default: 5).
+    """
+    try:
+        from app.services.agent_service import agent_service
+        res = agent_service.set_p2p_processing_mode(mode, interval_minutes)
+        return (
+            f"Successfully configured P2P processing mode to '{res['mode']}' "
+            f"with interval {res['interval_minutes']} minutes. "
+            f"(Pending sessions: {res['pending_sessions_count']})"
+        )
+    except Exception as e:
+        return f"Failed to set P2P processing mode: {e}"
+
+
 # List of Tools to bind to the agent
 AGENT_TOOLS = [
     send_p2p_message,
@@ -1184,6 +1206,7 @@ AGENT_TOOLS = [
     audit_p2p_aip_proposal,
     run_aip_sandbox_test,
     submit_aip_pr,
+    configure_p2p_processing_mode,
 ] + TASK_TOOLS
 
 # Specialized toolset for the Self-Healing Sub-Agent
