@@ -1125,22 +1125,36 @@ async def submit_aip_pr(aip_id: str) -> str:
 
 
 @tool
-async def configure_p2p_processing_mode(mode: str = "periodic", interval_minutes: int = 5) -> str:
+async def configure_p2p_processing_mode(
+    mode: str = "hybrid_debounce",
+    interval_minutes: int = 5,
+    debounce_delay_seconds: float = 30.0,
+    debounce_max_wait_seconds: float = 300.0,
+) -> str:
     """
     Configure the P2P and group message processing mode for the agent.
 
     Args:
-        mode: Processing mode. Options: 'instant' (immediate LLM response per message),
-              'periodic' (batch process accumulated messages per session every N minutes).
+        mode: Processing mode. Options:
+              'hybrid_debounce' (default: quiet-window sliding debounce timer, max wait timeout),
+              'periodic' (batch process accumulated messages per session every N minutes),
+              'instant' (immediate LLM response per message).
         interval_minutes: Interval in minutes for periodic batch processing (default: 5).
+        debounce_delay_seconds: Quiet-window silence duration for hybrid_debounce in seconds (default: 30.0).
+        debounce_max_wait_seconds: Maximum cumulative wait duration for hybrid_debounce in seconds (default: 300.0).
     """
     try:
         from app.services.agent_service import agent_service
-        res = agent_service.set_p2p_processing_mode(mode, interval_minutes)
+        res = agent_service.set_p2p_processing_mode(
+            mode=mode,
+            interval_minutes=interval_minutes,
+            debounce_delay_seconds=debounce_delay_seconds,
+            debounce_max_wait_seconds=debounce_max_wait_seconds,
+        )
         return (
-            f"Successfully configured P2P processing mode to '{res['mode']}' "
-            f"with interval {res['interval_minutes']} minutes. "
-            f"(Pending sessions: {res['pending_sessions_count']})"
+            f"Successfully configured P2P processing mode to '{res['mode']}'. "
+            f"(interval={res['interval_minutes']}m, debounce_delay={res['debounce_delay_seconds']}s, "
+            f"max_wait={res['debounce_max_wait_seconds']}s, pending_sessions={res['pending_sessions_count']})"
         )
     except Exception as e:
         return f"Failed to set P2P processing mode: {e}"

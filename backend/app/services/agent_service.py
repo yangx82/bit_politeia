@@ -100,12 +100,16 @@ class AgentService:
         )  # Track error signatures for self-reflection
         self.notified_watchdog_ids: set[str] = set()  # Track watchdog-triggered message IDs
         self._is_processing_inbox = False  # Concurrency Guard
-        # P2P message processing mode: 'instant' vs 'periodic' (default: instant, configurable via env)
-        self.p2p_processing_mode = os.getenv("P2P_MESSAGE_PROCESSING_MODE", "instant").lower()
+        # P2P message processing mode: 'hybrid_debounce' (default) vs 'periodic' vs 'instant'
+        self.p2p_processing_mode = os.getenv("P2P_MESSAGE_PROCESSING_MODE", "hybrid_debounce").lower()
         self.p2p_periodic_interval_minutes = int(os.getenv("P2P_PERIODIC_INTERVAL_MINUTES", "5"))
+        self.p2p_debounce_delay_seconds = float(os.getenv("P2P_DEBOUNCE_DELAY_SECONDS", "30.0"))
+        self.p2p_debounce_max_wait_seconds = float(os.getenv("P2P_DEBOUNCE_MAX_WAIT_SECONDS", "300.0"))
         self._pending_p2p_backlog: dict[str, list[dict]] = {}  # session_id -> list[dict]
         self._pending_p2p_lock = asyncio.Lock()
         self._is_processing_periodic_backlog = False
+        self._debounce_tasks: dict[str, asyncio.Task] = {}  # session_id -> asyncio.Task
+        self._session_first_arrival: dict[str, float] = {}  # session_id -> float timestamp
 
         self.status = AgentStatus(is_online=True, reputation=10, balance=0.0)
         self.message_bus = message_bus
@@ -2043,12 +2047,19 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 return
 
         # 1.8 Check processing mode for P2P / Group messages
-        if is_p2p_channel and self.p2p_processing_mode == "periodic":
-            logger.info(
-                f"P2P Periodic Mode: Queuing message {user_msg_id or ''} from {msg.sender_id[:8]} for session {raw_session_id[:8]} into periodic backlog."
-            )
-            await self._enqueue_p2p_backlog(raw_session_id, msg)
-            return
+        if is_p2p_channel:
+            if self.p2p_processing_mode == "hybrid_debounce":
+                logger.info(
+                    f"P2P Debounce Mode: Queuing message {user_msg_id or ''} from {msg.sender_id[:8]} for session {raw_session_id[:8]} into debounce backlog."
+                )
+                await self._enqueue_p2p_debounce(raw_session_id, msg)
+                return
+            elif self.p2p_processing_mode == "periodic":
+                logger.info(
+                    f"P2P Periodic Mode: Queuing message {user_msg_id or ''} from {msg.sender_id[:8]} for session {raw_session_id[:8]} into periodic backlog."
+                )
+                await self._enqueue_p2p_backlog(raw_session_id, msg)
+                return
 
         # 2. Pipeline Execution (Instant Mode or Resident channel)
         # p2p_logger.info(f"DEBUG: process_bus_message calling run_pipeline. Channel={msg.channel}, Sender={msg.sender_id}")
@@ -2527,6 +2538,197 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             )
         )
 
+    async def process_single_session_backlog(self, session_id: str):
+        """
+        Processes a single session's pending P2P/group message backlog.
+        Extracts pending items for session_id, formats the batch, checks for pure ack / 429,
+        invokes LLM once, and publishes responses and receipts.
+        """
+        async with self._pending_p2p_lock:
+            session_items = self._pending_p2p_backlog.pop(session_id, [])
+            self._session_first_arrival.pop(session_id, None)
+            self._debounce_tasks.pop(session_id, None)
+
+        if not session_items:
+            return
+
+        logger.info(
+            f"[P2PBacklog] Processing batched session '{session_id[:12]}' ({len(session_items)} message(s))..."
+        )
+
+        # 1. Format session backlog batch (merges messages, applies compaction if long)
+        (
+            msg_obj,
+            all_m_ids,
+            all_senders,
+            all_pure_ack,
+        ) = await self._format_session_backlog_batch(session_id, session_items)
+
+        # 2. Skip LLM if all messages in batch are pure acknowledgments or 429 errors
+        if all_pure_ack:
+            logger.info(
+                f"[P2PBacklog] Skipping LLM for session '{session_id[:12]}': all messages are pure acks/errors."
+            )
+            return
+
+        # 3. Dispatch 'thinking' receipts for senders
+        for s_id in all_senders:
+            for m_id in all_m_ids:
+                if m_id and s_id != "unknown_sender":
+                    try:
+                        asyncio.create_task(p2p_service.send_receipt(s_id, m_id, "thinking"))
+                    except Exception:
+                        pass
+
+        # 4. Invoke LLM Pipeline once for this session's batch
+        try:
+            response_text, cont_req, cont_reason = await self._run_ralph_wiggum_loop(msg_obj)
+
+            # 5. Reply via Outbound Bus if response generated
+            if response_text and "[NO_RESPONSE_NEEDED]" not in str(response_text) and str(response_text).strip() != "No response generated.":
+                reply_id = str(uuid.uuid4())
+                first_item = session_items[0]
+                raw_msg = first_item.get("raw_msg")
+                orig_sid = (
+                    raw_msg.metadata.get("original_session_id")
+                    if raw_msg and getattr(raw_msg, "metadata", None)
+                    else None
+                )
+                target_transport_id = orig_sid or session_id or "default"
+
+                out_msg = OutboundMessage(
+                    channel="p2p",
+                    session_id=target_transport_id,
+                    content=response_text,
+                    reply_to=all_m_ids[-1] if all_m_ids else None,
+                    metadata={
+                        "message_id": reply_id,
+                        "original_session_id": target_transport_id,
+                        "batched_count": len(session_items),
+                    },
+                    is_final=True,
+                )
+                await self.message_bus.publish_outbound(out_msg)
+
+                # Dual broadcast to Gateway UI
+                await self.message_bus.publish_outbound(
+                    OutboundMessage(
+                        channel="gateway",
+                        session_id=session_id,
+                        content=response_text,
+                        type="chat",
+                        sender="agent",
+                    )
+                )
+
+                # Send 'replied' receipts
+                for s_id in all_senders:
+                    for m_id in all_m_ids:
+                        if m_id and s_id != "unknown_sender":
+                            try:
+                                asyncio.create_task(p2p_service.send_receipt(s_id, m_id, "replied"))
+                            except Exception:
+                                pass
+        except Exception as e:
+            logger.error(f"[P2PBacklog] Error processing session batch for {session_id[:12]}: {e}", exc_info=True)
+            for s_id in all_senders:
+                for m_id in all_m_ids:
+                    if m_id and s_id != "unknown_sender":
+                        try:
+                            asyncio.create_task(p2p_service.send_receipt(s_id, m_id, "failed"))
+                        except Exception:
+                            pass
+
+    async def _enqueue_p2p_debounce(self, session_id: str, msg: InboundMessage):
+        """
+        Enqueues an inbound P2P/group message into the hybrid debounce buffer.
+        Resets the quiet-window timer (default 30s) or forces processing if max wait (default 300s) is reached.
+        """
+        text_content = msg.content
+        if isinstance(text_content, dict) and "text" in text_content:
+            text_content = text_content["text"]
+        elif not isinstance(text_content, str):
+            text_content = str(text_content)
+
+        m_id = (msg.metadata or {}).get("message_id") or str(uuid.uuid4())
+        msg_ts = (msg.metadata or {}).get("timestamp") or datetime.now(UTC)
+        if isinstance(msg_ts, str):
+            try:
+                msg_ts = datetime.fromisoformat(msg_ts)
+                if msg_ts.tzinfo is None:
+                    msg_ts = msg_ts.replace(tzinfo=UTC)
+            except Exception:
+                msg_ts = datetime.now(UTC)
+        elif hasattr(msg_ts, "tzinfo") and msg_ts.tzinfo is None:
+            msg_ts = msg_ts.replace(tzinfo=UTC)
+
+        pkg_type = (msg.metadata or {}).get("package_type") or "chat"
+        rec_type = (msg.metadata or {}).get("recipient_type") or (
+            "group" if str(session_id).startswith("grp_") else "direct"
+        )
+
+        item = {
+            "message_id": m_id,
+            "sender_id": msg.sender_id,
+            "timestamp": msg_ts,
+            "text_content": text_content,
+            "package_type": pkg_type,
+            "recipient_type": rec_type,
+            "raw_msg": msg,
+        }
+
+        now = time.time()
+        async with self._pending_p2p_lock:
+            if session_id not in self._pending_p2p_backlog:
+                self._pending_p2p_backlog[session_id] = []
+            self._pending_p2p_backlog[session_id].append(item)
+            q_len = len(self._pending_p2p_backlog[session_id])
+
+            if session_id not in self._session_first_arrival:
+                self._session_first_arrival[session_id] = now
+
+            first_arrival = self._session_first_arrival[session_id]
+            time_elapsed = now - first_arrival
+            time_to_max = max(0.0, self.p2p_debounce_max_wait_seconds - time_elapsed)
+            wait_time = min(self.p2p_debounce_delay_seconds, time_to_max)
+
+            # Cancel previous debounce task for this session if it is running
+            old_task = self._debounce_tasks.get(session_id)
+            if old_task and not old_task.done():
+                old_task.cancel()
+
+            # Schedule new debounce worker
+            task = asyncio.create_task(self._debounce_worker(session_id, wait_time))
+            self._debounce_tasks[session_id] = task
+
+        s_id_short = msg.sender_id[:8] if msg.sender_id else "unknown"
+        await self.message_bus.publish_outbound(
+            OutboundMessage(
+                channel="gateway",
+                session_id=session_id,
+                content=f"P2P 自适应防抖模式: 收到来自 {s_id_short} 的消息，已暂存待防抖合并 (当前积压: {q_len} 条，静默等待: {wait_time:.1f}s，剩余最长等待: {time_to_max:.1f}s)。",
+                type="thought",
+            )
+        )
+
+    async def _debounce_worker(self, session_id: str, wait_time: float):
+        """Worker task that sleeps for wait_time and then triggers process_single_session_backlog."""
+        try:
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+            logger.info(
+                f"[DebounceP2P] Debounce timer expired for session '{session_id[:12]}', triggering batch LLM processing..."
+            )
+            await self.process_single_session_backlog(session_id)
+        except asyncio.CancelledError:
+            # Task cancelled by arrival of a newer message within quiet window
+            raise
+        except Exception as e:
+            logger.error(f"[DebounceP2P] Error in debounce worker for {session_id[:12]}: {e}", exc_info=True)
+        finally:
+            if self._debounce_tasks.get(session_id) is asyncio.current_task():
+                self._debounce_tasks.pop(session_id, None)
+
     async def process_periodic_p2p_backlog(self, verbose: bool = False):
         """
         Periodically processes accumulated P2P & group message backlogs per session.
@@ -2544,123 +2746,49 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     if verbose:
                         logger.debug("[PeriodicP2P] No pending P2P backlog messages.")
                     return
-                # Take atomic snapshot of all pending messages and clear buffer
-                snapshot = dict(self._pending_p2p_backlog)
-                self._pending_p2p_backlog.clear()
+                session_ids = list(self._pending_p2p_backlog.keys())
 
-            total_sessions = len(snapshot)
-            total_msgs = sum(len(items) for items in snapshot.values())
+            total_sessions = len(session_ids)
             logger.info(
-                f"[PeriodicP2P] Starting periodic processing cycle: {total_msgs} message(s) across {total_sessions} session(s)..."
+                f"[PeriodicP2P] Starting periodic processing cycle across {total_sessions} session(s)..."
             )
 
-            for session_id, session_items in snapshot.items():
-                if not session_items:
-                    continue
-
-                logger.info(
-                    f"[PeriodicP2P] Processing batched session '{session_id[:12]}' ({len(session_items)} message(s))..."
-                )
-
-                # 1. Format session backlog batch (merges messages, applies compaction if long)
-                (
-                    msg_obj,
-                    all_m_ids,
-                    all_senders,
-                    all_pure_ack,
-                ) = await self._format_session_backlog_batch(session_id, session_items)
-
-                # 2. Skip LLM if all messages in batch are pure acknowledgments or 429 errors
-                if all_pure_ack:
-                    logger.info(
-                        f"[PeriodicP2P] Skipping LLM for session '{session_id[:12]}': all messages are pure acks/errors."
-                    )
-                    continue
-
-                # 3. Dispatch 'thinking' receipts for senders
-                for s_id in all_senders:
-                    for m_id in all_m_ids:
-                        if m_id and s_id != "unknown_sender":
-                            try:
-                                asyncio.create_task(p2p_service.send_receipt(s_id, m_id, "thinking"))
-                            except Exception:
-                                pass
-
-                # 4. Invoke LLM Pipeline once for this session's batch
-                try:
-                    response_text, cont_req, cont_reason = await self._run_ralph_wiggum_loop(msg_obj)
-
-                    # 5. Reply via Outbound Bus if response generated
-                    if response_text and "[NO_RESPONSE_NEEDED]" not in str(response_text) and str(response_text).strip() != "No response generated.":
-                        reply_id = str(uuid.uuid4())
-                        first_item = session_items[0]
-                        raw_msg = first_item.get("raw_msg")
-                        orig_sid = (
-                            raw_msg.metadata.get("original_session_id")
-                            if raw_msg and getattr(raw_msg, "metadata", None)
-                            else None
-                        )
-                        target_transport_id = orig_sid or session_id or "default"
-
-                        out_msg = OutboundMessage(
-                            channel="p2p",
-                            session_id=target_transport_id,
-                            content=response_text,
-                            reply_to=all_m_ids[-1] if all_m_ids else None,
-                            metadata={
-                                "message_id": reply_id,
-                                "original_session_id": target_transport_id,
-                                "batched_count": len(session_items),
-                            },
-                            is_final=True,
-                        )
-                        await self.message_bus.publish_outbound(out_msg)
-
-                        # Dual broadcast to Gateway UI
-                        await self.message_bus.publish_outbound(
-                            OutboundMessage(
-                                channel="gateway",
-                                session_id=session_id,
-                                content=response_text,
-                                type="chat",
-                                sender="agent",
-                            )
-                        )
-
-                        # Send 'replied' receipts
-                        for s_id in all_senders:
-                            for m_id in all_m_ids:
-                                if m_id and s_id != "unknown_sender":
-                                    try:
-                                        asyncio.create_task(p2p_service.send_receipt(s_id, m_id, "replied"))
-                                    except Exception:
-                                        pass
-                except Exception as e:
-                    logger.error(f"[PeriodicP2P] Error processing session batch for {session_id[:12]}: {e}", exc_info=True)
-                    for s_id in all_senders:
-                        for m_id in all_m_ids:
-                            if m_id and s_id != "unknown_sender":
-                                try:
-                                    asyncio.create_task(p2p_service.send_receipt(s_id, m_id, "failed"))
-                                except Exception:
-                                    pass
+            for session_id in session_ids:
+                await self.process_single_session_backlog(session_id)
 
         except Exception as e:
             logger.error(f"[PeriodicP2P] Uncaught exception in process_periodic_p2p_backlog: {e}", exc_info=True)
         finally:
             self._is_processing_periodic_backlog = False
 
-    def set_p2p_processing_mode(self, mode: str, interval_minutes: int = 5) -> dict[str, Any]:
+    def set_p2p_processing_mode(
+        self,
+        mode: str,
+        interval_minutes: int = 5,
+        debounce_delay_seconds: float = 30.0,
+        debounce_max_wait_seconds: float = 300.0,
+    ) -> dict[str, Any]:
         """
-        Dynamically configures P2P message processing mode ('instant' vs 'periodic').
+        Dynamically configures P2P message processing mode ('hybrid_debounce', 'periodic', 'instant').
         """
         norm_mode = mode.strip().lower()
-        if norm_mode not in ("instant", "periodic"):
-            raise ValueError(f"Invalid mode '{mode}'. Supported modes: 'instant', 'periodic'.")
+        if norm_mode not in ("instant", "periodic", "hybrid_debounce"):
+            raise ValueError(
+                f"Invalid mode '{mode}'. Supported modes: 'instant', 'periodic', 'hybrid_debounce'."
+            )
 
         old_mode = self.p2p_processing_mode
         self.p2p_processing_mode = norm_mode
         self.p2p_periodic_interval_minutes = max(1, int(interval_minutes))
+        self.p2p_debounce_delay_seconds = max(1.0, float(debounce_delay_seconds))
+        self.p2p_debounce_max_wait_seconds = max(self.p2p_debounce_delay_seconds, float(debounce_max_wait_seconds))
+
+        # Cancel any active debounce tasks if switching away from hybrid_debounce
+        if norm_mode != "hybrid_debounce":
+            for sid, t in list(self._debounce_tasks.items()):
+                if t and not t.done():
+                    t.cancel()
+            self._debounce_tasks.clear()
 
         # Dynamically reschedule job if scheduler is running
         if hasattr(self, "scheduler") and self.scheduler:
@@ -2675,16 +2803,21 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         id="periodic_p2p_batch_job",
                         replace_existing=True,
                     )
-                    logger.info(f"[AgentService] Rescheduled 'periodic_p2p_batch_job' every {self.p2p_periodic_interval_minutes}m")
+                    logger.info(
+                        f"[AgentService] Rescheduled 'periodic_p2p_batch_job' every {self.p2p_periodic_interval_minutes}m"
+                    )
             except Exception as e:
                 logger.warning(f"[AgentService] Failed to reschedule periodic_p2p_batch_job: {e}")
 
         logger.info(
-            f"[AgentService] Switched P2P processing mode: {old_mode} -> {self.p2p_processing_mode} (interval={self.p2p_periodic_interval_minutes}m)"
+            f"[AgentService] Switched P2P processing mode: {old_mode} -> {self.p2p_processing_mode} "
+            f"(interval={self.p2p_periodic_interval_minutes}m, debounce_delay={self.p2p_debounce_delay_seconds}s, max_wait={self.p2p_debounce_max_wait_seconds}s)"
         )
         return {
             "mode": self.p2p_processing_mode,
             "interval_minutes": self.p2p_periodic_interval_minutes,
+            "debounce_delay_seconds": self.p2p_debounce_delay_seconds,
+            "debounce_max_wait_seconds": self.p2p_debounce_max_wait_seconds,
             "pending_sessions_count": len(self._pending_p2p_backlog),
         }
 

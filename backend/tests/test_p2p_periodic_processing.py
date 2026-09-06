@@ -12,11 +12,21 @@ def reset_p2p_mode():
     original_mode = agent_service.p2p_processing_mode
     original_interval = agent_service.p2p_periodic_interval_minutes
     agent_service._pending_p2p_backlog.clear()
+    for t in agent_service._debounce_tasks.values():
+        if t and not t.done():
+            t.cancel()
+    agent_service._debounce_tasks.clear()
+    agent_service._session_first_arrival.clear()
     agent_service.p2p_processing_mode = "instant"
     yield
     agent_service.p2p_processing_mode = original_mode
     agent_service.p2p_periodic_interval_minutes = original_interval
     agent_service._pending_p2p_backlog.clear()
+    for t in agent_service._debounce_tasks.values():
+        if t and not t.done():
+            t.cancel()
+    agent_service._debounce_tasks.clear()
+    agent_service._session_first_arrival.clear()
 
 
 @pytest.mark.asyncio
