@@ -172,9 +172,51 @@ def fix_wsl_mtu():
             pass
 
 
+def fix_wsl_routes():
+    """
+    Fix WSL2 routing conflicts when VPN / TUN adapters (e.g. lmclient, Clash TUN on eth3 / 198.18.0.x)
+    inject a metric-0 default route that blackholes domestic endpoints in NO_PROXY
+    (like the P2P bootstrap server 113.106.87.146).
+    1. Removes conflicting default route on TUN dev (198.18.x.x / eth3) so eth0 stays default.
+    2. Adds explicit host route for bootstrap server 113.106.87.146 via physical eth0 gateway.
+    """
+    if sys.platform != "linux":
+        return
+    try:
+        import subprocess
+        res = subprocess.run(["ip", "route", "show"], capture_output=True, text=True, check=False)
+        routes = res.stdout
+        eth0_gw = None
+        for line in routes.splitlines():
+            if "dev eth0" in line and "via " in line:
+                parts = line.split()
+                if "via" in parts:
+                    idx = parts.index("via")
+                    if idx + 1 < len(parts):
+                        eth0_gw = parts[idx + 1]
+                        break
+
+        # 1. Remove conflicting default route on TUN interface if overriding eth0
+        for line in routes.splitlines():
+            if line.startswith("default via") and ("198.18." in line or "dev eth3" in line):
+                parts = line.split()
+                if "dev" in parts:
+                    dev_idx = parts.index("dev")
+                    if dev_idx + 1 < len(parts):
+                        tun_dev = parts[dev_idx + 1]
+                        subprocess.run(["sudo", "-n", "ip", "route", "del", "default", "dev", tun_dev], check=False, capture_output=True)
+
+        # 2. Add static route for bootstrap server via eth0 gateway
+        if eth0_gw:
+            subprocess.run(["sudo", "-n", "ip", "route", "replace", "113.106.87.146/32", "via", eth0_gw, "dev", "eth0"], check=False, capture_output=True)
+    except Exception:
+        pass
+
+
 # Run immediately on module import
 sanitize_proxy_env()
 fix_wsl_mtu()
+fix_wsl_routes()
 
 
 def load_dotenv_safe(dotenv_path: str = None, **kwargs):
