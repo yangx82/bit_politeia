@@ -159,8 +159,10 @@ class P2PService:
             if "timestamp" in content:
                 msg_data["timestamp"] = content["timestamp"]
 
-            if "text" in content or "data" in content:
+            if "text" in content or "data" in content or content.get("type") == "aip_archive":
                 msg_data["content"] = content
+            elif "content" in content:
+                msg_data["content"] = content["content"]
 
         if self.local_node:
             # Standardize: Always use Hex Node ID for sender_id if it's a 64-char string

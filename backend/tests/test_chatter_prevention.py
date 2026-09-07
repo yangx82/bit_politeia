@@ -234,6 +234,9 @@ async def test_process_bus_message_loop_prevention():
             
     p2p_service.local_node = MockLocalNode()
     
+    original_mode = getattr(agent_service, "p2p_processing_mode", "hybrid_debounce")
+    agent_service.p2p_processing_mode = "instant"
+
     pipeline_runs = []
     async def mock_run_loop(msg_obj):
         pipeline_runs.append(msg_obj)
@@ -287,6 +290,7 @@ async def test_process_bus_message_loop_prevention():
         p2p_service.network_manager = original_network_manager
         agent_service.history = original_history
         agent_service._run_ralph_wiggum_loop = original_run_loop
+        agent_service.p2p_processing_mode = original_mode
 
 
 if __name__ == "__main__":

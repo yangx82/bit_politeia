@@ -321,6 +321,12 @@ class Node:
                     text_payload = text_content["text"]
                 elif isinstance(text_content, str):
                     text_payload = text_content
+                elif isinstance(text_content, dict):
+                    import json
+                    try:
+                        text_payload = json.dumps(text_content, ensure_ascii=False)
+                    except Exception:
+                        text_payload = str(text_content)
                 else:
                     text_payload = str(text_content)
 

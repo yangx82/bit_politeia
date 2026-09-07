@@ -952,6 +952,8 @@ class AgentService:
                     await p2p_service.update_node_info(name=self.name)
                 else:
                     await p2p_service.initialize(node_id, p2p_endpoint, name=self.name)
+                # Reschedule daily group AIP audit now that P2P and local_node are initialized
+                self.reschedule_daily_group_aip_job()
             except Exception as pe:
                 logger.warning(f"Background P2P initialization error: {pe}")
 
@@ -2024,20 +2026,51 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             content_dict = {}
             if isinstance(msg.content, dict):
                 content_dict = msg.content
+            elif isinstance(msg.metadata, dict) and isinstance(msg.metadata.get("content"), dict):
+                content_dict = msg.metadata.get("content")
             elif isinstance(msg.content, str) and "aip_archive" in msg.content:
                 try:
                     content_dict = json.loads(msg.content)
                 except Exception:
-                    content_dict = {}
+                    try:
+                        import ast
+                        parsed = ast.literal_eval(msg.content)
+                        if isinstance(parsed, dict):
+                            content_dict = parsed
+                    except Exception:
+                        content_dict = {}
 
             is_archive_pkg = (
                 (msg.metadata and msg.metadata.get("package_type") == "aip_archive")
                 or (isinstance(content_dict, dict) and content_dict.get("type") == "aip_archive")
+                or (
+                    msg.metadata
+                    and isinstance(msg.metadata.get("content"), dict)
+                    and msg.metadata.get("content", {}).get("type") == "aip_archive"
+                )
             )
             if is_archive_pkg:
-                aip_id = content_dict.get("aip_id") or (msg.metadata or {}).get("aip_id", "unknown")
-                filename = content_dict.get("filename") or (msg.metadata or {}).get("filename") or f"AIP_{aip_id}_Archive.md"
-                md_text = content_dict.get("content") or (msg.metadata or {}).get("content", "")
+                meta_content = (msg.metadata or {}).get("content", {}) if isinstance((msg.metadata or {}).get("content"), dict) else {}
+                aip_id = (
+                    content_dict.get("aip_id")
+                    or (msg.metadata or {}).get("aip_id")
+                    or meta_content.get("aip_id", "unknown")
+                )
+                filename = (
+                    content_dict.get("filename")
+                    or (msg.metadata or {}).get("filename")
+                    or meta_content.get("filename")
+                    or f"AIP_{aip_id}_Archive.md"
+                )
+                raw_text = (
+                    content_dict.get("content")
+                    or meta_content.get("content")
+                    or (msg.metadata or {}).get("content", "")
+                )
+                if isinstance(raw_text, dict):
+                    md_text = raw_text.get("content", "") or str(raw_text)
+                else:
+                    md_text = str(raw_text)
 
                 archive_dir = os.path.join(self.data_dir, "archives")
                 os.makedirs(archive_dir, exist_ok=True)
@@ -3374,6 +3407,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 try:
                     payload = {
                         "type": "aip_archive",
+                        "package_type": "aip_archive",
                         "aip_id": top_draft.aip_id,
                         "filename": archive_filename,
                         "content": md_content,
@@ -3432,6 +3466,19 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         target_hour, rank, _, _ = self.get_node_group_rank_hour()
         if hasattr(self, "scheduler") and self.scheduler:
             try:
+                existing_job = self.scheduler.get_job("daily_group_aip_audit_job")
+                if existing_job and hasattr(existing_job, "trigger"):
+                    try:
+                        current_cron_hour = None
+                        for field in getattr(existing_job.trigger, "fields", []):
+                            if getattr(field, "name", "") == "hour":
+                                current_cron_hour = int(str(field))
+                                break
+                        if current_cron_hour == target_hour:
+                            return target_hour
+                    except Exception:
+                        pass
+
                 self.scheduler.add_job(
                     "app.services.agent_service:daily_group_aip_audit_proxy",
                     "cron",
@@ -4352,6 +4399,8 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             await p2p_service.network_manager.sync_topology()
             # Also check governance triggers
             await self.check_core_node_election_trigger()
+            # Dynamically update daily AIP audit schedule according to group ranking changes
+            self.reschedule_daily_group_aip_job()
 
     async def get_peers(self) -> list[dict]:
         """Get list of known peers from network manager."""

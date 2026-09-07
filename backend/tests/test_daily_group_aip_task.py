@@ -358,3 +358,68 @@ async def test_core_node_receives_and_saves_aip_archive(temp_evolution_dir):
     # Cleanup
     if os.path.exists(test_filepath):
         os.remove(test_filepath)
+
+
+@pytest.mark.asyncio
+async def test_core_node_receives_python_str_repr_archive(temp_evolution_dir):
+    """
+    Verify that when incoming message has Python str(dict) with single quotes
+    and metadata contains raw content dict (as produced in live P2P network),
+    it is correctly intercepted, parsed, and persisted to archives/ without triggering LLM.
+    """
+    archive_dir = os.path.join(agent_service.data_dir, "archives")
+    test_filename = "AIP_AIP-PYSTR-999_Group_Discussion_Archive_20260907.md"
+    test_filepath = os.path.join(archive_dir, test_filename)
+
+    if os.path.exists(test_filepath):
+        os.remove(test_filepath)
+
+    archive_dict = {
+        "type": "aip_archive",
+        "aip_id": "AIP-PYSTR-999",
+        "filename": test_filename,
+        "content": "# Markdown Content from Python Str Repr Message",
+        "sender_rank": 2,
+        "group_id": "grp_beta",
+    }
+    # Raw python dict string representation with single quotes: "{'type': 'aip_archive', ...}"
+    raw_python_str = str(archive_dict)
+
+    msg = InboundMessage(
+        channel="p2p",
+        sender_id="peer_rank_2",
+        session_id="peer_rank_2",
+        content=raw_python_str,
+        metadata={"message_type": "direct", "content": archive_dict, "sender_id": "peer_rank_2"},
+    )
+
+    with patch.object(agent_service, "_run_ralph_wiggum_loop", new_callable=AsyncMock) as mock_llm:
+        await agent_service.process_bus_message(msg)
+
+        # File must be written
+        assert os.path.exists(test_filepath)
+        with open(test_filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert content == "# Markdown Content from Python Str Repr Message"
+
+        # LLM must not be called
+        assert mock_llm.await_count == 0
+
+    # Cleanup
+    if os.path.exists(test_filepath):
+        os.remove(test_filepath)
+
+
+@pytest.mark.asyncio
+async def test_sync_network_triggers_reschedule():
+    """Verify that sync_network automatically reschedules the daily AIP job."""
+    with patch("app.services.agent_service.p2p_service") as mock_p2p, \
+         patch.object(agent_service, "reschedule_daily_group_aip_job") as mock_reschedule, \
+         patch.object(agent_service, "check_core_node_election_trigger", new_callable=AsyncMock):
+
+        mock_p2p._initialized = True
+        mock_p2p.network_manager.sync_topology = AsyncMock()
+
+        await agent_service.sync_network()
+
+        assert mock_reschedule.call_count == 1
