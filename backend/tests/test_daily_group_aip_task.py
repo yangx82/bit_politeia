@@ -44,18 +44,14 @@ def test_get_node_group_rank_hour_calculation():
 
         mock_p2p.network_manager.get_group.return_value = mock_group
 
+        # Inverted reputation scores: node_gamma has highest score, node_alpha has lowest
         mock_rep = MagicMock()
-        mock_rep.get_group_rankings.return_value = [
-            ("node_alpha", 95.0),
-            ("node_beta", 80.0),
-            ("node_gamma", 60.0),
-        ]
-        mock_rep.get_overall_score.side_effect = lambda nid: {"node_alpha": 95.0, "node_beta": 80.0, "node_gamma": 60.0}.get(nid, 50.0)
+        mock_rep.get_overall_score.side_effect = lambda nid: {"node_alpha": 10.0, "node_beta": 50.0, "node_gamma": 999.0}.get(nid, 50.0)
 
         with patch.object(agent_service, "reputation_manager", mock_rep):
             hour, rank, gid, core_nodes = agent_service.get_node_group_rank_hour()
 
-            # node_beta is rank 2 -> hour 2 (2 % 24)
+            # node_beta is alphabetically 2nd: ['node_alpha', 'node_beta', 'node_gamma'] -> rank 2 -> hour 2
             assert rank == 2
             assert hour == 2
             assert gid == "group_omega"
@@ -290,7 +286,7 @@ async def test_run_daily_group_aip_audit_broadcasts_and_archives_draft():
          patch("app.services.agent_service.p2p_service.send_message", new_callable=AsyncMock) as mock_send, \
          patch.object(agent_service.message_bus, "publish_outbound", new_callable=AsyncMock) as mock_pub:
 
-        res = await agent_service.run_daily_group_aip_audit()
+        res = await agent_service.run_daily_group_aip_audit(immediate_archive=True)
 
         assert res["status"] == "completed"
         assert res["aip_id"] == "AIP-DRAFT-999"
@@ -423,3 +419,138 @@ async def test_sync_network_triggers_reschedule():
         await agent_service.sync_network()
 
         assert mock_reschedule.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_initiate_daily_group_aip_discussion_phase1_only():
+    """Verify that Phase 1 initiates group discussion, sets status, and does NOT immediately send archive to core node."""
+    mock_draft = AIPProposal(
+        aip_id="AIP-PHASE1-111",
+        initiator_id="node_me",
+        title="Novel Gossip Protocol Optimization",
+        description="Phase 1 test description.",
+        target_files=["backend/app/services/p2p_service.py"],
+        proposed_diff="def gossip():\n    pass\n",
+        status="draft",
+    )
+
+    with patch.object(agent_service, "get_node_group_rank_hour", return_value=(2, 2, "grp_alpha", ["core_peer_1"])), \
+         patch.object(agent_service, "_get_local_node_id", return_value="node_me"), \
+         patch("app.services.evolution_service.evolution_service.check_recent_aip_submission", return_value=(False, None)), \
+         patch("app.services.evolution_service.evolution_service.get_most_important_draft", return_value=mock_draft), \
+         patch("app.services.agent_service.p2p_service.broadcast_to_group", new_callable=AsyncMock) as mock_broadcast, \
+         patch("app.services.agent_service.p2p_service.send_message", new_callable=AsyncMock) as mock_send, \
+         patch.object(agent_service.message_bus, "publish_outbound", new_callable=AsyncMock):
+
+        res = await agent_service.initiate_daily_group_aip_discussion()
+
+        assert res["status"] == "discussion_initiated"
+        assert res["aip_id"] == "AIP-PHASE1-111"
+        assert res["rank"] == 2
+        assert mock_draft.status == "in_discussion"
+
+        # Group broadcast called
+        assert mock_broadcast.await_count == 1
+        # P2P direct send to core node NOT called in Phase 1
+        assert mock_send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_finalize_daily_group_aip_archive_phase2_with_reviews(temp_evolution_dir):
+    """Verify that Phase 2 gathers genuine peer review records from history and archives to core node."""
+    from app.models.schemas import Message
+
+    mock_aip = AIPProposal(
+        aip_id="AIP-PHASE2-222",
+        initiator_id="node_me",
+        title="Async Buffer Compaction",
+        description="Phase 2 test description.",
+        target_files=["backend/app/services/agent_service.py"],
+        proposed_diff="def compact():\n    return True\n",
+        status="in_discussion",
+    )
+
+    agent_service._active_aip_discussions["AIP-PHASE2-222"] = {
+        "aip_id": "AIP-PHASE2-222",
+        "group_id": "grp_beta",
+        "sender_rank": 1,
+        "target_hour": 1,
+        "core_node_ids": ["core_peer_99"],
+        "started_at": datetime.now(UTC) - timedelta(minutes=10),
+        "window_minutes": 30,
+        "status": "in_discussion",
+    }
+
+    peer_msg1 = Message(
+        id="m_rev_1",
+        content="我已审阅草案 AIP-PHASE2-222，AST 结构符合安全要求，赞同该演化方案。",
+        sender="peer_viki",
+        timestamp=datetime.now(UTC) - timedelta(minutes=5),
+        session_id="grp_beta",
+    )
+    peer_msg2 = Message(
+        id="m_rev_2",
+        content="针对 AIP-PHASE2-222 建议增加并发边界条件测试。",
+        sender="peer_aristotle",
+        timestamp=datetime.now(UTC) - timedelta(minutes=2),
+        session_id="grp_beta",
+    )
+    agent_service.history.extend([peer_msg1, peer_msg2])
+
+    with patch.object(agent_service, "_get_local_node_id", return_value="node_me"), \
+         patch("app.services.evolution_service.evolution_service.aips", {"AIP-PHASE2-222": mock_aip}), \
+         patch("app.services.agent_service.p2p_service.send_message", new_callable=AsyncMock) as mock_send, \
+         patch.object(agent_service.message_bus, "publish_outbound", new_callable=AsyncMock):
+
+        res = await agent_service.finalize_daily_group_aip_archive(
+            aip_id="AIP-PHASE2-222",
+            group_id="grp_beta",
+            rank=1,
+            core_node_ids=["core_peer_99"],
+        )
+
+        assert res["status"] == "completed"
+        assert res["aip_id"] == "AIP-PHASE2-222"
+        assert mock_aip.status == "archived"
+        assert res["discussion_count"] >= 2
+
+        # Verify archive sent to core node
+        assert mock_send.await_count == 1
+        send_args = mock_send.await_args
+        payload = send_args.kwargs.get("content") or send_args.args[1]
+        assert "peer_viki" in payload["content"]
+        assert "peer_aristotle" in payload["content"]
+        assert "赞同该演化方案" in payload["content"]
+
+
+@pytest.mark.asyncio
+async def test_get_peers_includes_dynamic_reputation_and_core_status():
+    """Verify that agent_service.get_peers() returns dynamic reputation score and is_core flag."""
+    mock_node = MagicMock()
+    mock_node.name = "Viki"
+    mock_node.public_key = "pk_viki"
+    mock_node.endpoint = "http://localhost:8001"
+    mock_node.is_online = True
+    mock_node.last_seen = datetime.now(UTC)
+
+    mock_group = MagicMock()
+    mock_group.core_node_ids = ["0da9e18d_viki"]
+
+    with patch("app.services.agent_service.p2p_service") as mock_p2p:
+        mock_p2p._initialized = True
+        mock_p2p.local_node.node_id = "5a40d9e6_me"
+        mock_p2p.network_manager.nodes = {"0da9e18d_viki": mock_node}
+        mock_p2p.network_manager.groups = {"grp_1": mock_group}
+
+        mock_rep = MagicMock()
+        mock_rep.get_overall_score.return_value = 88.5
+
+        with patch.object(agent_service, "reputation_manager", mock_rep):
+            peers = await agent_service.get_peers()
+
+            assert len(peers) == 1
+            peer = peers[0]
+            assert peer["node_id"] == "0da9e18d_viki"
+            assert peer["reputation"] == 88.5
+            assert peer["is_core"] is True
+

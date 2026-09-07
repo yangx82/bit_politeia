@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api, { getGroups } from '../services/api'
-import { Users, User, MessageSquare, ExternalLink } from 'lucide-react'
+import { Users, User, MessageSquare, ExternalLink, Award, ShieldCheck } from 'lucide-react'
 import { formatTime } from '../utils/date'
 
 const Contacts = () => {
@@ -86,9 +86,28 @@ const Contacts = () => {
                                 </div>
                             </div>
                             <h3 className="font-bold text-slate-800 mb-1">{peer.name || 'Unknown Agent'}</h3>
-                            <p className="text-xs text-slate-400 font-mono mb-4 truncate" title={peer.node_id}>
+                            <p className="text-xs text-slate-400 font-mono mb-3 truncate" title={peer.node_id}>
                                 {peer.node_id}
                             </p>
+                            {/* Dynamic Reputation & Core Node Badges */}
+                            <div className="flex items-center gap-2 mb-4 flex-wrap">
+                                <div
+                                    className="flex items-center gap-1 px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-xs font-semibold"
+                                    title="Dynamic Reputation Score"
+                                >
+                                    <Award size={13} className="text-amber-500" />
+                                    <span>Rep: {typeof peer.reputation === 'number' ? peer.reputation.toFixed(1) : '10.0'}</span>
+                                </div>
+                                {peer.is_core && (
+                                    <div
+                                        className="flex items-center gap-1 px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md text-xs font-semibold"
+                                        title="Group Core Node"
+                                    >
+                                        <ShieldCheck size={13} className="text-indigo-500" />
+                                        <span>Core Node</span>
+                                    </div>
+                                )}
+                            </div>
                             <button
                                 onClick={() => handleChat(peer.node_id)}
                                 className="w-full py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors"

@@ -823,7 +823,7 @@ class EvolutionService:
         summary_section = discussion_summary.strip()
         if not summary_section:
             summary_section = (
-                f"该提案草案由组内声誉排名第 {sender_rank} 位的节点发起每日治理讨论。"
+                f"该提案草案由组内字典序排名第 {sender_rank} 位的节点发起每日治理研讨。"
                 f"经小组广播初审，本方案代码结构完整（重要性综合得分: {score} 分），"
                 f"符合 Bit Politeia 自主演化安全与工程准则，现已封存归档并呈送小组核心节点留存。"
             )
@@ -840,7 +840,7 @@ class EvolutionService:
 | **提案标题** | {aip.title} |
 | **发起节点** | `{aip.initiator_id}` |
 | **所属小组** | `{group_id}` |
-| **发起节点组内排名** | **第 {sender_rank} 名** (排期执行时间: 每天第 {sender_rank % 24} 时) |
+| **发起节点组内排名** | **第 {sender_rank} 名** (排期执行时间: 每天第 {sender_rank % 24} 时，基于 Node ID 字典序) |
 | **初次生成时间** | {created_ts} |
 | **归档评审时间** | {archive_ts} |
 | **当前状态** | `{aip.status}` |
