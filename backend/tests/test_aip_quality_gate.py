@@ -300,3 +300,91 @@ async def test_evolution_service_integration_audit_gate():
     assert vote.approval is False
     assert "P0 Quality Gate Rejected" in vote.reason
     assert "security" in vote.reason or "dangerous" in vote.reason
+
+
+def test_openalex_citation_extraction():
+    """Verify that OpenAlex Work IDs are correctly extracted from URLs and text."""
+    text = (
+        "Grounding citations: https://openalex.org/W7207867677 and openalex.org/works/W7204683431. "
+        "Also check standalone W1234567890 and arXiv:2304.03442."
+    )
+    citations = AsyncCitationVerifier.extract_citations(text)
+    assert "W7207867677" in citations
+    assert "W7204683431" in citations
+    assert "W1234567890" in citations
+    assert "2304.03442" in citations
+
+
+@pytest.mark.asyncio
+async def test_openalex_disciplinary_mismatch_rejection():
+    """Verify that non-CS disciplines (e.g. agriculture, medicine) trigger P0 disciplinary mismatch."""
+    verifier = AsyncCitationVerifier()
+
+    # Mock OpenAlex response for a biology/agriculture paper (like W7207867677)
+    mock_maize_data = {
+        "id": "https://openalex.org/W7207867677",
+        "title": "Maize crop yields under changing climate and temperature variations",
+        "abstract_inverted_index": {"Maize": [0], "crop": [1], "yields": [2]},
+        "primary_topic": {
+            "display_name": "Crop Yield Forecasting and Climate Change",
+            "domain": {"display_name": "Life Sciences"},
+            "field": {"display_name": "Agricultural and Biological Sciences"},
+        },
+        "concepts": [
+            {"display_name": "Agronomy", "level": 0, "score": 0.9},
+            {"display_name": "Biology", "level": 0, "score": 0.8},
+        ],
+    }
+
+    mock_resp = MagicMock(status_code=200)
+    mock_resp.json.return_value = mock_maize_data
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    res = await verifier.verify_citation(
+        "W7207867677",
+        claimed_topic="Adaptive TTL Cache for Vector Memory",
+        client=mock_client,
+    )
+    assert res["exists"] is True
+    assert res["relevant"] is False
+    assert res["discipline_mismatch"] is True
+    assert "Disciplinary Mismatch" in res["error"]
+    err_lower = res["error"].lower()
+    assert "life sciences" in err_lower or "agronomy" in err_lower
+
+
+@pytest.mark.asyncio
+async def test_openalex_cs_discipline_acceptance():
+    """Verify that Computer Science / AI / Distributed Systems papers on OpenAlex pass."""
+    verifier = AsyncCitationVerifier()
+
+    mock_cs_data = {
+        "id": "https://openalex.org/W9999999999",
+        "title": "Decentralized Gossip Protocols and P2P Consensus in Multi-Agent Networks",
+        "abstract_inverted_index": {"Gossip": [0], "protocols": [1], "multi-agent": [2], "consensus": [3]},
+        "primary_topic": {
+            "display_name": "Distributed Computing and Peer-to-Peer Systems",
+            "domain": {"display_name": "Physical Sciences"},
+            "field": {"display_name": "Computer Science"},
+        },
+        "concepts": [
+            {"display_name": "Computer Science", "level": 0, "score": 0.95},
+            {"display_name": "Distributed Computing", "level": 1, "score": 0.88},
+        ],
+    }
+
+    mock_resp = MagicMock(status_code=200)
+    mock_resp.json.return_value = mock_cs_data
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    res = await verifier.verify_citation(
+        "W9999999999",
+        claimed_topic="P2P Gossip Protocols and Multi-Agent Network Consensus",
+        client=mock_client,
+    )
+    assert res["exists"] is True
+    assert res["relevant"] is True
+    assert res["discipline_mismatch"] is False
+    assert res["error"] is None

@@ -84,10 +84,29 @@ class AsyncCitationVerifier:
     """
 
     ARXIV_API_BASE = "https://export.arxiv.org/api/query"
+    OPENALEX_API_BASE = "https://api.openalex.org/works"
 
     # Known hallucinated or frequently misattributed papers in agent evolution
     BLOCKLIST_CITATIONS = {
         "2408.00001": "Visual Diffusion Model paper frequently hallucinated for Cache/TTL proposals",
+    }
+
+    # Computer Science / AI / Distributed Systems disciplines approved for Agent evolution
+    CS_APPROVED_DISCIPLINES = {
+        "computer science", "artificial intelligence", "distributed computing",
+        "software engineering", "computer network", "machine learning",
+        "algorithm", "operating system", "data structure", "cryptography",
+        "peer-to-peer", "game theory", "mathematics", "information systems",
+        "human-computer interaction", "cybersecurity", "theoretical computer science",
+        "computational complexity", "database",
+    }
+
+    # Prohibited non-CS disciplines for Bit Politeia Agent protocol AIPs
+    PROHIBITED_DISCIPLINES = {
+        "medicine", "biology", "agricultural and food sciences", "agronomy",
+        "immunology", "oncology", "pathology", "pharmacology", "genetics",
+        "geology", "archaeology", "veterinary", "dermatology", "cardiology",
+        "environmental science", "crop science", "zoology",
     }
 
     # Stopwords for academic keyword relevance check
@@ -111,13 +130,15 @@ class AsyncCitationVerifier:
 
     @staticmethod
     def extract_citations(text: str) -> list[str]:
-        """Extracts arXiv IDs and DOIs from text."""
+        """Extracts arXiv IDs, DOIs, and OpenAlex Work IDs from text."""
         if not text:
             return []
         patterns = [
             r'arXiv[:\.]\s*(\d{4}\.\d{4,5}(?:v\d+)?)',
             r'arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5}(?:v\d+)?)',
             r'https?://doi\.org/([10]\.\d{4,9}/[-._;()/:A-Za-z0-9]+)',
+            r'openalex\.org/(?:works/)?(W\d+)',
+            r'(?<![A-Za-z0-9])(W\d{8,11})(?![A-Za-z0-9])',
         ]
         results = []
         for pat in patterns:
@@ -135,13 +156,14 @@ class AsyncCitationVerifier:
         client: Optional[httpx.AsyncClient] = None,
     ) -> dict[str, Any]:
         """
-        Asynchronously verifies an academic citation.
+        Asynchronously verifies an academic citation (arXiv or OpenAlex).
         Returns dict:
             exists: bool | None (None if unreachable/network error)
             title: str
             abstract: str
             relevant: bool
             is_unreachable: bool
+            discipline_mismatch: bool
             error: str | None
         """
         clean_id = re.sub(r'v\d+$', '', citation_id).strip()
@@ -154,6 +176,7 @@ class AsyncCitationVerifier:
                 "abstract": self.BLOCKLIST_CITATIONS[clean_id],
                 "relevant": False,
                 "is_unreachable": False,
+                "discipline_mismatch": False,
                 "error": f"Citation {clean_id} is blacklisted: {self.BLOCKLIST_CITATIONS[clean_id]}",
             }
 
@@ -161,16 +184,20 @@ class AsyncCitationVerifier:
         if clean_id in self._cache:
             cached = self._cache[clean_id]
             relevant = self._evaluate_relevance(claimed_topic, cached.get("title", ""), cached.get("abstract", ""))
-            return {**cached, "relevant": relevant}
+            return {**cached, "relevant": relevant and not cached.get("discipline_mismatch", False)}
 
-        # 3. Query arXiv API asynchronously
-        url = f"{self.ARXIV_API_BASE}?id_list={clean_id}&max_results=1"
         should_close = False
         if client is None:
-            client = httpx.AsyncClient(headers={"User-Agent": "BitPoliteia-QualityGate/3.0"}, timeout=self.timeout)
+            client = httpx.AsyncClient(headers={"User-Agent": "BitPoliteia-QualityGate/3.0 (mailto:agent@bitpoliteia.org)"}, timeout=self.timeout)
             should_close = True
 
         try:
+            # 3. Check if this is an OpenAlex Work ID (e.g. W7207867677)
+            if re.match(r'^W\d+$', clean_id, re.IGNORECASE):
+                return await self._verify_openalex(clean_id, claimed_topic, client)
+
+            # 4. Query arXiv API asynchronously
+            url = f"{self.ARXIV_API_BASE}?id_list={clean_id}&max_results=1"
             resp = await client.get(url)
             if resp.status_code == 429 or resp.status_code >= 500:
                 logger.warning(f"[QualityGate] arXiv API rate-limited or unavailable: {resp.status_code}")
@@ -180,6 +207,7 @@ class AsyncCitationVerifier:
                     "abstract": "",
                     "relevant": True,  # Fail-safe: don't reject on external outage
                     "is_unreachable": True,
+                    "discipline_mismatch": False,
                     "error": f"arXiv API returned HTTP {resp.status_code} (fail-safe fallback)",
                 }
 
@@ -191,6 +219,7 @@ class AsyncCitationVerifier:
                     "abstract": "",
                     "relevant": False,
                     "is_unreachable": False,
+                    "discipline_mismatch": False,
                     "error": f"Citation '{clean_id}' does not exist on arXiv",
                 }
                 self._cache[clean_id] = res
@@ -207,6 +236,7 @@ class AsyncCitationVerifier:
                     "abstract": "",
                     "relevant": False,
                     "is_unreachable": False,
+                    "discipline_mismatch": False,
                     "error": f"Entry not found in XML response for {clean_id}",
                 }
 
@@ -221,6 +251,7 @@ class AsyncCitationVerifier:
                     "abstract": "",
                     "relevant": False,
                     "is_unreachable": False,
+                    "discipline_mismatch": False,
                     "error": f"arXiv returned error title: {title}",
                 }
 
@@ -235,19 +266,21 @@ class AsyncCitationVerifier:
                 "abstract": abstract,
                 "relevant": relevant,
                 "is_unreachable": False,
+                "discipline_mismatch": False,
                 "error": None,
             }
             self._cache[clean_id] = result
             return result
 
         except (httpx.TimeoutException, httpx.ConnectError, httpx.RequestError) as e:
-            logger.warning(f"[QualityGate] arXiv API network error for {clean_id}: {e}")
+            logger.warning(f"[QualityGate] API network error for {clean_id}: {e}")
             return {
                 "exists": None,
                 "title": "",
                 "abstract": "",
                 "relevant": True,  # Fail-safe: network failure should not falsely accuse node of fraud
                 "is_unreachable": True,
+                "discipline_mismatch": False,
                 "error": f"Network unreachable during citation verification: {e}",
             }
         except Exception as e:
@@ -258,11 +291,141 @@ class AsyncCitationVerifier:
                 "abstract": "",
                 "relevant": True,
                 "is_unreachable": True,
+                "discipline_mismatch": False,
                 "error": f"Internal parser error: {e}",
             }
         finally:
             if should_close:
                 await client.aclose()
+
+    async def _verify_openalex(
+        self,
+        work_id: str,
+        claimed_topic: str,
+        client: httpx.AsyncClient,
+    ) -> dict[str, Any]:
+        """
+        Asynchronously verifies an academic citation via the OpenAlex API.
+        Enforces discipline alignment (rejects biology, medicine, agronomy, etc.).
+        """
+        clean_id = work_id.upper().strip()
+        url = f"{self.OPENALEX_API_BASE}/{clean_id}"
+        try:
+            resp = await client.get(url)
+            if resp.status_code == 404:
+                res = {
+                    "exists": False,
+                    "title": "",
+                    "abstract": "",
+                    "relevant": False,
+                    "is_unreachable": False,
+                    "discipline_mismatch": False,
+                    "error": f"Citation '{clean_id}' does not exist on OpenAlex (HTTP 404)",
+                }
+                self._cache[clean_id] = res
+                return res
+
+            if resp.status_code == 429 or resp.status_code >= 500:
+                logger.warning(f"[QualityGate] OpenAlex API rate-limited or unavailable: {resp.status_code}")
+                return {
+                    "exists": None,
+                    "title": "",
+                    "abstract": "",
+                    "relevant": True,  # Fail-safe
+                    "is_unreachable": True,
+                    "discipline_mismatch": False,
+                    "error": f"OpenAlex API returned HTTP {resp.status_code} (fail-safe fallback)",
+                }
+
+            data = resp.json()
+            title = data.get("title") or ""
+
+            # Reconstruct abstract from inverted index
+            inv = data.get("abstract_inverted_index") or {}
+            words = []
+            for w, positions in inv.items():
+                for p in positions:
+                    words.append((p, w))
+            words.sort(key=lambda x: x[0])
+            abstract = " ".join(w for _, w in words)
+
+            # Analyze disciplines from concepts and primary_topic
+            concept_names = [
+                c.get("display_name", "").lower()
+                for c in data.get("concepts", [])
+                if c.get("level", 0) <= 1
+            ]
+            primary_topic = data.get("primary_topic") or {}
+            domain_name = (primary_topic.get("domain") or {}).get("display_name", "").lower()
+            field_name = (primary_topic.get("field") or {}).get("display_name", "").lower()
+            topic_name = primary_topic.get("display_name", "").lower()
+
+            all_disciplines = set(concept_names) | {domain_name, field_name, topic_name}
+
+            has_cs_alignment = any(
+                any(cs in d for cs in self.CS_APPROVED_DISCIPLINES)
+                for d in all_disciplines if d
+            )
+            has_prohibited_mismatch = any(
+                any(prohib in d for prohib in self.PROHIBITED_DISCIPLINES)
+                for d in all_disciplines if d
+            )
+
+            if has_prohibited_mismatch and not has_cs_alignment:
+                detected_desc = f"{domain_name} / {field_name}" if domain_name else ", ".join(concept_names[:2])
+                err_msg = (
+                    f"Disciplinary Mismatch: Paper '{title[:40]}' belongs to '{detected_desc}' "
+                    f"(Prohibited non-CS discipline for Agent protocol AIPs)"
+                )
+                logger.warning(f"[QualityGate] OpenAlex disciplinary mismatch for {clean_id}: {err_msg}")
+                res = {
+                    "exists": True,
+                    "title": title,
+                    "abstract": abstract,
+                    "relevant": False,
+                    "is_unreachable": False,
+                    "discipline_mismatch": True,
+                    "discipline_detected": detected_desc,
+                    "error": err_msg,
+                }
+                self._cache[clean_id] = res
+                return res
+
+            relevant = self._evaluate_relevance(claimed_topic, title, abstract)
+            res = {
+                "exists": True,
+                "title": title,
+                "abstract": abstract,
+                "relevant": relevant,
+                "is_unreachable": False,
+                "discipline_mismatch": False,
+                "error": None if relevant else f"Academic citation '{clean_id}' is semantically irrelevant to proposal topic",
+            }
+            self._cache[clean_id] = res
+            return res
+
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.RequestError) as e:
+            logger.warning(f"[QualityGate] OpenAlex API network error for {clean_id}: {e}")
+            return {
+                "exists": None,
+                "title": "",
+                "abstract": "",
+                "relevant": True,  # Fail-safe
+                "is_unreachable": True,
+                "discipline_mismatch": False,
+                "error": f"Network unreachable during OpenAlex citation verification: {e}",
+            }
+        except Exception as e:
+            logger.error(f"[QualityGate] Unexpected OpenAlex verification failure: {e}")
+            return {
+                "exists": None,
+                "title": "",
+                "abstract": "",
+                "relevant": True,
+                "is_unreachable": True,
+                "discipline_mismatch": False,
+                "error": f"Internal OpenAlex parser error: {e}",
+            }
 
     def _evaluate_relevance(self, claimed_topic: str, title: str, abstract: str) -> bool:
         """
@@ -747,11 +910,14 @@ class QualityGateService:
                     details=cit_res.get("error"),
                 ))
             elif not cit_res.get("relevant"):
+                is_mismatch = cit_res.get("discipline_mismatch", False)
+                category = "citation_discipline_mismatch" if is_mismatch else "citation_relevance"
+                msg_prefix = "Academic citation disciplinary mismatch" if is_mismatch else "Academic citation is irrelevant"
                 issues.append(QualityIssue(
                     severity=Severity.P0,
-                    category="citation_relevance",
-                    message=f"Academic citation '{cid}' is irrelevant to proposal topic: {cit_res.get('title')}",
-                    details=f"Paper Title: {cit_res.get('title')}",
+                    category=category,
+                    message=f"{msg_prefix} for '{cid}': {cit_res.get('title')}",
+                    details=cit_res.get("error") or f"Paper Title: {cit_res.get('title')}",
                 ))
             elif cit_res.get("is_unreachable"):
                 # Fail-safe: Network error or 429 becomes P1 advisory rather than P0 crash

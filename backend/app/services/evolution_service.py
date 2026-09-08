@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -424,25 +425,140 @@ class EvolutionService:
 
         return candidate_id
 
-    def _fetch_real_literature_inspiration(self) -> dict[str, str]:
+    EVOLUTION_TRACKS = [
+        {
+            "track_id": "Track-A",
+            "name": "去中心化治理与博弈机制 (Decentralized Governance & Game Theory)",
+            "focus": "Quadratic voting calculation, dynamic reputation decay, Sybil resistance heuristics, and deterministic tally verification.",
+            "target_files": ["backend/app/p2p_community/governance.py", "backend/app/services/agent_service.py"],
+            "citations": [
+                {
+                    "title": "Quadratic Voting: How Mechanism Design Can Radicalize Democracy",
+                    "url": "https://arxiv.org/abs/1809.06421",
+                    "topic": "Quadratic Voting and Dynamic Governance Allocation",
+                },
+                {
+                    "title": "EigenTrust: Fast and Robust Distributed Reputation Management",
+                    "url": "https://arxiv.org/abs/cs/0305031",
+                    "topic": "Reputation Scoring, Decay and Anti-Sybil Defense",
+                },
+            ],
+            "component_examples": "QuadraticVotingHelper, ReputationDecayCalculator, ProposalTallyAuditor",
+        },
+        {
+            "track_id": "Track-B",
+            "name": "智能体沙箱与代码安全 (Agent Sandboxing & AST Security)",
+            "focus": "Execution timeout safeguards, bounded resource limits, dangerous AST syntax screening, and secure serialization.",
+            "target_files": ["backend/app/services/aip_quality_gate.py", "backend/app/services/evolution_service.py"],
+            "citations": [
+                {
+                    "title": "Constitutional AI: A Harmless AI Assistant through Self-Improvement",
+                    "url": "https://arxiv.org/abs/2212.08073",
+                    "topic": "Self-Supervised Safety Gates and AST Security Principles",
+                },
+                {
+                    "title": "Language Models as Zero-Shot Planners: Extracting Actionable Knowledge for Embodied Agents",
+                    "url": "https://arxiv.org/abs/2201.07207",
+                    "topic": "Action Space Sandboxing and Boundary Validation",
+                },
+            ],
+            "component_examples": "ASTSecurityFilter, ExecutionTimeoutGuard, BoundedPayloadValidator",
+        },
+        {
+            "track_id": "Track-C",
+            "name": "网络与多智能体通信 (P2P Network & Multi-Agent Protocols)",
+            "focus": "Dynamic cluster routing, priority message queues, adaptive retry backoff, and gossip broadcast storm suppression.",
+            "target_files": ["backend/app/services/p2p_service.py", "backend/app/services/p2p_dedup_batcher.py"],
+            "citations": [
+                {
+                    "title": "Decentralized Learning and Gossip Protocols in Multi-Agent Networks",
+                    "url": "https://arxiv.org/abs/2103.11005",
+                    "topic": "P2P Message Batching, Backoff and Network Congestion Control",
+                },
+                {
+                    "title": "Communication in Multi-Agent Reinforcement Learning: A Review",
+                    "url": "https://arxiv.org/abs/2208.00161",
+                    "topic": "Multi-Agent Topology and Bandwidth-Constrained Exchange",
+                },
+            ],
+            "component_examples": "PriorityMessageQueue, ClusterRoutingTable, GossipBackoffGovernor",
+        },
+        {
+            "track_id": "Track-D",
+            "name": "上下文蒸馏与记忆索引 (Context Distillation & Memory Indexing)",
+            "focus": "Hierarchical conversation summarization, semantic context pruning, LRU vector cache eviction, and resident memory distillation.",
+            "target_files": ["backend/app/services/resident_memory_service.py", "backend/app/services/context_manager.py"],
+            "citations": [
+                {
+                    "title": "MemGPT: Towards LLMs as Operating Systems",
+                    "url": "https://arxiv.org/abs/2310.08560",
+                    "topic": "Hierarchical Memory Caching and Multi-Tier Eviction",
+                },
+                {
+                    "title": "Generative Agents: Interactive Simulacra of Human Behavior",
+                    "url": "https://arxiv.org/abs/2304.03442",
+                    "topic": "Agent Memory, Reflexion and Semantic Importance Scoring",
+                },
+            ],
+            "component_examples": "HierarchicalMemoryCompactor, SemanticContextPruner, AdaptiveVectorCache",
+        },
+        {
+            "track_id": "Track-E",
+            "name": "工具执行与调度优化 (Tool Execution & Concurrency Scheduling)",
+            "focus": "Tool dependency graph execution, output compaction, graceful tool failure fallback, and adaptive pruners.",
+            "target_files": ["backend/app/services/adaptive_tool_pruner.py", "backend/app/services/agent_service.py"],
+            "citations": [
+                {
+                    "title": "Toolformer: Language Models Can Teach Themselves to Use Tools",
+                    "url": "https://arxiv.org/abs/2302.04761",
+                    "topic": "Self-Supervised Tool Calling and Output Parsing",
+                },
+                {
+                    "title": "Tree of Thoughts: Deliberate Problem Solving with Large Language Models",
+                    "url": "https://arxiv.org/abs/2305.10601",
+                    "topic": "Tool Exploration Graph and Branch Pruning",
+                },
+            ],
+            "component_examples": "ToolExecutionPipeline, ToolResultCompactor, ToolFailureFallbackHandler",
+        },
+    ]
+
+    def _select_evolution_track(self, node_id: str | None = None) -> dict[str, Any]:
         """
-        Fetches verified academic literature inspiration from the local watcher database or curated system papers.
+        Dynamically selects an evolution track based on (node_id_hash + day_of_year) % 5.
+        Guarantees that different nodes explore different tracks on any given day,
+        and individual nodes rotate tracks across days, eliminating monoculture collapse.
+        """
+        resolved_id = node_id or self._get_local_node_id()
+        clean_id = resolved_id.replace("node_", "").replace("-", "").lower()
+        node_hash = int(hashlib.sha256(clean_id.encode("utf-8")).hexdigest()[:8], 16)
+        day_of_year = datetime.now(UTC).timetuple().tm_yday
+        track_idx = (node_hash + day_of_year) % len(self.EVOLUTION_TRACKS)
+        return self.EVOLUTION_TRACKS[track_idx]
+
+    def _fetch_real_literature_inspiration(self, track: dict[str, Any] | None = None) -> dict[str, str]:
+        """
+        Fetches verified academic literature inspiration from curated system papers
+        aligned with the given evolution track or the local watcher database.
         Guarantees real, non-hallucinated academic citations for system/agent architecture evolution.
         """
+        import random
+        if track and track.get("citations"):
+            return random.choice(track["citations"])
+
+        # Fallback to local watcher DB if available
         import sqlite3
         db_path = os.path.join(self.data_dir, "watcher_history.db")
         if os.path.exists(db_path):
             try:
                 conn = sqlite3.connect(db_path)
                 cursor = conn.cursor()
-                # Query recent papers from watcher DB
                 cursor.execute(
                     "SELECT title, external_id, doi, topic FROM papers ORDER BY id DESC LIMIT 20;"
                 )
                 rows = cursor.fetchall()
                 conn.close()
                 if rows:
-                    import random
                     chosen = random.choice(rows)
                     title, ext_id, doi, topic = chosen
                     url = ext_id if ext_id and ext_id.startswith("http") else (f"https://doi.org/{doi}" if doi else "https://arxiv.org/abs/2304.03442")
@@ -454,31 +570,11 @@ class EvolutionService:
             except Exception as e:
                 logger.warning(f"[EvolutionService] Failed to query watcher_history.db: {e}")
 
-        # Curated, verified foundational citations for Agent/Distributed Systems (preventing 2408.00001 hallucination)
-        curated_sources = [
-            {
-                "title": "Generative Agents: Interactive Simulacra of Human Behavior",
-                "url": "https://arxiv.org/abs/2304.03442",
-                "topic": "Agent Memory, Reflexion & Context Management",
-            },
-            {
-                "title": "MemGPT: Towards LLMs as Operating Systems",
-                "url": "https://arxiv.org/abs/2310.08560",
-                "topic": "Hierarchical Memory Caching & Multi-tier Eviction",
-            },
-            {
-                "title": "Decentralized Learning and Gossip Protocols in Multi-Agent Networks",
-                "url": "https://arxiv.org/abs/2103.11005",
-                "topic": "P2P Message Batching, Backoff & DAG Consensus",
-            },
-            {
-                "title": "Tree of Thoughts: Deliberate Problem Solving with Large Language Models",
-                "url": "https://arxiv.org/abs/2305.10601",
-                "topic": "Tool Result Pruning & Cognitive Exploration",
-            },
-        ]
-        import random
-        return random.choice(curated_sources)
+        # Curated cross-track fallback
+        all_curated = []
+        for t in self.EVOLUTION_TRACKS:
+            all_curated.extend(t.get("citations", []))
+        return random.choice(all_curated)
 
     def _pre_flight_consistency_audit(
         self,
@@ -675,18 +771,41 @@ class EvolutionService:
     def calculate_draft_importance_score(self, aip: AIPProposal) -> float:
         """
         Computes a multi-dimensional importance score for an AIP draft:
-        1. Code volume & structural complexity (LOC of proposed_diff).
+        0. AST Syntax Validity Hard Gate (SyntaxError / truncation immediately receives 0.0).
+        1. Code volume & conciseness (rewards atomic 40-180 LOC, penalizes >300 LOC truncation risk).
         2. Target files criticality (higher weight for core architecture components).
         3. Academic research grounding (citations count).
-        4. Quality verification indicators (unit test assertions, quality report).
-        5. Recency and revision state bonuses.
+        4. Quality verification indicators (unit test assertions and test functions).
+        5. Status bonuses (revised_draft bonus, preflight_rejected hard disqualification).
+        6. Recency and revision state bonuses.
         """
+        clean_code = (aip.proposed_diff or "").strip()
+        if not clean_code:
+            return 0.0
+
+        if aip.status == "preflight_rejected":
+            return 0.0
+
+        # 0. Pre-flight AST Syntax Check & Disqualification Gate
+        try:
+            import ast
+            parsed_tree = ast.parse(clean_code)
+        except SyntaxError:
+            # Syntax error / truncated code is strictly disqualified (0.0 points)
+            return 0.0
+
         score = 0.0
 
-        # 1. Code volume
-        clean_code = (aip.proposed_diff or "").strip()
+        # 1. Code volume & conciseness (Reward atomic implementations 40-180 LOC, penalize >300 LOC truncation risk)
         loc = len([l for l in clean_code.splitlines() if l.strip() and not l.strip().startswith("#")])
-        score += min(loc, 300) * 0.2  # Up to 60 points
+        if 40 <= loc <= 180:
+            score += 30.0  # Optimal sweet spot for atomic enhancement
+        elif loc < 40:
+            score += max(5.0, loc * 0.5)  # Small atomic helper
+        elif 180 < loc <= 300:
+            score += max(15.0, 30.0 - (loc - 180) * 0.1)  # Declining score for bloated code
+        else:
+            score += 5.0  # High truncation risk penalty
 
         # 2. Target files criticality
         critical_modules = {
@@ -708,8 +827,9 @@ class EvolutionService:
         score += len(aip.research_sources or []) * 15.0
 
         # 4. Self-contained unit tests
-        has_tests = any(kw in clean_code for kw in ["assert ", "pytest", "unittest", "def test_"])
-        if has_tests:
+        has_test_keywords = any(kw in clean_code for kw in ["assert ", "pytest", "unittest", "def test_"])
+        has_ast_assert = any(isinstance(n, ast.Assert) for n in ast.walk(parsed_tree))
+        if has_test_keywords or has_ast_assert:
             score += 20.0
 
         # 5. Status weight
@@ -717,8 +837,8 @@ class EvolutionService:
             score += 15.0  # Already revised based on audit feedback
         elif aip.status == "draft":
             score += 10.0
-        elif aip.status == "preflight_rejected":
-            score -= 15.0
+        elif aip.status == "stalled":
+            score += 5.0
 
         # 6. Recency bonus (within 24h: up to +5 points based on freshness)
         try:
@@ -739,6 +859,7 @@ class EvolutionService:
         """
         Scans unsubmitted drafts created in the last `hours` (or falls back to all unsubmitted drafts),
         ranks them by the multi-dimensional importance score, and returns the top draft.
+        Rejects candidates with non-positive scores (syntax errors or preflight rejection).
         """
         resolved_initiator = initiator_id or self._get_local_node_id()
         raw_prefix = resolved_initiator.replace("node_", "").replace("-", "")[:4].upper()
@@ -789,6 +910,14 @@ class EvolutionService:
 
         top_draft = ranked_candidates[0]
         top_score = self.calculate_draft_importance_score(top_draft)
+
+        if top_score <= 0.0:
+            logger.warning(
+                f"[EvolutionService] Top candidate draft {top_draft.aip_id} has invalid/zero score ({top_score}), "
+                f"indicating AST syntax truncation or pre-flight rejection. No viable draft available for group discussion."
+            )
+            return None
+
         logger.info(
             f"[EvolutionService] Selected top draft {top_draft.aip_id} ('{top_draft.title}') "
             f"with importance score {top_score} among {len(candidates)} candidate(s)."
@@ -932,8 +1061,21 @@ class EvolutionService:
             return None
 
         try:
-            # Step 1: Fetch real academic literature inspiration & recent reflection lessons
-            lit_item = self._fetch_real_literature_inspiration()
+            # Step 1: Resolve initiator ID and select dynamic evolution track
+            initiator_id = self._get_local_node_id()
+            if agent_service:
+                if hasattr(agent_service, "node_id") and agent_service.node_id:
+                    initiator_id = agent_service.node_id
+
+            track = self._select_evolution_track(initiator_id)
+            track_id = track.get("track_id", "Track-D")
+            track_name = track.get("name", "")
+            track_focus = track.get("focus", "")
+            track_targets = track.get("target_files") or ["backend/app/services/agent_service.py"]
+            track_examples = track.get("component_examples", "ComponentHelper")
+
+            # Step 2: Fetch real academic literature inspiration & recent reflection lessons
+            lit_item = self._fetch_real_literature_inspiration(track=track)
             lit_title = lit_item.get("title", "")
             lit_url = lit_item.get("url", "")
             lit_topic = lit_item.get("topic", "")
@@ -943,53 +1085,56 @@ class EvolutionService:
             if lessons:
                 lessons_text = "\n\n【历史失败教训与禁区 (Lessons Learned - 必须严格规避，不得重复犯错)】:\n" + "\n".join(lessons)
 
-            # Step 2: Architecture Planning Prompt
+            # Step 3: Architecture Planning Prompt tailored to selected dynamic track
+            first_example = track_examples.split(",")[0].strip()
             plan_prompt = (
                 f"You are the Lead Architecture Planner for Bit Politeia (a decentralized P2P AI Agent framework).\n"
-                f"We are driving autonomous evolution grounded in verified academic research:\n"
-                f"- Grounding Paper: \"{lit_title}\" ({lit_url})\n"
-                f"- Domain Topic: {lit_topic}\n"
+                f"We are driving autonomous evolution on track: [{track_id}] {track_name}\n"
+                f"- Primary Track Focus: {track_focus}\n"
+                f"- Suggested Target Files: {track_targets}\n"
+                f"- Expected Component Types: {track_examples}\n"
+                f"- Grounding Verified Academic Paper: \"{lit_title}\" ({lit_url})\n"
+                f"- Academic Domain: {lit_topic}\n"
                 f"{lessons_text}\n\n"
-                f"Design a concrete, highly actionable Agent Improvement Proposal (AIP) addressing bottlenecks in Bit Politeia:\n"
-                f"1. Memory compaction, TTL adaptivity, or LRU vector caching\n"
-                f"2. P2P Gossip deduplication, message batching, and backoff\n"
-                f"3. Context window efficiency and tool execution pruning\n\n"
+                f"Design a concrete, highly actionable Agent Improvement Proposal (AIP) for this specific track.\n"
+                f"IMPORTANT: The proposal MUST be an atomic enhancement (50-150 lines of code), NOT a massive overhaul.\n\n"
                 f"Return strictly valid JSON matching this schema:\n"
                 f"{{\n"
-                f'  "title": "Concise specific title (e.g. Adaptive TTL Cache Hint for Vector Memory)",\n'
+                f'  "title": "Concise specific title (e.g. {first_example} for Bit Politeia)",\n'
                 f'  "description": "2-3 sentences explaining architectural benefit and explicitly declaring Scope/Non-Goals",\n'
-                f'  "target_files": ["backend/app/services/agent_service.py"],\n'
-                f'  "coding_specification": "Detailed specification: class/function signatures, input validation with max/min, threading.Lock thread-safety, docstrings, and unit test requirements."\n'
+                f'  "target_files": {json.dumps(track_targets)},\n'
+                f'  "coding_specification": "Detailed specification: class/function signatures, input validation with max/min, threading.Lock thread-safety, docstrings, and 2-3 focused unit test assertions."\n'
                 f"}}\n\n"
                 f"IMPORTANT: Output ONLY the raw JSON object. Do not output conversational preambles."
             )
             plan_json = await _invoke_llm_json(llm_client, plan_prompt)
 
-            title = plan_json.get("title", f"Adaptive Vector Caching based on {lit_title[:30]}")
+            title = plan_json.get("title", f"{first_example} based on {lit_title[:30]}")
             description = plan_json.get(
                 "description",
-                f"Implements adaptive caching inspired by {lit_title}. Provides bounded TTL scaling and thread-safe eviction."
+                f"Implements atomic {track_name} component inspired by {lit_title}. Provides bounded validation and thread-safety."
             )
-            target_files = plan_json.get("target_files") or ["backend/app/services/agent_service.py"]
-            coding_spec = plan_json.get("coding_specification") or "Implement thread-safe adaptive TTL calculation with input bounds checking."
+            target_files = plan_json.get("target_files") or track_targets
+            coding_spec = plan_json.get("coding_specification") or f"Implement thread-safe {title} with input bounds checking."
 
-            # Step 3: Coding Sub-Agent Execution / Specialized Low-Temp Coding Prompt
+            # Step 4: Coding Sub-Agent Execution with Strict Length & Truncation Bounds
             code_prompt = (
                 f"You are the Specialized Coding Sub-Agent for Bit Politeia.\n"
-                f"TASK: Write production-ready, thread-safe Python code implementing the following specification:\n"
+                f"TASK: Write production-ready, thread-safe Python code implementing the following atomic specification:\n"
+                f"Track: [{track_id}] {track_name}\n"
                 f"Title: {title}\n"
                 f"Target Files: {target_files}\n"
                 f"Specification: {coding_spec}\n"
                 f"{lessons_text}\n\n"
-                f"MANDATORY QUALITY CRITERIA:\n"
-                f"1. Thread Safety: Use `threading.Lock()` or async primitives if maintaining state.\n"
-                f"2. Input Validation: Explicit bounds checking (e.g. `hit_rate = max(0.0, min(1.0, float(hit_rate)))`).\n"
-                f"3. Error Handling: Graceful fallback without crashing.\n"
-                f"4. Unit Tests: Include self-contained unit test function or assertion block.\n"
-                f"5. Complete Code: Provide fully executable, non-truncated Python code. Do NOT output pseudocode or '// TODO'.\n\n"
+                f"CRITICAL CODE SCALE & QUALITY CONSTRAINTS (STRICT):\n"
+                f"1. Code Length: The code MUST be between 50 and 150 lines. Do NOT write oversized bloated code that gets truncated by token limits.\n"
+                f"2. Thread Safety: Use `threading.Lock()` or `threading.RLock()` if maintaining mutable internal state.\n"
+                f"3. Defensive Validation: Explicit bounds checking on all inputs (e.g. `rate = max(0.0, min(1.0, float(rate)))`).\n"
+                f"4. Minimalist Focused Unit Tests: Include exactly 2 to 3 self-contained assertion statements or a small test function (`def test_...()`). Do NOT generate 10+ test cases.\n"
+                f"5. Complete Syntax: Ensure every class, function, and block is fully closed and valid Python syntax without trailing cuts.\n\n"
                 f"Output strictly valid JSON:\n"
                 f"{{\n"
-                f'  "proposed_diff": "Complete valid Python code with imports, class/functions, and tests."\n'
+                f'  "proposed_diff": "Complete valid Python code with imports, atomic class/functions, and 2-3 tests (50-150 LOC)."\n'
                 f"}}\n"
                 f"Output ONLY the raw JSON object."
             )
@@ -1019,7 +1164,12 @@ class EvolutionService:
                     "            if hit:\n"
                     "                self._stats['hits'] += 1\n"
                     "            else:\n"
-                    "                self._stats['misses'] += 1\n"
+                    "                self._stats['misses'] += 1\n\n"
+                    "def test_adaptive_cache_hint():\n"
+                    "    hint = AdaptiveCacheHint(base_ttl=300, max_ttl=600)\n"
+                    "    assert hint.calculate_ttl(0.5) == 450\n"
+                    "    hint.record_access(True)\n"
+                    "    assert hint._stats['hits'] == 1\n"
                 )
 
             # Prevent duplicate proposal submission
