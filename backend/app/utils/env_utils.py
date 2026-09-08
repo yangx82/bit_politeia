@@ -160,16 +160,23 @@ def sanitize_proxy_env():
 
 
 def fix_wsl_mtu():
-    """Ensure WSL2 eth0 MTU is clamped to <= 1400 to prevent TLS handshake packet drop under VPN/TUN."""
-    if sys.platform == "linux" and os.path.exists("/sys/class/net/eth0/mtu"):
-        try:
-            with open("/sys/class/net/eth0/mtu") as f:
-                cur_mtu = int(f.read().strip())
-            if cur_mtu > 1400:
-                import subprocess
-                subprocess.run(["sudo", "-n", "ip", "link", "set", "dev", "eth0", "mtu", "1400"], check=False, capture_output=True)
-        except Exception:
-            pass
+    """Ensure WSL2 network interfaces (eth0, eth3, etc.) MTU are clamped to <= 1400 to prevent TLS handshake packet drop under VPN/TUN."""
+    if sys.platform != "linux":
+        return
+    import glob
+    import subprocess
+    try:
+        for mtu_path in glob.glob("/sys/class/net/eth*/mtu"):
+            dev_name = os.path.basename(os.path.dirname(mtu_path))
+            try:
+                with open(mtu_path) as f:
+                    cur_mtu = int(f.read().strip())
+                if cur_mtu > 1400:
+                    subprocess.run(["sudo", "-n", "ip", "link", "set", "dev", dev_name, "mtu", "1400"], check=False, capture_output=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def fix_wsl_routes():
@@ -177,8 +184,11 @@ def fix_wsl_routes():
     Fix WSL2 routing conflicts when VPN / TUN adapters (e.g. lmclient, Clash TUN on eth3 / 198.18.0.x)
     inject a metric-0 default route that blackholes domestic endpoints in NO_PROXY
     (like the P2P bootstrap server 113.106.87.146).
-    1. Removes conflicting default route on TUN dev (198.18.x.x / eth3) so eth0 stays default.
-    2. Adds explicit host route for bootstrap server 113.106.87.146 via physical eth0 gateway.
+    1. Discovers physical eth0 gateway and adds static route for bootstrap server 113.106.87.146.
+    2. Detects TUN device (dev eth3 or 198.18.x.x) and gateway (e.g. 198.18.0.2).
+    3. Explicitly routes Clash/VPN Fake-IP pool (198.18.0.0/15) via the TUN dev, so that domains
+       resolving to Fake-IPs (like DashScope, Feishu) reach the TUN proxy instead of being dropped by eth0.
+    4. Removes conflicting default route on TUN dev so eth0 stays the default gateway for public IP traffic.
     """
     if sys.platform != "linux":
         return
@@ -187,28 +197,48 @@ def fix_wsl_routes():
         res = subprocess.run(["ip", "route", "show"], capture_output=True, text=True, check=False)
         routes = res.stdout
         eth0_gw = None
-        for line in routes.splitlines():
-            if "dev eth0" in line and "via " in line:
-                parts = line.split()
-                if "via" in parts:
-                    idx = parts.index("via")
-                    if idx + 1 < len(parts):
-                        eth0_gw = parts[idx + 1]
-                        break
+        tun_dev = None
+        tun_gw = None
 
-        # 1. Remove conflicting default route on TUN interface if overriding eth0
         for line in routes.splitlines():
-            if line.startswith("default via") and ("198.18." in line or "dev eth3" in line):
-                parts = line.split()
+            parts = line.split()
+            if "dev eth0" in line and "via" in parts:
+                idx = parts.index("via")
+                if idx + 1 < len(parts):
+                    eth0_gw = parts[idx + 1]
+            if "198.18." in line or "dev eth3" in line:
                 if "dev" in parts:
                     dev_idx = parts.index("dev")
                     if dev_idx + 1 < len(parts):
                         tun_dev = parts[dev_idx + 1]
-                        subprocess.run(["sudo", "-n", "ip", "route", "del", "default", "dev", tun_dev], check=False, capture_output=True)
+                if "via" in parts:
+                    via_idx = parts.index("via")
+                    if via_idx + 1 < len(parts):
+                        tun_gw = parts[via_idx + 1]
 
-        # 2. Add static route for bootstrap server via eth0 gateway
+        # If tun_gw not found in routes, check for peer or default to 198.18.0.2
+        if tun_dev and not tun_gw:
+            addr_res = subprocess.run(["ip", "-4", "addr", "show", "dev", tun_dev], capture_output=True, text=True, check=False)
+            if "198.18.0.1" in addr_res.stdout:
+                tun_gw = "198.18.0.2"
+
+        # 1. Add static route for bootstrap server via physical eth0 gateway
         if eth0_gw:
             subprocess.run(["sudo", "-n", "ip", "route", "replace", "113.106.87.146/32", "via", eth0_gw, "dev", "eth0"], check=False, capture_output=True)
+
+        # 2. Explicitly route Fake-IP pool (198.18.0.0/15) to TUN interface
+        if tun_dev and tun_gw:
+            subprocess.run(["sudo", "-n", "ip", "route", "replace", "198.18.0.0/15", "via", tun_gw, "dev", tun_dev], check=False, capture_output=True)
+
+        # 3. Remove conflicting default route on TUN interface if overriding eth0
+        for line in routes.splitlines():
+            if line.startswith("default via") and ("198.18." in line or (tun_dev and f"dev {tun_dev}" in line)):
+                parts = line.split()
+                if "dev" in parts:
+                    dev_idx = parts.index("dev")
+                    if dev_idx + 1 < len(parts):
+                        d = parts[dev_idx + 1]
+                        subprocess.run(["sudo", "-n", "ip", "route", "del", "default", "dev", d], check=False, capture_output=True)
     except Exception:
         pass
 
