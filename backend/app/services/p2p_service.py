@@ -1,12 +1,14 @@
 import asyncio
 import datetime
 import logging
+import os
 from typing import Any
 
 from ..p2p_community.message_protocol import MessageProtocol, MessageType
 from ..p2p_community.models import Node
 from ..p2p_community.network_manager import NetworkManager
 from .crypto_service import crypto_service
+from .p2p_dedup_batcher import GossipDeduplicationBatcher
 from .webrtc_service import WebRTCManager
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,12 @@ class P2PService:
         self.processed_signaling_ids: set[str] = set()  # Store message_ids of sdp/ice messages
         self.early_messages: list[dict[str, Any]] = []  # Buffer for messages before initialization
         self._initialized = False
+
+        # Outbound Gossip Deduplication & Exponential Backoff Batcher
+        self.gossip_batcher = GossipDeduplicationBatcher(
+            base_backoff_seconds=float(os.getenv("GOSSIP_BASE_BACKOFF_SECONDS", "5.0")),
+            max_backoff_seconds=float(os.getenv("GOSSIP_MAX_BACKOFF_SECONDS", "300.0")),
+        )
 
         # Heartbeat mechanism for connection health monitoring
         self._heartbeat_task: asyncio.Task | None = None
@@ -335,6 +343,15 @@ class P2PService:
             group_id = msg_obj.recipient_id
             sender_id = msg_obj.sender_id
 
+            # GDB Check: suppress duplicate gossip forwarding to prevent loops/amplification
+            allowed, delay, _ = self.gossip_batcher.should_broadcast(msg_obj)
+            if not allowed:
+                logger.debug(
+                    f"[GDB] Suppressed duplicate gossip forward for {event_type} to group {group_id} "
+                    f"(backoff remaining: {delay:.1f}s)"
+                )
+                return
+
             # Forward to group members (excluding original sender and self)
             await self.network_manager._gossip_broadcast(msg_obj, group_id, exclude_sender=True)
 
@@ -387,6 +404,12 @@ class P2PService:
 
                 if dead_peers:
                     logger.info(f"[Heartbeat] Cleaned up {len(dead_peers)} dead peer(s)")
+
+                # Periodic GDB stale hashes cleanup
+                try:
+                    self.gossip_batcher.cleanup_stale_hashes(max_age_seconds=1800)
+                except Exception:
+                    pass
 
             except asyncio.CancelledError:
                 logger.info("Heartbeat loop cancelled")
@@ -461,6 +484,16 @@ class P2PService:
         if not self.local_node:
             raise RuntimeError("P2PService not initialized")
 
+        # GDB Check: outbound broadcast deduplication
+        allowed, delay, _ = self.gossip_batcher.should_broadcast(
+            {"group_id": group_id, "text": text, "subject": subject}
+        )
+        if not allowed:
+            logger.warning(
+                f"[GDB] Suppressed duplicate group broadcast to {group_id} (backoff remaining: {delay:.1f}s)"
+            )
+            return {"success": False, "reason": "suppressed_by_gdb", "backoff_delay": delay}
+
         content = {"text": text, "subject": subject}
         return await self.local_node.send_message(
             group_id, content, MessageType.GROUP.value, message_id=message_id, timestamp=timestamp
@@ -497,6 +530,16 @@ class P2PService:
         """
         if not self.local_node:
             raise RuntimeError("P2PService not initialized")
+
+        # GDB Check: outbound governance broadcast deduplication
+        allowed, delay, _ = self.gossip_batcher.should_broadcast(
+            {"group_id": group_id, "event_type": event_type, "data": data}
+        )
+        if not allowed:
+            logger.warning(
+                f"[GDB] Suppressed duplicate governance broadcast ({event_type}) to {group_id} (backoff remaining: {delay:.1f}s)"
+            )
+            return False
 
         if event_type == "proposal":
             msg_type = MessageType.PROPOSAL
