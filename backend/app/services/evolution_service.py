@@ -853,7 +853,14 @@ class EvolutionService:
         except Exception:
             pass
 
-        return round(score, 2)
+        # 7. Anti-overengineering & Minimalist Architecture Bonus (Ponytail Principle)
+        class_defs = [n for n in ast.walk(parsed_tree) if isinstance(n, ast.ClassDef)]
+        if len(class_defs) <= 2:
+            score += 10.0  # Reward focused atomic architecture
+        else:
+            score -= 5.0 * (len(class_defs) - 2)  # Penalize multi-class sprawl / over-engineering
+
+        return round(max(0.0, score), 2)
 
     def get_most_important_draft(self, hours: int = 24, initiator_id: str | None = None) -> AIPProposal | None:
         """
@@ -1096,8 +1103,13 @@ class EvolutionService:
                 f"- Grounding Verified Academic Paper: \"{lit_title}\" ({lit_url})\n"
                 f"- Academic Domain: {lit_topic}\n"
                 f"{lessons_text}\n\n"
+                f"PONYTAIL MINIMALIST ARCHITECTURE PRINCIPLES (The Ladder - Anti-Over-Engineering):\n"
+                f"1. Does this speculative complexity need to exist at all? (YAGNI -> omit it). Solve real immediate bottlenecks, not hypothetical future needs.\n"
+                f"2. Reuse existing utils, models, and types in Bit Politeia. Do not re-implement what already exists.\n"
+                f"3. Prioritize standard library (collections, dataclasses, functools, hashlib, itertools, math, typing) over external dependencies.\n"
+                f"4. NO unrequested abstractions: NO single-implementation interfaces, NO single-product factories, NO redundant wrapper classes.\n"
+                f"5. Atomic Enhancement: The proposal MUST be 50-150 lines of code, NOT a massive overhaul.\n\n"
                 f"Design a concrete, highly actionable Agent Improvement Proposal (AIP) for this specific track.\n"
-                f"IMPORTANT: The proposal MUST be an atomic enhancement (50-150 lines of code), NOT a massive overhaul.\n\n"
                 f"Return strictly valid JSON matching this schema:\n"
                 f"{{\n"
                 f'  "title": "Concise specific title (e.g. {first_example} for Bit Politeia)",\n'
@@ -1126,12 +1138,14 @@ class EvolutionService:
                 f"Target Files: {target_files}\n"
                 f"Specification: {coding_spec}\n"
                 f"{lessons_text}\n\n"
-                f"CRITICAL CODE SCALE & QUALITY CONSTRAINTS (STRICT):\n"
-                f"1. Code Length: The code MUST be between 50 and 150 lines. Do NOT write oversized bloated code that gets truncated by token limits.\n"
-                f"2. Thread Safety: Use `threading.Lock()` or `threading.RLock()` if maintaining mutable internal state.\n"
-                f"3. Defensive Validation: Explicit bounds checking on all inputs (e.g. `rate = max(0.0, min(1.0, float(rate)))`).\n"
-                f"4. Minimalist Focused Unit Tests: Include exactly 2 to 3 self-contained assertion statements or a small test function (`def test_...()`). Do NOT generate 10+ test cases.\n"
-                f"5. Complete Syntax: Ensure every class, function, and block is fully closed and valid Python syntax without trailing cuts.\n\n"
+                f"CRITICAL CODE SCALE & QUALITY CONSTRAINTS (STRICT PONYTAIL RULES):\n"
+                f"1. The Ladder: Stdlib first, native syntax, existing codebase patterns. The best code is the code you never wrote.\n"
+                f"2. Code Length: The code MUST be between 50 and 150 lines. Do NOT write oversized bloated code that gets truncated by token limits.\n"
+                f"3. Zero Over-Engineering: No boilerplate, no scaffolding 'for later', no single-implementation abstract base classes. Keep to 1-2 focused classes.\n"
+                f"4. Thread Safety: Use `threading.Lock()` or `threading.RLock()` if maintaining mutable internal state.\n"
+                f"5. Defensive Validation: Explicit bounds checking on all inputs (e.g. `rate = max(0.0, min(1.0, float(rate)))`).\n"
+                f"6. Minimalist Focused Unit Tests: Include exactly 2 to 3 self-contained assertion statements or a small test function (`def test_...()`). Do NOT generate 10+ test cases.\n"
+                f"7. Complete Syntax: Ensure every class, function, and block is fully closed and valid Python syntax without trailing cuts.\n\n"
                 f"Output strictly valid JSON:\n"
                 f"{{\n"
                 f'  "proposed_diff": "Complete valid Python code with imports, atomic class/functions, and 2-3 tests (50-150 LOC)."\n'
@@ -1223,6 +1237,9 @@ class EvolutionService:
                 f"Description: {aip.description}\n"
                 f"Target Files: {aip.target_files}\n"
                 f"Proposed Diff:\n{aip.proposed_diff}\n\n"
+                "PONYTAIL ROOT-CAUSE REVISION PRINCIPLE:\n"
+                "Fix the root cause, not the symptom. The lazy fix IS the root-cause fix.\n"
+                "Use the simplest minimal diff that directly resolves the feedback. Do NOT wrap existing code in unnecessary new classes or add speculative boilerplate.\n\n"
                 "Please systematically address EVERY issue identified in the audit feedback and produce a revised, production-ready proposal.\n"
                 "Return strictly valid JSON matching this schema:\n"
                 "{\n"
@@ -1377,12 +1394,13 @@ class EvolutionService:
 
     async def audit_aip(self, aip_id: str, llm_client: Any = None) -> Vote:
         """
-        Audits an AIP proposal using the 5-Dimension Autonomous Governance Standards:
+        Audits an AIP proposal using the 6-Dimension Autonomous Governance Standards:
         1. Description vs Code Consistency (Weight: Highest)
         2. Code Quality & Thread Safety (Weight: High)
         3. Research Citation Authenticity & Relevance (Weight: High)
         4. Sandbox Verification & Syntax (Weight: Medium)
         5. Scope Transparency & Honesty (Weight: Medium)
+        6. Anti-Over-Engineering & Ponytail Minimalism (Weight: High)
         Returns a signed Vote with approval status and rigorous technical reasoning.
         """
         import ast
@@ -1465,17 +1483,31 @@ class EvolutionService:
         if has_scope_tag:
             positive_factors.append("Honest Scope-Corrected boundary declaration")
 
+        # --- Dimension 6: Anti-Over-Engineering & Ponytail Minimalism ---
+        try:
+            parsed = ast.parse(code)
+            classes = [n for n in ast.walk(parsed) if isinstance(n, ast.ClassDef)]
+            if len(classes) >= 4:
+                rejection_reasons.append(
+                    f"Dimension 6: Excessive Over-Engineering / Class Sprawl — proposed diff defines {len(classes)} classes in a single atomic AIP. Simplify architecture to 1-2 focused classes (Ponytail Standard)."
+                )
+            elif len(classes) <= 2:
+                positive_factors.append("Ponytail minimalist architecture (<=2 classes)")
+        except Exception:
+            pass
+
         # --- LLM Semantic Review (if client available and no rule violations yet) ---
         if not rejection_reasons and llm_client:
             try:
                 prompt = (
                     f"You are the Lead Auditor of the Bit Politeia Technical Governance Committee.\n"
-                    f"Audit this Agent Architecture Improvement Proposal across 5 dimensions:\n"
+                    f"Audit this Agent Architecture Improvement Proposal across 6 dimensions:\n"
                     f"1. Description vs Code Consistency (does the diff fulfill the description?)\n"
                     f"2. Code Quality & Thread Safety (bounds checking, locks, exception handling)\n"
                     f"3. Research Authenticity (relevant citations)\n"
                     f"4. Sandbox Executability\n"
-                    f"5. Scope Honesty\n\n"
+                    f"5. Scope Honesty\n"
+                    f"6. Anti-Over-Engineering & Ponytail Minimalism (reject unneeded abstractions, single-impl interfaces, class sprawl, and standard library reinvention)\n\n"
                     f"Title: {aip.title}\n"
                     f"Description: {aip.description}\n"
                     f"Target Files: {aip.target_files}\n"
@@ -1486,7 +1518,7 @@ class EvolutionService:
                 )
                 res_json = await _invoke_llm_json(llm_client, prompt)
                 approved = res_json.get("approved", True)
-                reason = res_json.get("reason", "Passed 5-dimension autonomous audit")
+                reason = res_json.get("reason", "Passed 6-dimension autonomous audit")
                 if not approved:
                     return Vote(voter_id="self", approval=False, reason=reason)
             except Exception as e:
@@ -1496,7 +1528,7 @@ class EvolutionService:
             reason_msg = "❌ Audit Rejected: " + "; ".join(rejection_reasons)
             return Vote(voter_id="self", approval=False, reason=reason_msg)
 
-        reason_msg = "✅ Audit Approved: " + (", ".join(positive_factors) if positive_factors else "Passed all 5-dimension quality standards")
+        reason_msg = "✅ Audit Approved: " + (", ".join(positive_factors) if positive_factors else "Passed all 6-dimension quality standards")
         return Vote(voter_id="self", approval=True, reason=reason_msg)
 
     async def verify_in_sandbox(self, aip_id: str) -> dict[str, Any]:
