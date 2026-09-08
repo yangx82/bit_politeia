@@ -1297,3 +1297,188 @@ def test_adaptive_pruner():
 
 if __name__ == "__main__":
     test_adaptive_pruner()
+
+
+# ========================================================
+# [Autonomous Evolution Patch] AIP-5A40-672A7E: PriorityMemoryBuffer: Bounded Context Management with Priority-Based Eviction
+# ========================================================
+# PriorityMemoryBuffer - Bounded context management with priority eviction
+# NOTE: This is NOT LLM-driven distillation. It's a priority queue with concatenation.
+# For true MemGPT-style LLM self-editing, a different architecture is needed.
+
+import threading
+import time
+from typing import List, Dict, Optional
+from dataclasses import dataclass, field
+
+
+@dataclass
+class MemoryEntry:
+    content: str
+    timestamp: float = field(default_factory=time.time)
+    importance: float = 1.0
+
+
+class PriorityMemoryBuffer:
+    """Thread-safe bounded memory buffer with priority-based eviction.
+    
+    Manages two tiers: working (hot) and archival (cold).
+    When working memory exceeds capacity, low-importance entries are
+    evicted to archival via concatenation (NOT LLM summarization).
+    """
+
+    def __init__(self, working_capacity: int = 10, archival_capacity: int = 100,
+                 eviction_ratio: float = 0.5):
+        self._working_capacity = max(1, min(1000, int(working_capacity)))
+        self._archival_capacity = max(10, min(10000, int(archival_capacity)))
+        self._eviction_ratio = max(0.1, min(1.0, float(eviction_ratio)))
+        self._working: List[MemoryEntry] = []
+        self._archival: List[MemoryEntry] = []
+        self._lock = threading.RLock()
+
+    def add(self, content: str, importance: float = 1.0) -> None:
+        """Add entry to working memory. Evicts to archival if over capacity."""
+        if not content or not isinstance(content, str):
+            raise ValueError("content must be a non-empty string")
+        importance = max(0.0, min(10.0, float(importance)))
+        entry = MemoryEntry(content=content.strip()[:2000], importance=importance)
+        
+        with self._lock:
+            self._working.append(entry)
+            if len(self._working) > self._working_capacity:
+                self._evict_to_archival()
+
+    def _evict_to_archival(self) -> None:
+        """Move low-importance working entries to archival via concatenation."""
+        self._working.sort(key=lambda e: e.importance, reverse=True)
+        eviction_count = max(1, int(len(self._working) * self._eviction_ratio))
+        evicted = self._working[-eviction_count:]
+        self._working = self._working[:-eviction_count]
+        
+        if evicted:
+            # Simple concatenation - NOT LLM summarization
+            compacted = "; ".join(e.content for e in evicted[:5])
+            avg_imp = sum(e.importance for e in evicted) / len(evicted)
+            self._archival.append(MemoryEntry(
+                content=f"[evicted-batch] {compacted}",
+                importance=avg_imp * 0.8
+            ))
+            if len(self._archival) > self._archival_capacity:
+                self._archival.sort(key=lambda e: e.importance, reverse=True)
+                self._archival = self._archival[:self._archival_capacity]
+
+    def get_working(self, limit: int = 5) -> List[str]:
+        """Get top-k working memory entries by importance."""
+        limit = max(1, min(100, int(limit)))
+        with self._lock:
+            sorted_working = sorted(self._working, key=lambda e: e.importance, reverse=True)
+            return [e.content for e in sorted_working[:limit]]
+
+    def get_archival(self, limit: int = 5) -> List[str]:
+        """Get top-k archival entries by importance."""
+        limit = max(1, min(100, int(limit)))
+        with self._lock:
+            sorted_archival = sorted(self._archival, key=lambda e: e.importance, reverse=True)
+            return [e.content for e in sorted_archival[:limit]]
+
+    def stats(self) -> Dict[str, int]:
+        """Return current buffer statistics."""
+        with self._lock:
+            return {
+                "working": len(self._working),
+                "archival": len(self._archival),
+                "working_cap": self._working_capacity,
+                "archival_cap": self._archival_capacity
+            }
+
+
+# === INTEGRATION EXAMPLES ===
+
+# Example 1: Integration in resident_memory_service.py
+"""
+# In resident_memory_service.py, inject PriorityMemoryBuffer:
+
+class ResidentMemoryService:
+    def __init__(self):
+        self.memory_buffer = PriorityMemoryBuffer(working_capacity=20, archival_capacity=200)
+    
+    def store_memory(self, resident_id: str, content: str, importance: float = 1.0):
+        # Add to priority buffer instead of unbounded list
+        self.memory_buffer.add(content, importance)
+        # Persist to database as needed
+        self._persist_to_db(resident_id, content)
+    
+    def get_recent_memories(self, resident_id: str, limit: int = 10) -> List[str]:
+        # Get from working memory (bounded, prioritized)
+        return self.memory_buffer.get_working(limit)
+"""
+
+# Example 2: Integration in context_manager.py
+"""
+# In context_manager.py, use PriorityMemoryBuffer for context windowing:
+
+class ContextManager:
+    def __init__(self, max_context_tokens: int = 4000):
+        self.context_buffer = PriorityMemoryBuffer(working_capacity=15)
+        self.max_tokens = max_context_tokens
+    
+    def build_context(self, query: str) -> str:
+        # Get prioritized context from buffer
+        working_context = self.context_buffer.get_working(limit=10)
+        archival_context = self.context_buffer.get_archival(limit=3)
+        
+        # Assemble context (working first, then archival if space)
+        context_parts = working_context + archival_context
+        return "\n".join(context_parts)
+    
+    def add_to_context(self, content: str, importance: float = 1.0):
+        self.context_buffer.add(content, importance)
+"""
+
+
+def test_priority_buffer_basic():
+    """Test basic functionality of PriorityMemoryBuffer."""
+    buffer = PriorityMemoryBuffer(working_capacity=3, eviction_ratio=0.5)
+    
+    # Add entries with varying importance
+    for i in range(5):
+        buffer.add(f"entry_{i}", importance=float(i))
+    
+    # Working should be bounded
+    working = buffer.get_working(limit=10)
+    assert len(working) <= 3, f"Working exceeded capacity: {len(working)}"
+    
+    # Archival should contain evicted entries
+    archival = buffer.get_archival(limit=10)
+    assert len(archival) >= 1, "Archival should contain evicted entries"
+    
+    # Stats should reflect state
+    stats = buffer.stats()
+    assert stats["working"] <= 3
+    assert stats["archival"] >= 1
+    
+    print("✓ PriorityMemoryBuffer tests passed")
+
+
+def test_thread_safety():
+    """Test concurrent access."""
+    buffer = PriorityMemoryBuffer(working_capacity=5)
+    
+    def add_entries(start, count):
+        for i in range(start, start + count):
+            buffer.add(f"thread_entry_{i}", importance=float(i % 10))
+    
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(add_entries, i * 10, 10) for i in range(3)]
+        concurrent.futures.wait(futures)
+    
+    stats = buffer.stats()
+    assert stats["working"] <= 5, "Working should respect capacity under concurrency"
+    print("✓ Thread safety tests passed")
+
+
+if __name__ == "__main__":
+    test_priority_buffer_basic()
+    test_thread_safety()
+    print("\nAll tests passed. PriorityMemoryBuffer is ready for integration.")
