@@ -16,8 +16,15 @@ from pathlib import Path
 _project_root = Path(__file__).parent.parent.parent.parent  # backend/app/bus/queue.py -> project root
 _env_file = _project_root / ".env"
 if _env_file.exists():
-    from dotenv import load_dotenv
-    load_dotenv(_env_file)
+    try:
+        from ..utils.env_utils import load_dotenv_safe
+        load_dotenv_safe(str(_env_file))
+    except (ImportError, Exception):
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(_env_file)
+        except Exception:
+            pass
 CHANNEL_SEND_FINAL_ONLY = os.getenv("CHANNEL_SEND_FINAL_ONLY", "false").lower() == "true"
 if CHANNEL_SEND_FINAL_ONLY:
     logger.info("CHANNEL_SEND_FINAL_ONLY is enabled - only final messages will be sent to channels")

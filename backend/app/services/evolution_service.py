@@ -783,7 +783,7 @@ class EvolutionService:
         if not clean_code:
             return 0.0
 
-        if aip.status == "preflight_rejected":
+        if aip.status in ["preflight_rejected", "abandoned"]:
             return 0.0
 
         # 0. Pre-flight AST Syntax Check & Disqualification Gate
@@ -1654,15 +1654,53 @@ class EvolutionService:
             }
 
         # If exhausted all rounds without passing
-        aip.status = "stalled"
+        aip.failure_count = getattr(aip, "failure_count", 0) + 1
+        max_failure_cycles = int(os.getenv("AIP_MAX_FAILURE_CYCLES", "2"))
+
+        if aip.failure_count >= max_failure_cycles:
+            aip.status = "abandoned"
+            logger.warning(
+                f"[EvolutionLoop] AIP {aip.aip_id} reached max failure limit ({aip.failure_count}/{max_failure_cycles}). "
+                f"Status set to 'abandoned'. Recording negative lesson to L3 memory store."
+            )
+            last_err = history_rounds[-1].get("reason", "") if history_rounds else "Repeated sandbox/audit failure"
+            self._record_aip_lesson(
+                aip_id=aip.aip_id,
+                trigger_error=f"AIP {aip.aip_id} abandoned after {aip.failure_count} failed cycles ({aip.failure_count * max_rounds} rounds total). Last error: {last_err[:200]}",
+                corrective_action="Abandon dead-end architecture approach. Pivot to a new evolution track with alternative literature inspiration.",
+            )
+        else:
+            aip.status = "stalled"
+            logger.info(
+                f"[EvolutionLoop] AIP {aip.aip_id} stalled after failure cycle {aip.failure_count}/{max_failure_cycles}."
+            )
+
         self._save_aips()
         return {
             "success": False,
             "aip_id": aip.aip_id,
             "rounds_used": max_rounds,
-            "status": "stalled",
+            "status": aip.status,
             "history": history_rounds,
+            "failure_count": aip.failure_count,
         }
+
+    def abandon_aip(self, aip_id: str, reason: str = "") -> bool:
+        """Explicitly marks an AIP as abandoned, removing it from active/draft rotation."""
+        aip = self.aips.get(aip_id)
+        if not aip:
+            return False
+        aip.status = "abandoned"
+        aip.failure_count = max(getattr(aip, "failure_count", 0), 2)
+        if reason:
+            self._record_aip_lesson(
+                aip_id=aip_id,
+                trigger_error=f"AIP {aip_id} explicitly abandoned: {reason[:200]}",
+                corrective_action="Avoid repeating this proposal. Explore alternative evolution tracks.",
+            )
+        self._save_aips()
+        logger.info(f"[EvolutionService] Explicitly marked AIP {aip_id} as 'abandoned' (Reason: {reason})")
+        return True
 
     def apply_aip_patch(self, aip_id: str) -> tuple[bool, str]:
         """

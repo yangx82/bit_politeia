@@ -27,11 +27,12 @@ class AIPProposal:
     proposed_diff: str = ""
     research_sources: list[str] = field(default_factory=list)
     sandbox_results: dict[str, Any] = field(default_factory=dict)
-    status: str = "draft"  # draft, proposed, debating, voting, sandbox_passed, pr_submitted, merged, rejected, preflight_rejected
+    status: str = "draft"  # draft, proposed, debating, voting, sandbox_passed, pr_submitted, merged, rejected, preflight_rejected, stalled, abandoned, archived
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     signature: str = ""
     public_key: str = ""
     quality_report: dict[str, Any] = field(default_factory=dict)
+    failure_count: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -50,6 +51,7 @@ class AIPProposal:
             "signature": self.signature,
             "public_key": self.public_key,
             "quality_report": self.quality_report,
+            "failure_count": self.failure_count,
         }
 
     @classmethod
@@ -70,6 +72,7 @@ class AIPProposal:
             signature=data.get("signature", ""),
             public_key=data.get("public_key", ""),
             quality_report=data.get("quality_report", {}),
+            failure_count=data.get("failure_count", 0),
         )
 
 

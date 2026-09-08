@@ -1,8 +1,10 @@
 import pytest
-from datetime import datetime, UTC, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from backend.app.p2p_community.governance import (
+UTC = timezone.utc
+
+from app.p2p_community.governance import (
     Election,
     ElectionType,
     GovernanceManager,

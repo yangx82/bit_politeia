@@ -3151,17 +3151,34 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 logger.warning(f"[EvolutionWatcher] Skipping self-evolution cycle: {cd_msg}")
                 return
 
-            active_aips = [
+            # Segregate fresh active drafts from stalled candidates
+            fresh_aips = [
                 aip for aip in evolution_service.aips.values()
-                if aip.status in ["draft", "proposed", "revised_draft", "stalled"]
+                if aip.status in ["draft", "proposed", "revised_draft"]
+            ]
+            stalled_aips = [
+                aip for aip in evolution_service.aips.values()
+                if aip.status == "stalled" and getattr(aip, "failure_count", 0) < 2
             ]
 
-            # If no pending draft AIPs exist, trigger proactive LLM auto-exploration
-            if not active_aips and self.llm:
-                logger.info("[EvolutionWatcher] No pending draft AIPs found. Triggering proactive exploration...")
-                new_aip = await evolution_service.auto_explore_and_propose(llm_client=self.llm, agent_service=self)
-                if new_aip:
-                    active_aips = [new_aip]
+            target_aip = None
+            if fresh_aips:
+                target_aip = fresh_aips[0]
+            elif self.llm:
+                # Unblock proactive exploration: If no fresh drafts exist, prioritize exploring a new track
+                # even if there are stalled drafts, preventing the node from looping on a dead-end proposal
+                logger.info("[EvolutionWatcher] No fresh unverified AIPs found. Triggering proactive exploration for new track...")
+                target_aip = await evolution_service.auto_explore_and_propose(llm_client=self.llm, agent_service=self)
+
+            # Fallback: if exploration yielded no new proposal (e.g. cooldown or duplicate) but stalled candidates exist, retry top stalled
+            if not target_aip and stalled_aips:
+                target_aip = stalled_aips[0]
+                logger.info(
+                    f"[EvolutionWatcher] Falling back to retry stalled AIP {target_aip.aip_id} "
+                    f"(Failure cycle #{getattr(target_aip, 'failure_count', 0)})..."
+                )
+
+            active_aips = [target_aip] if target_aip else []
 
             # Progress notification callback
             async def progress_notify(msg: str):
