@@ -4719,19 +4719,23 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         if not self.governance_manager:
             return {"error": "Governance Manager not initialized"}
 
-        # Fetch eligible voters from group members
+        # Fetch eligible voters from group members and network topology
         eligible_voters = set()
         if (
             p2p_service.local_node
             and hasattr(p2p_service.local_node, "network_manager")
             and p2p_service.local_node.network_manager
-            and group_id in p2p_service.local_node.network_manager.groups
         ):
-            group = p2p_service.local_node.network_manager.groups[group_id]
-            eligible_voters = group.members.copy()
+            nm = p2p_service.local_node.network_manager
+            if group_id in nm.groups:
+                eligible_voters.update(nm.groups[group_id].members)
+            if hasattr(nm, "nodes") and nm.nodes:
+                eligible_voters.update(nm.nodes.keys())
+        if p2p_service.local_node and p2p_service.local_node.node_id:
+            eligible_voters.add(p2p_service.local_node.node_id)
 
         proposal, election = self.governance_manager.initiate_proposal(
-            group_id, content, duration_minutes, eligible_voters=eligible_voters, auto_approve=True
+            group_id, content, duration_minutes, eligible_voters=eligible_voters, auto_approve=False
         )
 
         # Broadcast via P2P - Wait for broadcast to complete with timeout (Fixed: was asyncio.create_task without await)
@@ -4887,6 +4891,19 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         voter_id = p2p_service.local_node.node_id
 
+        # Pre-flight check: Initiator Recusal / Conflict of Interest
+        election = self.governance_manager.active_elections.get(election_id) or (
+            self.governance_manager.finished_elections.get(election_id)
+            if hasattr(self.governance_manager, "finished_elections")
+            else None
+        )
+        if election and voter_id in election.excluded_voters:
+            logger.warning(f"[AgentService] Voter {voter_id[:8]} is recused (conflict of interest) from election {election_id[:8]}")
+            return {
+                "status": "failed",
+                "reason": "Conflict of Interest: You are the proposal initiator and recused from voting on your own proposal.",
+            }
+
         vote = Vote(
             voter_id=voter_id,
             candidate_id=candidate_id,
@@ -4898,29 +4915,33 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         success = self.governance_manager.receive_ballot(election_id, [vote])
         if success:
             # Broadcast via P2P (方案 3: 同步等待 + 超时保护)
-            election = self.governance_manager.active_elections[election_id]
-            try:
-                # 同步等待广播完成，最多等待 5 秒
-                await asyncio.wait_for(
-                    p2p_service.broadcast_governance_event(
-                        election.group_id,
-                        "vote",
-                        {"election_id": election_id, "vote": vote.to_dict()},
-                    ),
-                    timeout=5.0,
-                )
-                logger.info(f"Vote broadcast successfully for election {election_id[:8]}")
-            except TimeoutError:
-                logger.warning(
-                    f"Vote broadcast timeout for election {election_id[:8]}, adding to retry queue"
-                )
-                # 加入重试队列（可后续实现）
-            except Exception as e:
-                logger.error(f"Vote broadcast failed for election {election_id[:8]}: {e}")
+            election = self.governance_manager.active_elections.get(election_id) or (
+                self.governance_manager.finished_elections.get(election_id)
+                if hasattr(self.governance_manager, "finished_elections")
+                else None
+            )
+            if election:
+                try:
+                    # 同步等待广播完成，最多等待 5 秒
+                    await asyncio.wait_for(
+                        p2p_service.broadcast_governance_event(
+                            election.group_id,
+                            "vote",
+                            {"election_id": election_id, "vote": vote.to_dict()},
+                        ),
+                        timeout=5.0,
+                    )
+                    logger.info(f"Vote broadcast successfully for election {election_id[:8]}")
+                except TimeoutError:
+                    logger.warning(
+                        f"Vote broadcast timeout for election {election_id[:8]}, adding to retry queue"
+                    )
+                except Exception as e:
+                    logger.error(f"Vote broadcast failed for election {election_id[:8]}: {e}")
 
             return {"status": "success", "election_id": election_id}
         else:
-            return {"status": "failed", "reason": "Vote rejected (invalid or closed)"}
+            return {"status": "failed", "reason": "Vote rejected (invalid, recused, or closed)"}
 
     async def receive_p2p_message(self, message: P2PMessage) -> dict:
         """Handle incoming P2P message via HTTP endpoint."""
@@ -5426,10 +5447,15 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 group_id, candidates, duration_minutes
             )
 
-        # 2. Add eligible voters if group info is available
-        if p2p_service.local_node and group_id in p2p_service.local_node.network_manager.groups:
-            group = p2p_service.local_node.network_manager.groups[group_id]
-            election.eligible_voters = group.members.copy()
+        # 2. Add eligible voters if group info is available with topology auto-healing
+        if p2p_service.local_node and hasattr(p2p_service.local_node, "network_manager") and p2p_service.local_node.network_manager:
+            nm = p2p_service.local_node.network_manager
+            if group_id in nm.groups:
+                election.eligible_voters.update(nm.groups[group_id].members)
+            if hasattr(nm, "nodes") and nm.nodes:
+                election.eligible_voters.update(nm.nodes.keys())
+        if p2p_service.local_node and p2p_service.local_node.node_id:
+            election.eligible_voters.add(p2p_service.local_node.node_id)
 
         # 3. Broadcast via P2P
         try:

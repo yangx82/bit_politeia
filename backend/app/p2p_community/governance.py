@@ -202,6 +202,21 @@ class Election:
             return 0.0
         return len(self.votes) / len(effective_voters)
 
+    @property
+    def network_participation_rate(self) -> float:
+        total_network = len(self.eligible_voters)
+        if not total_network:
+            return 0.0
+        return len(self.votes) / total_network
+
+    @property
+    def effective_voters_count(self) -> int:
+        return len(self.eligible_voters - self.excluded_voters)
+
+    @property
+    def network_voters_count(self) -> int:
+        return len(self.eligible_voters)
+
     def is_quorum_met(self) -> bool:
         from ..services.community_config import community_config
 
@@ -277,6 +292,9 @@ class Election:
                 "rejections": rejections,
                 "total_votes": total_cast,
                 "participation_rate": self.participation_rate,
+                "network_participation_rate": self.network_participation_rate,
+                "effective_voters_count": total_effective,
+                "network_voters_count": len(self.eligible_voters),
                 "reason": reason,
             }
 
@@ -304,6 +322,7 @@ class Election:
                 valid = False
                 reason = f"Quorum not met (<{int(self.participation_rate * 100)}%). Required: 80%."
 
+            effective_count = len(self.eligible_voters - self.excluded_voters)
             return {
                 "valid": valid,
                 "evaluations": evaluations,
@@ -311,6 +330,9 @@ class Election:
                 "total_evaluators": len(evaluations),
                 "total_votes": len(self.votes),
                 "participation_rate": self.participation_rate,
+                "network_participation_rate": self.network_participation_rate,
+                "effective_voters_count": effective_count,
+                "network_voters_count": len(self.eligible_voters),
                 "reason": reason,
             }
 
@@ -340,6 +362,7 @@ class Election:
             winners = []
             reason = f"Quorum not met (<{int(self.participation_rate * 100)}%). Required: 80%."
 
+        effective_count = len(self.eligible_voters - self.excluded_voters)
         return {
             "valid": valid,
             "winners": winners,
@@ -348,6 +371,9 @@ class Election:
             "rejections": 0,
             "total_votes": self.total_votes,
             "participation_rate": self.participation_rate,
+            "network_participation_rate": self.network_participation_rate,
+            "effective_voters_count": effective_count,
+            "network_voters_count": len(self.eligible_voters),
             "reason": reason,
         }
 
@@ -378,6 +404,9 @@ class Election:
             "target_positions": self.target_positions,
             "excluded_voters": sorted(list(self.excluded_voters)),
             "participation_rate": round(self.participation_rate, 4),
+            "network_participation_rate": round(self.network_participation_rate, 4),
+            "effective_voters_count": len(self.eligible_voters - self.excluded_voters),
+            "network_voters_count": len(self.eligible_voters),
             "payout_status": self.payout_status,
             "payout_amount": self.payout_amount,
             "payout_attempts": self.payout_attempts,
@@ -706,28 +735,37 @@ class GovernanceManager:
         # Immediately start voting (Simulating Host action)
         election_id = str(uuid.uuid4())
         voters_set = set(eligible_voters) if eligible_voters is not None else set()
-        if auto_approve and self.node_id and voters_set:
+
+        # Topology auto-healing: merge active group members and known network peers
+        try:
+            from ..services.p2p_service import p2p_service
+            if p2p_service.local_node and hasattr(p2p_service.local_node, "network_manager") and p2p_service.local_node.network_manager:
+                nm = p2p_service.local_node.network_manager
+                if group_id in nm.groups:
+                    voters_set.update(nm.groups[group_id].members)
+                if hasattr(nm, "nodes") and nm.nodes:
+                    voters_set.update(nm.nodes.keys())
+        except Exception as ex:
+            logger.debug(f"[Governance] initiate_proposal topology lookup: {ex}")
+
+        if self.node_id:
             voters_set.add(self.node_id)
+
+        # Conflict of Interest / Initiator Recusal:
+        # The author of a proposal cannot vote on their own proposal (PROPOSAL_VOTE).
+        excluded_set = {self.node_id} if self.node_id else set()
 
         election = Election(
             election_id=election_id,
             group_id=group_id,
             election_type=ElectionType.PROPOSAL_VOTE,
-            initiator_id=self.node_id,  # Host logic simplified
+            initiator_id=self.node_id,
             start_time=datetime.now(UTC),
             end_time=datetime.now(UTC) + timedelta(minutes=duration_minutes),
             proposal_id=proposal_id,
             eligible_voters=voters_set,
+            excluded_voters=excluded_set,
         )
-
-        if auto_approve and self.node_id:
-            initiator_vote = Vote(
-                voter_id=self.node_id,
-                approval=True,
-                reason="Proposal Initiator: Auto-voted APPROVE upon creation",
-                timestamp=datetime.now(UTC),
-            )
-            election.votes[self.node_id] = [initiator_vote]
 
         self.active_elections[election_id] = election
         self.save_state()
@@ -944,20 +982,52 @@ class GovernanceManager:
         # First, sync state to ensure we're not voting in something that just expired
         self.finalize_expired_elections()
 
-        if election_id not in self.active_elections:
-            return False
+        election = self.active_elections.get(election_id)
+        if not election:
+            # If recently early-terminated (e.g. early_passed/early_rejected),
+            # allow remaining voters to record votes within deadline for complete audit trail
+            election = self.finished_elections.get(election_id)
 
-        election = self.active_elections[election_id]
-        if not votes:
+        if not election or not votes:
             return False
 
         voter_id = votes[0].voter_id
-        # Simplified eligibility check implementation for saving state demo
-        # Real implementation would check against eligible_voters
-        # if voter_id not in election.eligible_voters: ...
+
+        # 1. Proposer Recusal: excluded voters cannot cast ballots
+        if voter_id in election.excluded_voters:
+            logger.warning(
+                f"[Governance] Voter {voter_id[:8]} is in excluded_voters (conflict of interest/recusal) for election {election_id[:8]}, rejecting."
+            )
+            return False
+
+        # 2. Whitelist check: if eligible_voters is configured, voter must be eligible (or auto-healed if recognized node)
+        if election.eligible_voters and voter_id not in election.eligible_voters:
+            try:
+                from ..services.p2p_service import p2p_service
+                is_recognized = False
+                if p2p_service.local_node and hasattr(p2p_service.local_node, "network_manager") and p2p_service.local_node.network_manager:
+                    nm = p2p_service.local_node.network_manager
+                    if election.group_id in nm.groups and voter_id in nm.groups[election.group_id].members:
+                        is_recognized = True
+                    elif hasattr(nm, "nodes") and voter_id in nm.nodes:
+                        is_recognized = True
+                if is_recognized:
+                    election.eligible_voters.add(voter_id)
+                    logger.info(f"[Governance] Auto-healed voter {voter_id[:8]} into eligible_voters for election {election_id[:8]}")
+                else:
+                    logger.warning(f"[Governance] Voter {voter_id[:8]} not in eligible_voters for election {election_id[:8]}, rejecting.")
+                    return False
+            except Exception:
+                logger.warning(f"[Governance] Voter {voter_id[:8]} not in eligible_voters for election {election_id[:8]}, rejecting.")
+                return False
 
         if datetime.now(UTC) > election.end_time:
             logger.warning(f"Vote received after deadline for {election_id}")
+            return False
+
+        # 3. Duplicate vote check
+        if voter_id in election.votes:
+            logger.warning(f"[Governance] Voter {voter_id[:8]} has already voted in {election_id[:8]}, rejecting duplicate.")
             return False
 
         # Validation Logic (Preserved from original)
@@ -1084,6 +1154,27 @@ class GovernanceManager:
                     election_id = election_data.get("election_id")
                     if election_id:
                         election = Election.from_dict(election_data)
+
+                        # Auto-healing: ensure eligible_voters includes all known group members and peers
+                        try:
+                            from ..services.p2p_service import p2p_service
+                            if p2p_service.local_node and hasattr(p2p_service.local_node, "network_manager") and p2p_service.local_node.network_manager:
+                                nm = p2p_service.local_node.network_manager
+                                if election.group_id in nm.groups:
+                                    election.eligible_voters.update(nm.groups[election.group_id].members)
+                                if hasattr(nm, "nodes") and nm.nodes:
+                                    election.eligible_voters.update(nm.nodes.keys())
+                        except Exception as ex:
+                            logger.debug(f"[Governance] Ingestion topology auto-heal: {ex}")
+
+                        # Ensure local node is in eligible_voters if belonging to group/network
+                        if self.node_id:
+                            election.eligible_voters.add(self.node_id)
+
+                        # Enforce proposer recusal on proposal votes
+                        if election.election_type == ElectionType.PROPOSAL_VOTE and election.initiator_id:
+                            election.excluded_voters.add(election.initiator_id)
+
                         if election.status == "completed" or getattr(election, "is_finished", False):
                             self.finished_elections[election.election_id] = election
                             self.active_elections.pop(election.election_id, None)
@@ -1167,6 +1258,27 @@ class GovernanceManager:
 
                 # Ingest Standalone Election
                 election = Election.from_dict(election_data)
+
+                # Auto-healing: ensure eligible_voters includes all known group members and peers
+                try:
+                    from ..services.p2p_service import p2p_service
+                    if p2p_service.local_node and hasattr(p2p_service.local_node, "network_manager") and p2p_service.local_node.network_manager:
+                        nm = p2p_service.local_node.network_manager
+                        if election.group_id in nm.groups:
+                            election.eligible_voters.update(nm.groups[election.group_id].members)
+                        if hasattr(nm, "nodes") and nm.nodes:
+                            election.eligible_voters.update(nm.nodes.keys())
+                except Exception as ex:
+                    logger.debug(f"[Governance] Standalone election topology auto-heal: {ex}")
+
+                # Ensure local node is in eligible_voters if belonging to group/network
+                if self.node_id:
+                    election.eligible_voters.add(self.node_id)
+
+                # Enforce proposer recusal on proposal votes
+                if election.election_type == ElectionType.PROPOSAL_VOTE and election.initiator_id:
+                    election.excluded_voters.add(election.initiator_id)
+
                 self.active_elections[election.election_id] = election
                 logger.info(f"Governance P2P: Successfully ingested remote election {election_id}")
                 self.save_state()

@@ -1336,6 +1336,19 @@ class EvolutionService:
                         "scope": "group",
                         "status": "discussed"
                     }
+                    # Auto-heal eligible voters from network topology and enforce initiator recusal
+                    voters_set = set()
+                    try:
+                        if p2p_service.local_node and hasattr(p2p_service.local_node, "network_manager") and p2p_service.local_node.network_manager:
+                            nm = p2p_service.local_node.network_manager
+                            if group_id in nm.groups:
+                                voters_set.update(nm.groups[group_id].members)
+                            if hasattr(nm, "nodes") and nm.nodes:
+                                voters_set.update(nm.nodes.keys())
+                    except Exception as ex:
+                        logger.debug(f"[EvolutionService] Topology voter lookup: {ex}")
+                    voters_set.add(p2p_service.local_node.node_id)
+
                     elec_data = {
                         "election_id": election_id,
                         "group_id": group_id,
@@ -1344,6 +1357,8 @@ class EvolutionService:
                         "start_time": datetime.now(timezone.utc).isoformat(),
                         "end_time": (datetime.now(timezone.utc) + timedelta(minutes=1440)).isoformat(),
                         "proposal_id": proposal_id,
+                        "eligible_voters": sorted(list(voters_set)),
+                        "excluded_voters": [p2p_service.local_node.node_id],
                         "status": "active"
                     }
                     await p2p_service.broadcast_governance_event(

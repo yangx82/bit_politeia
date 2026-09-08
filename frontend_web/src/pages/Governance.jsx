@@ -253,6 +253,10 @@ const Governance = () => {
         const total = tally.total_votes ?? 0;
         const percentage = total > 0 ? Math.round((approvals / total) * 100) : 0;
         const participation = Math.round((election.participation_rate || tally.participation_rate || 0) * 100);
+        const networkParticipation = Math.round((election.network_participation_rate || tally.network_participation_rate || 0) * 100);
+        const effectiveCount = tally.effective_voters_count ?? (election.effective_voters_count ?? Math.max(1, (election.eligible_voters?.length || 0) - (election.excluded_voters?.length || 0)));
+        const networkCount = tally.network_voters_count ?? (election.network_voters_count ?? (election.eligible_voters?.length || 0));
+        const hasExcluded = Boolean(election.excluded_voters && election.excluded_voters.length > 0);
         const isQuorumMet = tally.valid !== undefined ? tally.valid : (participation >= 80);
 
         // My Vote calculation
@@ -281,6 +285,11 @@ const Governance = () => {
                                 <TypeIcon size={12} />
                                 {typeLabel}
                             </span>
+                            {hasExcluded && (
+                                <span className="bg-amber-50 text-amber-800 border border-amber-300 px-2 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1" title="提案发起人自动利益回避，不计入有效投票分母">
+                                    🛡️ 发起人回避
+                                </span>
+                            )}
                             <span className="text-xs text-slate-400">
                                 {new Date(election.start_time || election.timestamp).toLocaleString()}
                             </span>
@@ -418,7 +427,12 @@ const Governance = () => {
                         <div className="flex justify-between text-xs mb-1.5">
                             {isCoreNode ? (
                                 <div className="flex items-center gap-2">
-                                    <span className="text-slate-600 font-medium">参投率: {participation}%</span>
+                                    <span className="text-slate-600 font-medium">
+                                        参投率: {total}/{effectiveCount} ({participation}%)
+                                        {hasExcluded && networkCount > effectiveCount && (
+                                            <span className="text-slate-400 text-[11px] ml-1">· 全网: {total}/{networkCount} ({networkParticipation}%)</span>
+                                        )}
+                                    </span>
                                     <span className={`text-[11px] font-medium ${isQuorumMet ? 'text-emerald-600' : 'text-amber-600'}`}>
                                         {isQuorumMet ? '✅ 法定有效 (≥80%)' : '⚠️ 未达法定门槛 (<80%)'}
                                     </span>
@@ -434,7 +448,12 @@ const Governance = () => {
                                         </span>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                        <span className="text-slate-500">参投率: {participation}%</span>
+                                        <span className="text-slate-500">
+                                            参投率: {total}/{effectiveCount} ({participation}%)
+                                            {hasExcluded && networkCount > effectiveCount && (
+                                                <span className="text-slate-400 text-[11px] ml-1">· 全网: {total}/{networkCount} ({networkParticipation}%)</span>
+                                            )}
+                                        </span>
                                         <span className={`text-[11px] font-medium ${(isQuorumMet || tally.early_passed || tally.early_rejected) ? 'text-emerald-600' : 'text-amber-600'}`}>
                                             {tally.early_passed
                                                 ? '⚡ 多数决提前通过'
@@ -462,7 +481,12 @@ const Governance = () => {
 
                     {isElectionActive && (
                         <div className="flex gap-2">
-                            {isCoreNode ? (
+                            {isExcluded ? (
+                                <span className="px-3 py-1.5 bg-slate-100 text-slate-500 rounded-lg text-xs font-medium border border-slate-200 flex items-center gap-1" title="您是本提案的发起人，依规进行利益回避，无表决权">
+                                    <AlertCircle size={13} className="text-amber-600" />
+                                    发起人利益回避 (无表决权)
+                                </span>
+                            ) : isCoreNode ? (
                                 election.candidates?.map(candidate => (
                                     <button
                                         key={candidate}
