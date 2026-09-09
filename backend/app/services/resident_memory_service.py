@@ -22,8 +22,18 @@ except ImportError:
             self.content = content
 
 from .memory_store import memory_store
+from .hierarchical_memory_compactor import HierarchicalMemoryCompactor
 
 logger = logging.getLogger(__name__)
+
+# Module-level shared compactor instance (singleton pattern)
+_memory_compactor = HierarchicalMemoryCompactor(
+    hot_window=10,
+    warm_window=30,
+    cold_threshold=50,
+    decay_factor=0.99,
+    compaction_threshold=10,
+)
 
 
 class ResidentMemory:
@@ -762,3 +772,8 @@ class ResidentReporter:
     async def generate_daily_report(self):
         """Legacy stub."""
         return await self.generate_daily_brief([self.agent.research_field])
+
+
+# Module-level singleton instance for cross-service access (e.g. evolution reflections)
+resident_memory_service = ResidentMemory()
+

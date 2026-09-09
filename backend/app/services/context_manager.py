@@ -9,6 +9,16 @@ import logging
 import os
 from pathlib import Path
 
+# ========================================================
+# [Autonomous Evolution Patch] AIP-5A40-798604: HierarchicalMemoryCompactor with Semantic Importance Scoring for Context Distillation
+# ========================================================
+from .hierarchical_memory_compactor import (
+    HierarchicalMemoryCompactor,
+    MemoryEntry as CompactorMemoryEntry,
+    CompactedTier,
+    get_compacted_context,
+)
+
 try:
     from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
     from langchain_openai import ChatOpenAI

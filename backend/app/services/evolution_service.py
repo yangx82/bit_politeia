@@ -1851,6 +1851,8 @@ class EvolutionService:
 
         pr_url = None
         current_branch = base_branch
+        git_env = os.environ.copy()
+        git_env["GIT_TERMINAL_PROMPT"] = "0"
 
         try:
             # Get current active branch
@@ -1860,27 +1862,35 @@ class EvolutionService:
                 capture_output=True,
                 text=True,
                 check=True,
+                timeout=30,
             )
             current_branch = res_curr.stdout.strip()
 
             # Checkout dedicated evolution branch
-            subprocess.run(["git", "checkout", "-B", branch_name], cwd=root_dir, check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-B", branch_name], cwd=root_dir, check=True, capture_output=True, timeout=30)
 
             # Stage modified target files and aips.json
             for tf in aip.target_files:
-                subprocess.run(["git", "add", tf], cwd=root_dir, check=False)
-            subprocess.run(["git", "add", "backend/data/aips.json"], cwd=root_dir, check=False)
+                subprocess.run(["git", "add", tf], cwd=root_dir, check=False, timeout=30)
+            subprocess.run(["git", "add", "backend/data/aips.json"], cwd=root_dir, check=False, timeout=30)
 
             # Commit
-            subprocess.run(["git", "commit", "-m", commit_msg], cwd=root_dir, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", commit_msg], cwd=root_dir, check=True, capture_output=True, timeout=30)
 
-            # Push branch
+            # Push branch (non-interactive, with timeout and prompt suppression)
             push_res = subprocess.run(
                 ["git", "push", "-u", "origin", branch_name, "--force"],
                 cwd=root_dir,
                 capture_output=True,
                 text=True,
+                env=git_env,
+                timeout=60,
             )
+            if push_res.returncode != 0:
+                err_msg = push_res.stderr.strip() or push_res.stdout.strip()
+                logger.error(f"[EvolutionGit] Push failed for {branch_name}: {err_msg}")
+                raise RuntimeError(f"git push failed (code {push_res.returncode}): {err_msg}")
+
             logger.info(f"[EvolutionGit] Pushed branch {branch_name}: {push_res.stdout}")
 
             # Try creating PR via GitHub CLI (gh)
