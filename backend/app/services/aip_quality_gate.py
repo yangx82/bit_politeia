@@ -528,20 +528,28 @@ class ASTConsistencyAuditor:
     def extract_claims_from_description(description: str) -> list[str]:
         """
         Extracts claimed functional features from description using multiple markdown patterns.
+        Strips explicit Non-Goals section first so explicitly excluded items are not flagged.
         """
         claims = []
         if not description:
             return []
 
+        # Strip Non-Goals section before extracting positive feature claims
+        target_text = re.split(
+            r'(?:###?\s*🚫?\s*Non-Goals|Non-Goals\s*:|【非目标|非目标\s*[:：])',
+            description,
+            flags=re.IGNORECASE,
+        )[0]
+
         # 1. Numbered lists: (1) ... (2) ... or [1] ... [2] ...
-        numbered_matches = re.findall(r'[\(\[]\d+[\)\]]\s*([^(\n\r]+?)(?=[\(\[]\d+[\)\]]|$)', description, re.DOTALL)
+        numbered_matches = re.findall(r'[\(\[]\d+[\)\]]\s*([^(\n\r]+?)(?=[\(\[]\d+[\)\]]|$)', target_text, re.DOTALL)
         for m in numbered_matches:
             c = m.strip().rstrip(",;.")
             if len(c) > 3:
                 claims.append(c)
 
         # 2. Markdown bullet lists: "- feature" or "* feature" or "1. feature"
-        bullet_matches = re.findall(r'^\s*[-*•\d\.]+\s+([^\n\r]+)', description, re.MULTILINE)
+        bullet_matches = re.findall(r'^\s*[-*•\d\.]+\s+([^\n\r]+)', target_text, re.MULTILINE)
         for m in bullet_matches:
             c = m.strip().rstrip(",;.")
             if len(c) > 3:
@@ -550,7 +558,7 @@ class ASTConsistencyAuditor:
         # 3. Action phrases: implements/adds/provides/features
         action_matches = re.findall(
             r'(?:implements?|adds?|provides?|includes?|features?|实现|提供|支持)\s*[:\-]?\s*([^.,\n\r]+)',
-            description,
+            target_text,
             re.IGNORECASE,
         )
         for m in action_matches:

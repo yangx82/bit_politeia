@@ -1108,12 +1108,13 @@ class EvolutionService:
                 f"2. Reuse existing utils, models, and types in Bit Politeia. Do not re-implement what already exists.\n"
                 f"3. Prioritize standard library (collections, dataclasses, functools, hashlib, itertools, math, typing) over external dependencies.\n"
                 f"4. NO unrequested abstractions: NO single-implementation interfaces, NO single-product factories, NO redundant wrapper classes.\n"
-                f"5. Atomic Enhancement: The proposal MUST be 50-150 lines of code, NOT a massive overhaul.\n\n"
+                f"5. Atomic Enhancement: The proposal MUST be 50-150 lines of code, NOT a massive overhaul.\n"
+                f"6. MANDATORY SCOPE HONESTY & NON-GOALS: Explicitly declare what this proposal will NOT do. Never claim broad systems or unbuilt features.\n\n"
                 f"Design a concrete, highly actionable Agent Improvement Proposal (AIP) for this specific track.\n"
                 f"Return strictly valid JSON matching this schema:\n"
                 f"{{\n"
                 f'  "title": "Concise specific title (e.g. {first_example} for Bit Politeia)",\n'
-                f'  "description": "2-3 sentences explaining architectural benefit and explicitly declaring Scope/Non-Goals",\n'
+                f'  "description": "Architectural benefit followed by mandatory non-goals formatted as: [Scope-Corrected | Atomic Enhancement] <Benefit>. Non-Goals: <Explicit list of unbuilt/out-of-scope items>",\n'
                 f'  "target_files": {json.dumps(track_targets)},\n'
                 f'  "coding_specification": "Detailed specification: class/function signatures, input validation with max/min, threading.Lock thread-safety, docstrings, and 2-3 focused unit test assertions."\n'
                 f"}}\n\n"
@@ -1124,7 +1125,7 @@ class EvolutionService:
             title = plan_json.get("title", f"{first_example} based on {lit_title[:30]}")
             description = plan_json.get(
                 "description",
-                f"Implements atomic {track_name} component inspired by {lit_title}. Provides bounded validation and thread-safety."
+                f"[Scope-Corrected | Atomic Enhancement] Implements atomic {track_name} component inspired by {lit_title}. Provides bounded validation and thread-safety. Non-Goals: Broad architectural overhaul, external daemon dependencies.",
             )
             target_files = plan_json.get("target_files") or track_targets
             coding_spec = plan_json.get("coding_specification") or f"Implement thread-safe {title} with input bounds checking."
@@ -1145,7 +1146,8 @@ class EvolutionService:
                 f"4. Thread Safety: Use `threading.Lock()` or `threading.RLock()` if maintaining mutable internal state.\n"
                 f"5. Defensive Validation: Explicit bounds checking on all inputs (e.g. `rate = max(0.0, min(1.0, float(rate)))`).\n"
                 f"6. Minimalist Focused Unit Tests: Include exactly 2 to 3 self-contained assertion statements or a small test function (`def test_...()`). Do NOT generate 10+ test cases.\n"
-                f"7. Complete Syntax: Ensure every class, function, and block is fully closed and valid Python syntax without trailing cuts.\n\n"
+                f"7. Complete Syntax: Ensure every class, function, and block is fully closed and valid Python syntax without trailing cuts.\n"
+                f"8. Strict Scope Alignment: Implement ONLY what is in the specific atomic scope. Do NOT attempt out-of-scope features declared in Non-Goals.\n\n"
                 f"Output strictly valid JSON:\n"
                 f"{{\n"
                 f'  "proposed_diff": "Complete valid Python code with imports, atomic class/functions, and 2-3 tests (50-150 LOC)."\n'
@@ -1440,14 +1442,20 @@ class EvolutionService:
         code_lines = [l for l in code.splitlines() if l.strip() and not l.strip().startswith("#")]
         num_code_lines = len(code_lines)
         desc = (aip.description or "").strip()
-        has_scope_tag = "[Scope-Corrected" in desc or "Non-Goals" in desc
+        desc_lower = desc.lower()
+        has_scope_tag = (
+            "[scope-corrected" in desc_lower
+            or "non-goals" in desc_lower
+            or "scope:" in desc_lower
+            or "[atomic enhancement" in desc_lower
+        )
 
         # --- Dimension 1: Description vs Code Consistency ---
         if not code:
             rejection_reasons.append("Dimension 1: proposed_diff is empty.")
         elif num_code_lines < 8 and not has_scope_tag:
             inflation_keywords = ["entire system", "complete engine", "full pipeline", "multi-tier framework", "end-to-end", "stream optimization", "monitoring"]
-            if any(kw in desc.lower() for kw in inflation_keywords):
+            if any(kw in desc_lower for kw in inflation_keywords):
                 rejection_reasons.append(
                     f"Dimension 1: Description Inflation — claims broad architecture but proposed diff is only {num_code_lines} LOC without Scope-Correction declaration."
                 )
@@ -1465,7 +1473,7 @@ class EvolutionService:
             rejection_reasons.append(f"Dimension 2: AST syntax error in proposed diff: {e}")
 
         # Check for input validation and thread safety if caching or shared state is involved
-        if "cache" in aip.title.lower() or "cache" in desc.lower():
+        if "cache" in aip.title.lower() or "cache" in desc_lower:
             if "threading.lock" in code.lower() or "lock" in code.lower():
                 positive_factors.append("Thread safety lock present")
             if "max(" in code and "min(" in code:
@@ -1479,9 +1487,14 @@ class EvolutionService:
                     "Dimension 3: Hallucinated/Irrelevant Citation — arXiv:2408.00001 (vision diffusion model) is cited for system caching/architecture."
                 )
 
-        # --- Dimension 5: Scope Transparency ---
+        # --- Dimension 5: Scope Transparency & Honesty ---
         if has_scope_tag:
-            positive_factors.append("Honest Scope-Corrected boundary declaration")
+            positive_factors.append("Honest Scope-Corrected boundary & Non-Goals declaration")
+        elif any(kw in desc_lower for kw in ["full", "complete", "entire", "unified", "overhaul"]):
+            rejection_reasons.append(
+                "Dimension 5: Lacks explicit Non-Goals declaration while making broad scope claims. "
+                "Include 'Non-Goals:' to clarify atomic boundaries."
+            )
 
         # --- Dimension 6: Anti-Over-Engineering & Ponytail Minimalism ---
         try:

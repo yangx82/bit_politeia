@@ -4,11 +4,15 @@ Provides fine-grained capability tags (ToolCapability), risk levels (ToolRiskLev
 and approval requirements (ApprovalRequirement) for Agent Tools in Bit-Politeia.
 """
 
+import asyncio
+import inspect
+import logging
+import time
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
-from dataclasses import dataclass, field
-import logging
-import asyncio
+
+from .tool_health_watcher import ToolHealthWatcher, tool_health_watcher
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +50,14 @@ class ToolMeta:
 class ToolRegistry:
     """
     Registry managing tool functions with capabilities, risk levels, and safety policies.
+    Enriched with ToolHealthWatcher for dynamic health and failure circuit-breaking.
     """
 
-    def __init__(self):
+    def __init__(self, health_watcher: Optional[ToolHealthWatcher] = None):
         self._registry: Dict[str, ToolMeta] = {}
         self._file_locks: Dict[str, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
+        self.health_watcher = health_watcher or tool_health_watcher
 
     def register(
         self,
@@ -87,6 +93,10 @@ class ToolRegistry:
     def list_tools(self) -> List[ToolMeta]:
         return list(self._registry.values())
 
+    def list_healthy_tools(self) -> List[ToolMeta]:
+        """Returns registered tools filtered by dynamic health assessment."""
+        return [meta for meta in self._registry.values() if self.health_watcher.is_healthy(meta.name)]
+
     async def get_file_lock(self, file_path: str) -> asyncio.Lock:
         """Get or create per-file execution lock to prevent concurrent write conflicts."""
         async with self._global_lock:
@@ -96,7 +106,8 @@ class ToolRegistry:
 
     async def execute(self, tool_name: str, *args, target_file: Optional[str] = None, **kwargs) -> Any:
         """
-        Execute registered tool with capability checks and file write concurrency guards.
+        Execute registered tool with capability checks, latency/health telemetry,
+        and file write concurrency guards.
         """
         meta = self.get_meta(tool_name)
         if not meta or not meta.handler:
@@ -106,18 +117,31 @@ class ToolRegistry:
         if meta.risk_level == ToolRiskLevel.HIGH:
             logger.warning(f"[ToolRegistry] Executing HIGH RISK tool: '{tool_name}' with args={args}, kwargs={kwargs}")
 
-        # Per-file lock for file modification tools
-        if target_file and ToolCapability.WRITES_FILES in meta.capabilities:
-            lock = await self.get_file_lock(target_file)
-            async with lock:
-                if asyncio.iscoroutinefunction(meta.handler):
-                    return await meta.handler(*args, **kwargs)
-                return meta.handler(*args, **kwargs)
+        start_time = time.monotonic()
+        try:
+            # Per-file lock for file modification tools
+            if target_file and ToolCapability.WRITES_FILES in meta.capabilities:
+                lock = await self.get_file_lock(target_file)
+                async with lock:
+                    if inspect.iscoroutinefunction(meta.handler):
+                        res = await meta.handler(*args, **kwargs)
+                    else:
+                        res = meta.handler(*args, **kwargs)
+            else:
+                if inspect.iscoroutinefunction(meta.handler):
+                    res = await meta.handler(*args, **kwargs)
+                else:
+                    res = meta.handler(*args, **kwargs)
 
-        if asyncio.iscoroutinefunction(meta.handler):
-            return await meta.handler(*args, **kwargs)
-        return meta.handler(*args, **kwargs)
+            latency = time.monotonic() - start_time
+            self.health_watcher.record_execution(tool_name, success=True, latency=latency)
+            return res
+        except Exception:
+            latency = time.monotonic() - start_time
+            self.health_watcher.record_execution(tool_name, success=False, latency=latency)
+            raise
 
 
 # Global singleton instance
 tool_registry = ToolRegistry()
+
