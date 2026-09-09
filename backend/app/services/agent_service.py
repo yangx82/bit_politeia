@@ -6868,3 +6868,129 @@ async def finalize_daily_group_aip_archive_proxy(
 
 
 agent_service = AgentService()
+
+
+# ========================================================
+# [Autonomous Evolution Patch] AIP-5A40-6DB845: ToolExecutionPipeline with Dependency-Aware Scheduling and Result Compaction
+# ========================================================
+# === backend/app/services/adaptive_tool_pruner.py ===
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any, Callable
+from collections import defaultdict, deque
+import threading
+import json
+
+
+@dataclass
+class ToolCall:
+    tool_id: str
+    parameters: Dict[str, Any]
+    dependencies: List[str] = field(default_factory=list)
+    result: Optional[Any] = None
+    status: str = 'pending'  # pending | running | completed | failed
+
+
+@dataclass
+class ToolResultCompactor:
+    max_output_chars: int = 2000
+    min_output_chars: int = 100
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def compact(self, result: Any) -> str:
+        with self._lock:
+            text = result if isinstance(result, str) else json.dumps(result, default=str)
+            if len(text) <= self.max_output_chars:
+                return text
+            head_len = int(self.max_output_chars * 0.4)
+            tail_len = int(self.max_output_chars * 0.4)
+            head = text[:head_len]
+            tail = text[-tail_len:]
+            saved = len(text) - head_len - tail_len
+            return f"{head}\n[...compacted {saved} chars...]\n{tail}"
+
+
+class ToolExecutionPipeline:
+    def __init__(self, compactor: Optional[ToolResultCompactor] = None):
+        self._lock = threading.Lock()
+        self.compactor = compactor or ToolResultCompactor()
+        self._call_graph: Dict[str, ToolCall] = {}
+
+    def add_tool_call(self, call: ToolCall) -> None:
+        with self._lock:
+            if len(call.parameters) > 50:
+                raise ValueError(f"Too many parameters: {len(call.parameters)} > 50")
+            for dep in call.dependencies:
+                if dep not in self._call_graph:
+                    raise ValueError(f"Unknown dependency: {dep}")
+            self._call_graph[call.tool_id] = call
+
+    def _topological_sort(self) -> List[str]:
+        in_deg = {tid: len(c.dependencies) for tid, c in self._call_graph.items()}
+        fwd: Dict[str, List[str]] = defaultdict(list)
+        for tid, c in self._call_graph.items():
+            for dep in c.dependencies:
+                fwd[dep].append(tid)
+        queue = deque(t for t, d in in_deg.items() if d == 0)
+        order: List[str] = []
+        while queue:
+            node = queue.popleft()
+            order.append(node)
+            for nb in fwd[node]:
+                in_deg[nb] -= 1
+                if in_deg[nb] == 0:
+                    queue.append(nb)
+        if len(order) != len(self._call_graph):
+            raise ValueError("Circular dependency detected")
+        return order
+
+    def execute(self, executor: Callable[[ToolCall], Any]) -> Dict[str, Any]:
+        with self._lock:
+            order = self._topological_sort()
+        results: Dict[str, Any] = {}
+        for tid in order:
+            call = self._call_graph[tid]
+            try:
+                call.status = 'running'
+                raw = executor(call)
+                call.result = self.compactor.compact(raw)
+                call.status = 'completed'
+            except Exception as exc:
+                call.status = 'failed'
+                call.result = f"Error: {str(exc)[:200]}"
+            results[tid] = call.result
+        return results
+
+
+# === Integration in agent_service.py (excerpt) ===
+# from .adaptive_tool_pruner import ToolExecutionPipeline, ToolCall
+#
+# class AgentService:
+#     def execute_tool_batch(self, tool_calls: List[Dict]) -> Dict[str, Any]:
+#         pipeline = ToolExecutionPipeline()
+#         for tc in tool_calls:
+#             pipeline.add_tool_call(ToolCall(
+#                 tool_id=tc['tool_id'],
+#                 parameters=tc.get('parameters', {}),
+#                 dependencies=tc.get('dependencies', []),
+#             ))
+#         return pipeline.execute(self._execute_single_tool)
+
+
+# === Unit Tests ===
+def test_compactor_respects_limits():
+    c = ToolResultCompactor(max_output_chars=100, min_output_chars=10)
+    out = c.compact("x" * 500)
+    assert len(out) <= 150 and "compacted" in out
+
+def test_topo_sort_respects_deps():
+    p = ToolExecutionPipeline()
+    p.add_tool_call(ToolCall(tool_id="A", parameters={}))
+    p.add_tool_call(ToolCall(tool_id="B", parameters={}, dependencies=["A"]))
+    order = p._topological_sort()
+    assert order.index("A") < order.index("B")
+
+def test_failure_fallback():
+    p = ToolExecutionPipeline()
+    p.add_tool_call(ToolCall(tool_id="t1", parameters={}))
+    res = p.execute(lambda c: (_ for _ in ()).throw(RuntimeError("crash")))
+    assert "Error:" in res["t1"] and len(res["t1"]) < 250

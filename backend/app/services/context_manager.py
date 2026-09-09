@@ -509,6 +509,76 @@ class BitPoliteiaContextManager:
 
         return pruned_messages
 
+    def _convert_messages_to_entries(self, messages: list[BaseMessage]) -> list:
+        """
+        [AIP-5A40-798604] Convert BaseMessage list to MemoryEntry list for HierarchicalMemoryCompactor.
+        """
+        import time
+        entries = []
+        for i, msg in enumerate(messages):
+            role = "system"
+            if isinstance(msg, HumanMessage):
+                role = "resident"
+            elif isinstance(msg, AIMessage):
+                role = "agent"
+            elif isinstance(msg, ToolMessage):
+                role = "tool"
+            
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            # Use index-based timestamp estimation (older messages have lower timestamps)
+            timestamp = time.time() - (len(messages) - i) * 60  # 1 minute per message
+            
+            # Check for governance keywords in metadata
+            metadata = {}
+            governance_keywords = {'election', 'proposal', 'vote', 'ballot', 'governance', 'rule', 'core_node', 'aip'}
+            if any(kw in content.lower() for kw in governance_keywords):
+                metadata['governance'] = True
+            
+            entries.append(CompactorMemoryEntry(
+                content=content[:500],  # Truncate for scoring efficiency
+                timestamp=timestamp,
+                role=role,
+                metadata=metadata,
+            ))
+        return entries
+
+    def _apply_hierarchical_compaction(self, history: list[BaseMessage]) -> tuple[list[BaseMessage], str]:
+        """
+        [AIP-5A40-798604] Apply three-tier hierarchical compaction (hot/warm/cold).
+        
+        Returns:
+            (compacted_history, cold_summary) - The hot messages to keep + cold tier summary
+        """
+        if len(history) < 20:
+            return history, ""  # Too few messages for meaningful compaction
+        
+        try:
+            entries = self._convert_messages_to_entries(history)
+            compactor = HierarchicalMemoryCompactor(
+                hot_window=min(20, len(history) // 3),  # Keep ~1/3 as hot
+                warm_window=min(50, len(history) * 2 // 3),
+                cold_threshold=len(history),
+            )
+            tier = compactor.compact(entries)
+            
+            # Hot tier: keep these messages as-is
+            hot_count = len(tier.hot)
+            compacted_history = history[-hot_count:] if hot_count > 0 else history[-10:]
+            
+            # Cold tier: distilled summary of oldest messages
+            cold_summary = tier.cold if tier.cold else ""
+            
+            logger.info(
+                f"[AIP-5A40-798604] Hierarchical compaction: "
+                f"hot={len(tier.hot)}, warm={len(tier.warm)}, cold_chars={len(tier.cold)}"
+            )
+            
+            return compacted_history, cold_summary
+            
+        except Exception as e:
+            logger.warning(f"[AIP-5A40-798604] Hierarchical compaction failed: {e}, falling back to simple truncation")
+            return history[-20:], ""
+
     async def _ensure_compact_history(
         self,
         history: list[BaseMessage],
@@ -522,7 +592,16 @@ class BitPoliteiaContextManager:
         If history tokens exceed threshold, summarize the middle turns.
 
         Now accounts for static content (MEMORY.md, Daily Notes, Skills) in threshold calculation.
+        [AIP-5A40-798604] Integrates HierarchicalMemoryCompactor for three-tier (hot/warm/cold) pre-processing.
         """
+        # [AIP-5A40-798604] Pre-pass: Apply hierarchical compaction for governance-aware context distillation
+        if len(history) > 30:
+            history, cold_summary = self._apply_hierarchical_compaction(history)
+            if cold_summary:
+                # Inject cold summary as system context at the beginning
+                cold_msg = SystemMessage(content=f"[Distilled History]\n{cold_summary[:1000]}")
+                history = [cold_msg] + history
+        
         # 1. Calculate effective threshold accounting for static content
         # static_tokens is already in tokens from _estimate_static_content_size()
         
