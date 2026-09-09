@@ -31,8 +31,6 @@ _memory_compactor = HierarchicalMemoryCompactor(
     hot_window=10,
     warm_window=30,
     cold_threshold=50,
-    decay_factor=0.99,
-    compaction_threshold=10,
 )
 
 

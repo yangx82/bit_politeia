@@ -124,10 +124,3 @@ def test_prune_preserves_governance_entries():
     result = compactor.prune_by_threshold([low, gov], min_score=3.0)
     assert gov in result, 'Governance entries must survive pruning regardless of score'
     assert low not in result, 'Low-score non-governance entries should be pruned'
-
-
-if __name__ == '__main__':
-    test_score_importance_governance_boost()
-    test_compact_respects_hot_window()
-    test_prune_preserves_governance_entries()
-    print('All tests passed.')
