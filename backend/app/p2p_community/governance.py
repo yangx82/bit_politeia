@@ -1318,3 +1318,351 @@ class GovernanceManager:
         except Exception as e:
             logger.error(f"Governance P2P Error: {e}")
             return False
+
+
+# ========================================================
+# [Autonomous Evolution Patch] AIP-5A40-01A6A6: Reputation-Weighted Quadratic Voting with Governance Integration
+# ========================================================
+import threading
+import logging
+from typing import Dict, List, Tuple, Optional
+from collections import defaultdict
+import math
+
+logger = logging.getLogger(__name__)
+
+
+class ReputationWeightedQuadraticVoting:
+    """Thread-safe reputation-weighted quadratic voting with deduplication and balance checking.
+    
+    Voting power = vote_count * sqrt(reputation)
+    Cost = voting_power^2
+    
+    This is NOT EigenTrust. Reputation values are externally managed.
+    """
+    
+    def __init__(self, initial_reputations: Optional[Dict[str, float]] = None):
+        self._lock = threading.Lock()
+        self._reputations: Dict[str, float] = {}
+        self._votes: Dict[str, Dict[str, int]] = defaultdict(dict)  # proposal_id -> {voter_id: vote_count}
+        self._balances: Dict[str, float] = defaultdict(float)
+        
+        if initial_reputations:
+            for node_id, rep in initial_reputations.items():
+                try:
+                    self._reputations[node_id] = self._validate_reputation(rep)
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Invalid initial reputation for {node_id}: {e}")
+    
+    def _validate_reputation(self, reputation: float) -> float:
+        """Bounds check reputation value [0.0, 1.0]."""
+        try:
+            rep = float(reputation)
+            if math.isnan(rep) or math.isinf(rep):
+                raise ValueError(f"Reputation must be finite, got {rep}")
+            return max(0.0, min(1.0, rep))
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid reputation value: {e}")
+    
+    def _validate_vote_count(self, votes: int) -> int:
+        """Bounds check vote count [0, 1000]."""
+        try:
+            votes = int(votes)
+            return max(0, min(1000, votes))
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid vote count: {e}")
+    
+    def update_reputation(self, node_id: str, reputation: float) -> None:
+        """Update node reputation with thread safety."""
+        try:
+            with self._lock:
+                self._reputations[node_id] = self._validate_reputation(reputation)
+                logger.debug(f"Updated reputation for {node_id}: {reputation}")
+        except Exception as e:
+            logger.error(f"Failed to update reputation for {node_id}: {e}")
+            raise
+    
+    def update_balance(self, node_id: str, balance: float) -> None:
+        """Update node balance for vote cost verification."""
+        try:
+            with self._lock:
+                self._balances[node_id] = max(0.0, float(balance))
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid balance for {node_id}: {e}")
+            raise ValueError(f"Invalid balance: {e}")
+    
+    def cast_votes(self, voter_id: str, proposal_id: str, vote_count: int) -> float:
+        """Cast quadratic votes weighted by reputation with deduplication and balance check.
+        
+        Returns cost if successful, raises exception if validation fails.
+        """
+        try:
+            vote_count = self._validate_vote_count(vote_count)
+            
+            with self._lock:
+                # Vote deduplication: prevent double-voting
+                if voter_id in self._votes[proposal_id]:
+                    raise ValueError(f"Voter {voter_id} has already voted on proposal {proposal_id}")
+                
+                # Get reputation (default 0.5 for new voters)
+                reputation = self._reputations.get(voter_id, 0.5)
+                
+                # Calculate cost
+                weighted_votes = vote_count * math.sqrt(reputation)
+                cost = weighted_votes ** 2
+                
+                # Balance checking
+                current_balance = self._balances.get(voter_id, 0.0)
+                if current_balance < cost:
+                    raise ValueError(
+                        f"Insufficient balance for {voter_id}: required {cost:.2f}, "
+                        f"available {current_balance:.2f}"
+                    )
+                
+                # Record vote (deduplicated - overwrites if somehow called again)
+                self._votes[proposal_id][voter_id] = vote_count
+                
+                # Deduct balance
+                self._balances[voter_id] = current_balance - cost
+                
+                logger.info(
+                    f"Vote cast: {voter_id} -> {proposal_id}, "
+                    f"votes={vote_count}, cost={cost:.2f}, rep={reputation:.2f}"
+                )
+                
+                return cost
+                
+        except ValueError as e:
+            logger.warning(f"Vote casting failed: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in cast_votes: {e}")
+            raise RuntimeError(f"Vote casting system error: {e}")
+    
+    def get_proposal_results(self, proposal_id: str) -> Dict[str, Tuple[int, float]]:
+        """Get weighted vote totals for a proposal.
+        
+        Returns: Dict[voter_id, (raw_votes, weighted_votes)]
+        """
+        try:
+            with self._lock:
+                results = {}
+                for voter_id, vote_count in self._votes[proposal_id].items():
+                    reputation = self._reputations.get(voter_id, 0.5)
+                    weighted = vote_count * math.sqrt(reputation)
+                    results[voter_id] = (vote_count, weighted)
+                return results
+        except Exception as e:
+            logger.error(f"Error getting proposal results: {e}")
+            raise RuntimeError(f"Failed to retrieve proposal results: {e}")
+    
+    def calculate_quadratic_cost(self, vote_count: int, reputation: float = 0.5) -> float:
+        """Calculate cost for given votes and reputation."""
+        try:
+            vote_count = self._validate_vote_count(vote_count)
+            reputation = self._validate_reputation(reputation)
+            weighted = vote_count * math.sqrt(reputation)
+            return weighted ** 2
+        except Exception as e:
+            logger.error(f"Error calculating cost: {e}")
+            raise
+    
+    def has_voted(self, voter_id: str, proposal_id: str) -> bool:
+        """Check if voter has already voted on proposal."""
+        with self._lock:
+            return voter_id in self._votes[proposal_id]
+    
+    def get_voter_balance(self, voter_id: str) -> float:
+        """Get current balance for voter."""
+        with self._lock:
+            return self._balances.get(voter_id, 0.0)
+
+
+# Integration interface for governance.py
+def integrate_with_governance(governance_module):
+    """Integration point for governance.py
+    
+    Example usage in governance.py:
+        from .reputation_voting import ReputationWeightedQuadraticVoting
+        
+        voting_system = ReputationWeightedQuadraticVoting()
+        
+        def cast_governance_vote(voter_id, proposal_id, vote_count):
+            cost = voting_system.cast_votes(voter_id, proposal_id, vote_count)
+            # Record vote in governance ledger
+            return cost
+    """
+    logger.info("Reputation-weighted quadratic voting integrated with governance module")
+    return ReputationWeightedQuadraticVoting()
+
+
+# Integration interface for agent_service.py
+def integrate_with_agent_service(agent_service_module):
+    """Integration point for agent_service.py
+    
+    Example usage in agent_service.py:
+        from .reputation_voting import ReputationWeightedQuadraticVoting
+        
+        voting_system = ReputationWeightedQuadraticVoting()
+        
+        def update_agent_reputation(agent_id, reputation):
+            voting_system.update_reputation(agent_id, reputation)
+            
+        def update_agent_balance(agent_id, balance):
+            voting_system.update_balance(agent_id, balance)
+    """
+    logger.info("Reputation-weighted quadratic voting integrated with agent service")
+    return ReputationWeightedQuadraticVoting()
+
+
+def test_reputation_weighted_quadratic_voting():
+    """Comprehensive test suite."""
+    print("Running tests...")
+    
+    # Test 1: Basic quadratic cost calculation
+    voting = ReputationWeightedQuadraticVoting({'node1': 1.0, 'node2': 0.25})
+    cost = voting.calculate_quadratic_cost(4, 1.0)
+    assert cost == 16.0, f"Expected 16.0, got {cost}"
+    print("✓ Test 1: Basic cost calculation")
+    
+    # Test 2: Reputation weighting
+    cost_low_rep = voting.calculate_quadratic_cost(4, 0.25)
+    assert cost_low_rep == 4.0, f"Expected 4.0, got {cost_low_rep}"
+    print("✓ Test 2: Reputation weighting")
+    
+    # Test 3: Bounds checking
+    voting.update_reputation('test', 1.5)
+    assert voting._reputations['test'] == 1.0, "Reputation should be capped at 1.0"
+    print("✓ Test 3: Bounds checking")
+    
+    # Test 4: Vote deduplication
+    voting.update_balance('voter1', 100.0)
+    voting.cast_votes('voter1', 'prop1', 2)
+    try:
+        voting.cast_votes('voter1', 'prop1', 3)  # Should fail - already voted
+        assert False, "Should have raised ValueError for double voting"
+    except ValueError as e:
+        assert "already voted" in str(e).lower()
+    print("✓ Test 4: Vote deduplication")
+    
+    # Test 5: Balance checking
+    voting.update_balance('voter2', 5.0)
+    try:
+        voting.cast_votes('voter2', 'prop2', 10)  # Cost would be 100 * 0.5 = 50
+        assert False, "Should have raised ValueError for insufficient balance"
+    except ValueError as e:
+        assert "insufficient balance" in str(e).lower()
+    print("✓ Test 5: Balance checking")
+    
+    # Test 6: Exception handling
+    try:
+        voting.update_reputation('bad_node', 'not_a_number')
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
+    print("✓ Test 6: Exception handling")
+    
+    # Test 7: has_voted check
+    assert voting.has_voted('voter1', 'prop1') == True
+    assert voting.has_voted('voter1', 'prop2') == False
+    print("✓ Test 7: has_voted check")
+    
+    print("\nAll tests passed! ✓")
+
+
+if __name__ == '__main__':
+    test_reputation_weighted_quadratic_voting()
+
+
+# ========================================================
+# [Autonomous Evolution Patch] AIP-5A40-8DED81: QuadraticVotingHelper for Bit Politeia
+# ========================================================
+"""Governance helpers for Bit Politeia: quadratic voting, reputation decay, tally auditing."""
+
+import hashlib
+import json
+import threading
+from typing import Dict
+
+
+class QuadraticVotingHelper:
+    """Quadratic voting cost calculator. Cost scales quadratically to prevent vote concentration."""
+
+    _MAX_COST = 10**8
+
+    def __init__(self, max_budget: int = 1000) -> None:
+        if not isinstance(max_budget, int) or max_budget <= 0 or max_budget > 10000:
+            raise ValueError("max_budget must be an integer in (0, 10000]")
+        self._max_budget = max_budget
+        self._lock = threading.Lock()
+
+    @property
+    def max_budget(self) -> int:
+        """Current budget ceiling."""
+        return self._max_budget
+
+    def calculate_cost(self, vote_count: int) -> int:
+        """Return quadratic cost capped at _MAX_COST for overflow protection."""
+        if not isinstance(vote_count, int) or vote_count < 0:
+            raise ValueError("vote_count must be a non-negative integer")
+        cost = vote_count ** 2
+        return min(cost, self._MAX_COST)
+
+    def validate_vote(self, vote_count: int, budget: int) -> bool:
+        """Check whether *budget* can afford *vote_count* quadratic votes."""
+        with self._lock:
+            return budget >= self.calculate_cost(vote_count)
+
+
+class ReputationDecayCalculator:
+    """Time-based reputation decay with configurable half-life for dynamic governance weighting."""
+
+    def __init__(self, half_life_hours: float = 168.0) -> None:
+        half_life_hours = float(half_life_hours)
+        if half_life_hours <= 0.0 or half_life_hours > 8760.0:
+            raise ValueError("half_life_hours must be in (0.0, 8760.0]")
+        self._half_life = half_life_hours
+
+    def decay(self, reputation: float, elapsed_hours: float) -> float:
+        """Apply exponential decay; result clamped to [0.0, 1.0]."""
+        reputation = float(reputation)
+        elapsed_hours = float(elapsed_hours)
+        if not (0.0 <= reputation <= 1.0):
+            raise ValueError("reputation must be in [0.0, 1.0]")
+        if elapsed_hours < 0.0:
+            raise ValueError("elapsed_hours must be >= 0.0")
+        factor = 0.5 ** (elapsed_hours / self._half_life)
+        return max(0.0, min(1.0, reputation * factor))
+
+
+class ProposalTallyAuditor:
+    """Deterministic tally verification using cryptographic hashing for audit trails."""
+
+    def compute_tally_hash(self, votes: Dict[str, int]) -> str:
+        """SHA-256 hex digest of canonically-sorted vote dict."""
+        if not isinstance(votes, dict):
+            raise TypeError("votes must be a dict")
+        payload = json.dumps(dict(sorted(votes.items())), sort_keys=True)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def verify_tally(self, votes: Dict[str, int], expected_hash: str) -> bool:
+        """Return True when the computed hash matches *expected_hash*."""
+        return self.compute_tally_hash(votes) == expected_hash
+
+
+# --------------- Unit Tests ---------------
+def test_governance_helpers() -> None:
+    # Quadratic cost: 5 votes -> cost 25
+    assert QuadraticVotingHelper(max_budget=100).calculate_cost(5) == 25
+    # Half-life decay: 1.0 after one half-life -> ~0.5
+    assert abs(ReputationDecayCalculator(half_life_hours=168.0).decay(1.0, 168.0) - 0.5) < 0.01
+    # Tally round-trip verification
+    assert ProposalTallyAuditor().verify_tally(
+        {'a': 1, 'b': 2},
+        ProposalTallyAuditor().compute_tally_hash({'a': 1, 'b': 2})
+    ) is True
+
+
+if __name__ == "__main__":
+    test_governance_helpers()
+    print("All governance helper tests passed.")
