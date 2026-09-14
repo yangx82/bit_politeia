@@ -23,6 +23,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
@@ -129,6 +130,54 @@ class AsyncCitationVerifier:
         self.timeout = 6.0
 
     @staticmethod
+    def calculate_title_similarity(claimed_title: str, actual_title: str) -> float:
+        """
+        Calculates word token overlap (Jaccard similarity) between claimed and actual title.
+        """
+        if not claimed_title or not actual_title:
+            return 0.0
+        c_words = {
+            w.lower().strip(".,;:()[]{}\"'")
+            for w in re.split(r'[\s/_-]+', claimed_title)
+            if len(w) > 2 and w.lower() not in AsyncCitationVerifier.STOPWORDS
+        }
+        a_words = {
+            w.lower().strip(".,;:()[]{}\"'")
+            for w in re.split(r'[\s/_-]+', actual_title)
+            if len(w) > 2 and w.lower() not in AsyncCitationVerifier.STOPWORDS
+        }
+        if not c_words or not a_words:
+            return 0.0
+        intersection = c_words & a_words
+        union = c_words | a_words
+        return len(intersection) / len(union) if union else 0.0
+
+    @classmethod
+    def extract_claimed_title_for_citation(cls, cid: str, description: str = "", sources: Optional[list[str]] = None) -> str:
+        """Extracts claimed paper title associated with a specific citation ID."""
+        clean_cid = re.escape(cid.strip())
+        for src in (sources or []):
+            if cid in src:
+                m1 = re.search(r'\(([^)]+)\)', src)
+                if m1 and len(m1.group(1).strip()) > 5:
+                    return m1.group(1).strip()
+                m2 = re.search(r'([A-Za-z0-9\s:,\'-]{8,})\s*[-–—:]\s*' + clean_cid, src)
+                if m2:
+                    return m2.group(1).strip()
+                m3 = re.search(clean_cid + r'\s*[-–—:]\s*([A-Za-z0-9\s:,\'-]{8,})', src)
+                if m3:
+                    return m3.group(1).strip()
+
+        for line in (description or "").splitlines():
+            if cid in line:
+                m = re.search(clean_cid + r'[\s:–—\-]+([A-Za-z0-9\s:,\'-]{8,})', line)
+                if m:
+                    candidate = m.group(1).strip().rstrip(".,;)")
+                    if len(candidate) > 6 and not candidate.startswith("http"):
+                        return candidate
+        return ""
+
+    @staticmethod
     def extract_citations(text: str) -> list[str]:
         """Extracts arXiv IDs, DOIs, and OpenAlex Work IDs from text."""
         if not text:
@@ -153,6 +202,7 @@ class AsyncCitationVerifier:
         self,
         citation_id: str,
         claimed_topic: str = "",
+        claimed_title: str = "",
         client: Optional[httpx.AsyncClient] = None,
     ) -> dict[str, Any]:
         """
@@ -162,6 +212,8 @@ class AsyncCitationVerifier:
             title: str
             abstract: str
             relevant: bool
+            title_mismatch: bool
+            title_similarity: float
             is_unreachable: bool
             discipline_mismatch: bool
             error: str | None
@@ -175,6 +227,8 @@ class AsyncCitationVerifier:
                 "title": "Known Hallucinated Citation",
                 "abstract": self.BLOCKLIST_CITATIONS[clean_id],
                 "relevant": False,
+                "title_mismatch": False,
+                "title_similarity": 0.0,
                 "is_unreachable": False,
                 "discipline_mismatch": False,
                 "error": f"Citation {clean_id} is blacklisted: {self.BLOCKLIST_CITATIONS[clean_id]}",
@@ -183,8 +237,21 @@ class AsyncCitationVerifier:
         # 2. Check in-memory cache
         if clean_id in self._cache:
             cached = self._cache[clean_id]
-            relevant = self._evaluate_relevance(claimed_topic, cached.get("title", ""), cached.get("abstract", ""))
-            return {**cached, "relevant": relevant and not cached.get("discipline_mismatch", False)}
+            title = cached.get("title", "")
+            title_mismatch = False
+            sim = 1.0
+            if claimed_title and title:
+                sim = self.calculate_title_similarity(claimed_title, title)
+                if sim < 0.40:
+                    title_mismatch = True
+            relevant = self._evaluate_relevance(claimed_topic, title, cached.get("abstract", "")) if not title_mismatch else False
+            return {
+                **cached,
+                "relevant": relevant and not cached.get("discipline_mismatch", False),
+                "title_mismatch": title_mismatch,
+                "title_similarity": round(sim, 2),
+                "error": f"Title mismatch: claimed '{claimed_title}' vs actual '{title}' (similarity={sim:.0%})" if title_mismatch else cached.get("error"),
+            }
 
         should_close = False
         if client is None:
@@ -194,7 +261,7 @@ class AsyncCitationVerifier:
         try:
             # 3. Check if this is an OpenAlex Work ID (e.g. W7207867677)
             if re.match(r'^W\d+$', clean_id, re.IGNORECASE):
-                return await self._verify_openalex(clean_id, claimed_topic, client)
+                return await self._verify_openalex(clean_id, claimed_topic, client, claimed_title=claimed_title)
 
             # 4. Query arXiv API asynchronously
             url = f"{self.ARXIV_API_BASE}?id_list={clean_id}&max_results=1"
@@ -206,6 +273,8 @@ class AsyncCitationVerifier:
                     "title": "",
                     "abstract": "",
                     "relevant": True,  # Fail-safe: don't reject on external outage
+                    "title_mismatch": False,
+                    "title_similarity": 1.0,
                     "is_unreachable": True,
                     "discipline_mismatch": False,
                     "error": f"arXiv API returned HTTP {resp.status_code} (fail-safe fallback)",
@@ -218,6 +287,8 @@ class AsyncCitationVerifier:
                     "title": "",
                     "abstract": "",
                     "relevant": False,
+                    "title_mismatch": False,
+                    "title_similarity": 0.0,
                     "is_unreachable": False,
                     "discipline_mismatch": False,
                     "error": f"Citation '{clean_id}' does not exist on arXiv",
@@ -235,6 +306,8 @@ class AsyncCitationVerifier:
                     "title": "",
                     "abstract": "",
                     "relevant": False,
+                    "title_mismatch": False,
+                    "title_similarity": 0.0,
                     "is_unreachable": False,
                     "discipline_mismatch": False,
                     "error": f"Entry not found in XML response for {clean_id}",
@@ -250,6 +323,8 @@ class AsyncCitationVerifier:
                     "title": title,
                     "abstract": "",
                     "relevant": False,
+                    "title_mismatch": False,
+                    "title_similarity": 0.0,
                     "is_unreachable": False,
                     "discipline_mismatch": False,
                     "error": f"arXiv returned error title: {title}",
@@ -258,16 +333,25 @@ class AsyncCitationVerifier:
             summary_elem = entry.find("atom:summary", ns)
             abstract = " ".join(summary_elem.text.split()) if summary_elem is not None and summary_elem.text else ""
 
-            relevant = self._evaluate_relevance(claimed_topic, title, abstract)
+            title_mismatch = False
+            sim = 1.0
+            if claimed_title and title:
+                sim = self.calculate_title_similarity(claimed_title, title)
+                if sim < 0.40:
+                    title_mismatch = True
+
+            relevant = self._evaluate_relevance(claimed_topic, title, abstract) if not title_mismatch else False
 
             result = {
                 "exists": True,
                 "title": title,
                 "abstract": abstract,
                 "relevant": relevant,
+                "title_mismatch": title_mismatch,
+                "title_similarity": round(sim, 2),
                 "is_unreachable": False,
                 "discipline_mismatch": False,
-                "error": None,
+                "error": f"Title mismatch: claimed '{claimed_title}' vs actual '{title}' (similarity={sim:.0%})" if title_mismatch else None,
             }
             self._cache[clean_id] = result
             return result
@@ -303,6 +387,7 @@ class AsyncCitationVerifier:
         work_id: str,
         claimed_topic: str,
         client: httpx.AsyncClient,
+        claimed_title: str = "",
     ) -> dict[str, Any]:
         """
         Asynchronously verifies an academic citation via the OpenAlex API.
@@ -318,6 +403,8 @@ class AsyncCitationVerifier:
                     "title": "",
                     "abstract": "",
                     "relevant": False,
+                    "title_mismatch": False,
+                    "title_similarity": 0.0,
                     "is_unreachable": False,
                     "discipline_mismatch": False,
                     "error": f"Citation '{clean_id}' does not exist on OpenAlex (HTTP 404)",
@@ -332,6 +419,8 @@ class AsyncCitationVerifier:
                     "title": "",
                     "abstract": "",
                     "relevant": True,  # Fail-safe
+                    "title_mismatch": False,
+                    "title_similarity": 1.0,
                     "is_unreachable": True,
                     "discipline_mismatch": False,
                     "error": f"OpenAlex API returned HTTP {resp.status_code} (fail-safe fallback)",
@@ -383,6 +472,8 @@ class AsyncCitationVerifier:
                     "title": title,
                     "abstract": abstract,
                     "relevant": False,
+                    "title_mismatch": False,
+                    "title_similarity": 1.0,
                     "is_unreachable": False,
                     "discipline_mismatch": True,
                     "discipline_detected": detected_desc,
@@ -391,15 +482,24 @@ class AsyncCitationVerifier:
                 self._cache[clean_id] = res
                 return res
 
-            relevant = self._evaluate_relevance(claimed_topic, title, abstract)
+            title_mismatch = False
+            sim = 1.0
+            if claimed_title and title:
+                sim = self.calculate_title_similarity(claimed_title, title)
+                if sim < 0.40:
+                    title_mismatch = True
+
+            relevant = self._evaluate_relevance(claimed_topic, title, abstract) if not title_mismatch else False
             res = {
                 "exists": True,
                 "title": title,
                 "abstract": abstract,
                 "relevant": relevant,
+                "title_mismatch": title_mismatch,
+                "title_similarity": round(sim, 2),
                 "is_unreachable": False,
                 "discipline_mismatch": False,
-                "error": None if relevant else f"Academic citation '{clean_id}' is semantically irrelevant to proposal topic",
+                "error": f"Title mismatch: claimed '{claimed_title}' vs actual '{title}' (similarity={sim:.0%})" if title_mismatch else (None if relevant else f"Academic citation '{clean_id}' is semantically irrelevant to proposal topic"),
             }
             self._cache[clean_id] = res
             return res
@@ -411,6 +511,8 @@ class AsyncCitationVerifier:
                 "title": "",
                 "abstract": "",
                 "relevant": True,  # Fail-safe
+                "title_mismatch": False,
+                "title_similarity": 1.0,
                 "is_unreachable": True,
                 "discipline_mismatch": False,
                 "error": f"Network unreachable during OpenAlex citation verification: {e}",
@@ -422,6 +524,8 @@ class AsyncCitationVerifier:
                 "title": "",
                 "abstract": "",
                 "relevant": True,
+                "title_mismatch": False,
+                "title_similarity": 1.0,
                 "is_unreachable": True,
                 "discipline_mismatch": False,
                 "error": f"Internal OpenAlex parser error: {e}",
@@ -430,6 +534,7 @@ class AsyncCitationVerifier:
     def _evaluate_relevance(self, claimed_topic: str, title: str, abstract: str) -> bool:
         """
         Evaluates semantic relevance using stopword-filtered keyword matching.
+        Requires at least 2 significant overlapping keywords or >= 20% topic words overlap.
         """
         if not claimed_topic:
             return True
@@ -450,7 +555,7 @@ class AsyncCitationVerifier:
 
         overlap = topic_words & content_words
         overlap_ratio = len(overlap) / len(topic_words) if topic_words else 1.0
-        return len(overlap) >= 1 or overlap_ratio >= 0.1
+        return len(overlap) >= 2 or overlap_ratio >= 0.20
 
 
 # ============================================================================
@@ -629,7 +734,14 @@ class ASTConsistencyAuditor:
         inflation_ratio = round(total_claims / actual_symbol_count, 2)
 
         has_inflation_words = any(w in description.lower() for w in cls.INFLATION_INDICATORS)
-        is_inflated = (inflation_ratio > 4.0 or has_inflation_words) and not has_scope_tag
+        
+        # Hard Rule: If code is under 35 non-empty LOC and coverage is under 35%,
+        # it is classified as severe inflation regardless of [Scope-Corrected] bypass tags.
+        loc = symbols.get("non_empty_loc", 0)
+        is_severe_empty_inflation = (loc < 35 and coverage_ratio < 0.35 and total_claims >= 2)
+
+        is_inflated = is_severe_empty_inflation or ((inflation_ratio > 4.0 or has_inflation_words) and not has_scope_tag)
+        is_blocking_consistency_gap = (coverage_ratio < threshold) or is_severe_empty_inflation
 
         return {
             "coverage_ratio": round(coverage_ratio, 2),
@@ -639,6 +751,7 @@ class ASTConsistencyAuditor:
             "actual_symbols": symbols,
             "inflation_ratio": inflation_ratio,
             "is_inflated": is_inflated,
+            "is_blocking_consistency_gap": is_blocking_consistency_gap,
             "has_scope_tag": has_scope_tag,
             "passed": coverage_ratio >= threshold and not is_inflated,
         }
@@ -812,9 +925,42 @@ class QualityGateService:
     Orchestrates all deterministic and semantic audits before proposal submission or P2P voting.
     """
 
-    def __init__(self):
+    def __init__(self, data_dir: Optional[str] = None):
         self.citation_verifier = AsyncCitationVerifier()
         self.known_fingerprints: dict[str, str] = {}
+        if data_dir is None:
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            self.data_dir = os.path.join(base_dir, "data")
+        else:
+            self.data_dir = data_dir
+        os.makedirs(self.data_dir, exist_ok=True)
+        self.rejected_fingerprints_file = os.path.join(self.data_dir, "historical_rejected_fingerprints.json")
+        self.rejected_fingerprints: dict[str, dict[str, Any]] = {}
+        self._load_rejected_fingerprints()
+
+    def _load_rejected_fingerprints(self):
+        if os.path.exists(self.rejected_fingerprints_file):
+            try:
+                with open(self.rejected_fingerprints_file, "r", encoding="utf-8") as f:
+                    self.rejected_fingerprints = json.load(f)
+            except Exception as e:
+                logger.warning(f"[QualityGate] Failed to load rejected fingerprints: {e}")
+
+    def register_rejected_fingerprint(self, aip_id: str, code: str, reason: str = ""):
+        """Registers and persists an AST fingerprint of a rejected proposal to prevent repeat submissions."""
+        fp = StructuralDuplicateDetector.compute_ast_fingerprint(code)
+        if fp:
+            self.rejected_fingerprints[fp] = {
+                "aip_id": aip_id,
+                "reason": reason[:200],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            try:
+                with open(self.rejected_fingerprints_file, "w", encoding="utf-8") as f:
+                    json.dump(self.rejected_fingerprints, f, indent=2, ensure_ascii=False)
+                logger.info(f"[QualityGate] Persisted rejected proposal AST fingerprint for {aip_id} ({fp[:8]})")
+            except Exception as e:
+                logger.warning(f"[QualityGate] Failed to save rejected fingerprints: {e}")
 
     def register_fingerprint(self, aip_id: str, code: str):
         """Registers a known code fingerprint for duplicate detection."""
@@ -898,7 +1044,7 @@ class QualityGateService:
                 ))
 
         # --------------------------------------------------------------------
-        # P0 Check 3: Academic Citation Authentication & Relevance
+        # P0 Check 3: Academic Citation Authentication, Relevance & Title Matching
         # --------------------------------------------------------------------
         citations_to_check = set()
         for src in (research_sources or []):
@@ -909,12 +1055,20 @@ class QualityGateService:
 
         claimed_topic = f"{title} {description[:200]}"
         for cid in citations_to_check:
-            cit_res = await self.citation_verifier.verify_citation(cid, claimed_topic=claimed_topic)
+            claimed_title = AsyncCitationVerifier.extract_claimed_title_for_citation(cid, description, research_sources)
+            cit_res = await self.citation_verifier.verify_citation(cid, claimed_topic=claimed_topic, claimed_title=claimed_title)
             if cit_res.get("exists") is False:
                 issues.append(QualityIssue(
                     severity=Severity.P0,
                     category="citation_fraud",
                     message=f"Academic citation '{cid}' does not exist (Fabricated/Hallucinated Citation)",
+                    details=cit_res.get("error"),
+                ))
+            elif cit_res.get("title_mismatch"):
+                issues.append(QualityIssue(
+                    severity=Severity.P0,
+                    category="citation_title_mismatch",
+                    message=f"Academic citation title mismatch for '{cid}': {cit_res.get('error')}",
                     details=cit_res.get("error"),
                 ))
             elif not cit_res.get("relevant"):
@@ -937,8 +1091,9 @@ class QualityGateService:
                 ))
 
         # --------------------------------------------------------------------
-        # P0 Check 4: AST Structural Deduplication
+        # P0 Check 4: AST Structural Deduplication (Active & Historically Rejected)
         # --------------------------------------------------------------------
+        # 4.1 Check against actively tracked proposals
         active_fps = {k: v for k, v in self.known_fingerprints.items() if k != exclude_aip_id and k != aip_id}
         is_dup, dup_id = StructuralDuplicateDetector.check_duplicate(proposed_diff, active_fps)
         if is_dup:
@@ -949,8 +1104,20 @@ class QualityGateService:
                 details=f"AST Fingerprint matches {dup_id}",
             ))
 
+        # 4.2 Check against historically rejected proposal templates
+        new_fp = StructuralDuplicateDetector.compute_ast_fingerprint(proposed_diff)
+        if new_fp and new_fp in self.rejected_fingerprints:
+            rej_meta = self.rejected_fingerprints[new_fp]
+            orig_id = rej_meta.get("aip_id", "historical")
+            issues.append(QualityIssue(
+                severity=Severity.P0,
+                category="duplicate_of_rejected_proposal",
+                message=f"Proposed code AST is a structural duplicate of previously rejected proposal '{orig_id}'",
+                details=f"AST Fingerprint matches rejected proposal {orig_id}. Re-submitting rejected code templates without structural fixes is prohibited.",
+            ))
+
         # --------------------------------------------------------------------
-        # P1 Check 5: Description-Code Consistency & Inflation Auditing
+        # P0/P1 Check 5: Description-Code Consistency & Inflation Auditing
         # --------------------------------------------------------------------
         consistency_data = {}
         if tree is not None:
@@ -962,16 +1129,23 @@ class QualityGateService:
             )
             if consistency_data.get("is_inflated"):
                 issues.append(QualityIssue(
-                    severity=Severity.P1,
-                    category="description_inflation",
-                    message=f"Description Inflation detected: claims {consistency_data.get('total_claims')} features vs {len(consistency_data.get('actual_symbols', {}).get('functions', []))} functions without [Scope-Corrected] declaration",
+                    severity=Severity.P0,  # Elevated to P0 Hard Barrier
+                    category="description_inflation_blocking",
+                    message=f"Description Inflation detected: claims {consistency_data.get('total_claims')} features vs {len(consistency_data.get('actual_symbols', {}).get('functions', []))} functions (claims coverage={consistency_data.get('coverage_ratio'):.0%})",
                     details=f"Inflation Ratio: {consistency_data.get('inflation_ratio')}",
+                ))
+            elif consistency_data.get("is_blocking_consistency_gap"):
+                issues.append(QualityIssue(
+                    severity=Severity.P0,  # Elevated to P0 Hard Barrier
+                    category="consistency_gap_blocking",
+                    message=f"Description-to-code claims coverage ratio is critically low ({consistency_data.get('coverage_ratio'):.0%} < 60%). Missing: {consistency_data.get('missing_claims')[:3]}",
+                    details=f"Missing claims: {consistency_data.get('missing_claims')}",
                 ))
             elif not consistency_data.get("passed"):
                 issues.append(QualityIssue(
                     severity=Severity.P1,
                     category="consistency_gap",
-                    message=f"Description-to-code coverage ratio low ({consistency_data.get('coverage_ratio'):.0%} < 60%). Missing: {consistency_data.get('missing_claims')[:3]}",
+                    message=f"Description-to-code coverage ratio warning ({consistency_data.get('coverage_ratio'):.0%}). Missing: {consistency_data.get('missing_claims')[:3]}",
                     details=f"Missing claims: {consistency_data.get('missing_claims')}",
                 ))
 

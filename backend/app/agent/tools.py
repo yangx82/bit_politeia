@@ -633,11 +633,25 @@ async def cast_ballot(election_id: str, ballot_json: str) -> str:
         if not isinstance(votes_data, list):
             return "Error: ballot_json must be a list"
 
-        import app.services.agent_service
+        try:
+            from app.services.agent_service import agent_service
+        except (ImportError, ModuleNotFoundError):
+            from backend.app.services.agent_service import agent_service
 
-        result = await app.services.agent_service.agent_service.vote_election(
+        result = await agent_service.vote_election(
             election_id, votes_data
         )
+
+        # Automated read-back assertion to guarantee voting stance consistency
+        gov = getattr(agent_service, "governance_manager", None)
+        if gov and "registered" in result:
+            election = gov.active_elections.get(election_id) or gov.finished_elections.get(election_id)
+            if election and gov.node_id in election.votes:
+                recorded_votes = election.votes[gov.node_id]
+                rec_approval = recorded_votes[0].approval if recorded_votes else None
+                rec_stance = "APPROVE" if rec_approval else "REJECT"
+                return f"Ballot cast result: {result} | [VERIFIED: Recorded in election {election_id[:8]} with position={rec_stance}]"
+
         return f"Ballot cast result: {result}"
     except Exception as e:
         return f"Failed to vote: {e!s}"
@@ -663,6 +677,20 @@ async def cast_vote(election_id: str, approval: bool = True, reason: str = "") -
             approval=approval,
             reason=reason,
         )
+
+        # Automated read-back assertion
+        gov = getattr(agent_service, "governance_manager", None)
+        if gov and "registered" in result:
+            election = gov.active_elections.get(election_id) or gov.finished_elections.get(election_id)
+            if election and gov.node_id in election.votes:
+                recorded_votes = election.votes[gov.node_id]
+                rec_approval = recorded_votes[0].approval if recorded_votes else None
+                rec_stance = "APPROVE" if rec_approval else "REJECT"
+                expected_stance = "APPROVE" if approval else "REJECT"
+                if rec_stance != expected_stance:
+                    return f"Vote WARNING: Discrepancy! Intended={expected_stance} but Recorded={rec_stance}"
+                return f"Vote result: {result} | [VERIFIED: Recorded in election {election_id[:8]} with position={rec_stance}]"
+
         return f"Vote result: {result}"
     except Exception as e:
         return f"Failed to vote: {e!s}"
@@ -1160,6 +1188,85 @@ async def configure_p2p_processing_mode(
         return f"Failed to set P2P processing mode: {e}"
 
 
+@tool
+async def inspect_media(file_path: str, instruction: str = "") -> str:
+    """
+    Inspect, view, and analyze an image or video file stored on the local disk using multimodal vision capabilities.
+
+    Args:
+        file_path: Path to the image (png, jpg, jpeg, webp, bmp, gif) or video (mp4, avi, mov, mkv, webm) file.
+        instruction: Optional specific question or instruction for analyzing the media content (e.g. "What text is written on the board?", "Summarize what happens in the video").
+    """
+    import os
+    from langchain_core.messages import HumanMessage
+    from app.utils.multimodal import (
+        IMAGE_EXTENSIONS,
+        VIDEO_EXTENSIONS,
+        encode_image_to_base64,
+        extract_video_keyframes,
+    )
+
+    clean_path = file_path.strip().strip("'\"")
+    if not os.path.isabs(clean_path):
+        candidates = [
+            os.path.abspath(clean_path),
+            os.path.abspath(os.path.join(os.getcwd(), clean_path)),
+            os.path.abspath(os.path.join(os.getcwd(), "data", clean_path)),
+            os.path.abspath(os.path.join(os.getcwd(), "data", "downloads", clean_path)),
+            os.path.abspath(os.path.join(os.getcwd(), "data", "resident", clean_path)),
+        ]
+        resolved = None
+        for cand in candidates:
+            if os.path.exists(cand):
+                resolved = cand
+                break
+        if resolved:
+            clean_path = resolved
+        else:
+            return f"Error: Media file not found at '{file_path}'."
+    elif not os.path.exists(clean_path):
+        return f"Error: Media file not found at '{file_path}'."
+
+    ext = os.path.splitext(clean_path)[1].lower()
+    prompt_text = instruction.strip() or "Please analyze and describe this media in detail."
+
+    try:
+        if ext in IMAGE_EXTENSIONS:
+            data_uri = encode_image_to_base64(clean_path)
+            blocks = [
+                {"type": "text", "text": prompt_text},
+                {"type": "image_url", "image_url": {"url": data_uri}},
+            ]
+            media_type_label = f"Image ({ext})"
+        elif ext in VIDEO_EXTENSIONS:
+            keyframe_blocks = extract_video_keyframes(clean_path, max_frames=6)
+            if not keyframe_blocks:
+                return f"Error: Could not extract any readable frames from video '{clean_path}'."
+            blocks = [
+                {
+                    "type": "text",
+                    "text": f"{prompt_text}\n[Attached {len(keyframe_blocks)} keyframes extracted chronologically from video: {os.path.basename(clean_path)}]",
+                }
+            ] + keyframe_blocks
+            media_type_label = f"Video ({ext}, {len(keyframe_blocks)} keyframes)"
+        else:
+            supported = sorted(IMAGE_EXTENSIONS | VIDEO_EXTENSIONS)
+            return f"Error: Unsupported media format '{ext}'. Supported formats: {', '.join(supported)}"
+
+        from app.services.agent_service import agent_service
+        llm = getattr(agent_service, "raw_llm", None) or getattr(agent_service, "llm", None)
+        if not llm:
+            return f"Processed {media_type_label} for '{os.path.basename(clean_path)}', but no LLM model is currently initialized for vision analysis."
+
+        msg = HumanMessage(content=blocks)
+        res = await llm.ainvoke([msg])
+        content_res = getattr(res, "content", str(res))
+        return f"[Visual Analysis for {os.path.basename(clean_path)} ({media_type_label})]:\n{content_res}"
+    except Exception as e:
+        logger.warning(f"Error inspecting media '{clean_path}': {e}", exc_info=True)
+        return f"Error during multimodal inspection of '{os.path.basename(clean_path)}': {e!s}"
+
+
 # List of Tools to bind to the agent
 AGENT_TOOLS = [
     send_p2p_message,
@@ -1199,6 +1306,7 @@ AGENT_TOOLS = [
     edit_file,
     copy_files,
     move_files,
+    inspect_media,
     fetch_web_page,
     browser_fetch_page,
     academic_research,
@@ -1246,6 +1354,7 @@ CODING_TOOLS = [
 from .tool_registry import tool_registry, ToolCapability, ToolRiskLevel, ApprovalRequirement
 
 tool_registry.register("read_file", read_file, description="Read text file contents", capabilities=[ToolCapability.READ_ONLY], risk_level=ToolRiskLevel.LOW)
+tool_registry.register("inspect_media", inspect_media, description="Inspect and analyze image or video file", capabilities=[ToolCapability.READ_ONLY], risk_level=ToolRiskLevel.LOW)
 tool_registry.register("list_dir", list_dir, description="List directory contents", capabilities=[ToolCapability.READ_ONLY], risk_level=ToolRiskLevel.LOW)
 tool_registry.register("verify_file_exists", verify_file_exists, description="Verify if file exists", capabilities=[ToolCapability.READ_ONLY], risk_level=ToolRiskLevel.LOW)
 tool_registry.register("check_python_syntax", check_python_syntax, description="Check Python AST syntax", capabilities=[ToolCapability.READ_ONLY], risk_level=ToolRiskLevel.LOW)

@@ -272,6 +272,13 @@ class EvolutionService:
             trigger_error=f"AIP Rejected (Strike #{self.consecutive_rejections}): {reason[:200]}",
             corrective_action="Avoid repeating this pattern. Ensure scope consistency, thread locks, test assertions, and literature relevance.",
         )
+        try:
+            aip = self.aips.get(aip_id)
+            if aip and aip.proposed_diff:
+                from .aip_quality_gate import quality_gate_service
+                quality_gate_service.register_rejected_fingerprint(aip_id, aip.proposed_diff, reason=reason)
+        except Exception as e:
+            logger.debug(f"[EvolutionCooldown] Could not register rejected fingerprint: {e}")
 
     def record_approval_success(self):
         """Resets rejection strikes upon successful proposal approval."""
@@ -433,13 +440,13 @@ class EvolutionService:
             "target_files": ["backend/app/p2p_community/governance.py", "backend/app/services/agent_service.py"],
             "citations": [
                 {
-                    "title": "Quadratic Voting: How Mechanism Design Can Radicalize Democracy",
+                    "title": "A Flexible Design for Funding Public Goods (Quadratic Funding / CLR)",
                     "url": "https://arxiv.org/abs/1809.06421",
-                    "topic": "Quadratic Voting and Dynamic Governance Allocation",
+                    "topic": "Quadratic Funding and Mathematical Governance Allocation",
                 },
                 {
-                    "title": "EigenTrust: Fast and Robust Distributed Reputation Management",
-                    "url": "https://arxiv.org/abs/cs/0305031",
+                    "title": "The EigenTrust Algorithm for Reputation Management in P2P Networks",
+                    "url": "https://doi.org/10.1145/775152.775242",
                     "topic": "Reputation Scoring, Decay and Anti-Sybil Defense",
                 },
             ],
@@ -629,17 +636,14 @@ class EvolutionService:
         # Check if unit test assertions exist
         has_tests = any(kw in clean_code for kw in ["assert ", "pytest", "unittest", "def test_"])
         inflation_keywords = ["entire system", "complete engine", "full pipeline", "multi-tier framework", "end-to-end"]
-        is_inflated = any(kw in corrected_desc.lower() for kw in inflation_keywords) or (num_code_lines < 30 and not has_scope_tag)
 
-        if is_inflated and not has_scope_tag:
-            target_name = os.path.basename(target_files[0]) if target_files else "system"
-            test_status_note = "includes assertions" if has_tests else "requires unit test"
-            scope_notice = (
-                f"\n\n[Scope-Corrected | Atomic Enhancement: This proposal strictly implements the atomic '{title}' helper logic "
-                f"({num_code_lines} LOC, {test_status_note}) for {target_name}. Wider integration/orchestration is intentionally out-of-scope.]"
-            )
-            corrected_desc += scope_notice
-            logger.info(f"[EvolutionService] Pre-flight: Auto-applied Scope-Correction for concise diff ({num_code_lines} LOC).")
+        # Reject overly brief / vacuous code diffs
+        if num_code_lines < 15:
+            return False, description, f"Rejected: proposed_diff is too brief ({num_code_lines} LOC) to constitute a substantive enhancement."
+
+        # Hard reject on description inflation
+        if any(kw in corrected_desc.lower() for kw in inflation_keywords) and num_code_lines < 40:
+            return False, description, f"Rejected: Description Inflation — claiming broad framework with only {num_code_lines} LOC."
 
         return True, corrected_desc, "Pre-flight consistency audit PASSED"
 
@@ -1297,6 +1301,38 @@ class EvolutionService:
         if not aip:
             logger.error(f"[EvolutionService] AIP {aip_id} not found")
             return False
+
+        if getattr(aip, "status", "") in ["preflight_rejected", "rejected", "failed"]:
+            logger.warning(f"[EvolutionService] Cannot broadcast rejected/invalid AIP {aip_id} (status={aip.status})")
+            return False
+
+        # Quality Gate Hard Barrier before network broadcast
+        try:
+            from .aip_quality_gate import quality_gate_service
+            report = await quality_gate_service.evaluate_proposal(
+                aip_id=aip.aip_id,
+                initiator_id=aip.initiator_id,
+                title=aip.title,
+                description=aip.description,
+                proposed_diff=aip.proposed_diff,
+                research_sources=aip.research_sources,
+                signature=aip.signature,
+                public_key=aip.public_key,
+                require_signature=False,
+                exclude_aip_id=aip.aip_id,
+            )
+            aip.quality_report = report.to_dict()
+            if not report.passed:
+                p0_msgs = [i.message for i in report.issues if i.severity.value == "P0"]
+                logger.warning(f"[EvolutionService] Broadcast blocked by QualityGate P0 for {aip_id}: {p0_msgs}")
+                aip.status = "preflight_rejected"
+                quality_gate_service.register_rejected_fingerprint(
+                    aip.aip_id, aip.proposed_diff, reason="; ".join(p0_msgs)
+                )
+                self._save_aips()
+                return False
+        except Exception as qg_err:
+            logger.error(f"[EvolutionService] QualityGate evaluation error during broadcast: {qg_err}")
 
         aip.status = "verified_and_proposed"
         self._save_aips()

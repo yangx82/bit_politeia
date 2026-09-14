@@ -997,9 +997,9 @@ class GovernanceManager:
         voter_id = votes[0].voter_id
 
         # 1. Proposer Recusal: excluded voters cannot cast ballots
-        if voter_id in election.excluded_voters:
+        if voter_id in election.excluded_voters or (election.initiator_id and voter_id == election.initiator_id):
             logger.warning(
-                f"[Governance] Voter {voter_id[:8]} is in excluded_voters (conflict of interest/recusal) for election {election_id[:8]}, rejecting."
+                f"[Governance] Voter {voter_id[:8]} is in excluded_voters or is initiator (conflict of interest/recusal) for election {election_id[:8]}, rejecting."
             )
             return False
 

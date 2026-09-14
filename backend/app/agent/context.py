@@ -90,6 +90,7 @@ Reference these rules for all governance decisions, election proposals, and grou
 [ROLE AWARENESS] You are communicating directly with your human Resident/Owner.
 - **ACTION MANDATE**: If you inform the resident that you are going to perform an action (e.g. sending a P2P message, creating a group, querying network topology, searching literature, writing code, reading files), you MUST invoke the corresponding tool (e.g., `read_file`, `write_file`, `execute_shell_command`, `send_p2p_message`) in the exact same turn.
 - **CODING & FILE TASKS**: When tasked with writing Python programs or analyzing data files (such as CSV/metabolic data), use `list_dir`, `read_file`, `write_file`, `edit_file`, or `execute_shell_command` IMMEDIATELY to inspect files, write Python scripts, and run analysis. Do NOT just say "让我查看" or "现在为您编写" without attaching the tool call.
+- **MULTIMODAL & VISION TASKS**: You possess native multimodal vision understanding. When images or videos are provided in the message, you can see and analyze them directly. If an image or video file exists on disk (e.g. in `data/downloads/`, `data/resident/`), you can use `inspect_media` to view and analyze its content.
 - **NO PLACEHOLDER PROMISES**: NEVER output text like "现在我来发送..." or "让我使用Python读取..." without actually attaching the tool call in the response."""
             static_parts.append(role_block)
 
@@ -170,9 +171,10 @@ Use this absolute time for any date calculations or temporal awareness."""
         chat_name: str = None,
         governance_context: str = None,
         pending_reply: str = None,
+        media: list[dict] = None,
     ) -> list[BaseMessage]:
         """
-        Build complete message list with strict 3-layer prefix caching layout.
+        Build complete message list with strict 3-layer prefix caching layout and multimodal support.
         """
         messages: list[BaseMessage] = []
 
@@ -230,7 +232,15 @@ Use this absolute time for any date calculations or temporal awareness."""
         if history:
             messages.extend(history)
 
-        # 3. Current User Message
-        messages.append(HumanMessage(content=f"Message from {source}: {current_message}"))
+        # 3. Current User Message (Multimodal or Pure Text)
+        from ..utils.multimodal import build_multimodal_content_blocks, resolve_media_items
+
+        user_text = f"Message from {source}: {current_message}"
+        resolved_media = resolve_media_items(media_list=media, text_content=current_message)
+        payload = build_multimodal_content_blocks(
+            text_message=user_text,
+            media_items=resolved_media,
+        )
+        messages.append(HumanMessage(content=payload))
 
         return messages

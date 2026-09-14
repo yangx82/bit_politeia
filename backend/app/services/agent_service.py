@@ -180,6 +180,7 @@ class AgentService:
         self.base_url = os.getenv("AGENT_BASE_URL", None)
         self.api_key = os.getenv("AGENT_API_KEY", None)
         self.llm = None
+        self.raw_llm = None
         self.context_manager = None
         self.knowledge_base = knowledge_base
 
@@ -778,6 +779,10 @@ class AgentService:
         if self._is_automated_error_notification(text):
             return True
 
+        # Fast-path 1: Deterministic rule-based acknowledgment check (0ms, 0 tokens, immune to 429 quota exhaustion)
+        if self._is_pure_acknowledgment_rules(content):
+            return True
+
         # Try utilizing the auxiliary LLM
         try:
             llm = None
@@ -993,6 +998,7 @@ class AgentService:
                 request_timeout=llm_timeout,
                 max_tokens=max_tokens,
             )
+            self.raw_llm = raw_llm
             # Load custom skills (Run in thread to avoid blocking loop)
             # Load custom skills (Run in thread to avoid blocking loop)
             # 1. Load Autonomous Python Tools
@@ -5528,58 +5534,99 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
         return f"Research published {proposal.pdf_hash}. Evaluation ID: {election.election_id}"
 
+    async def cast_vote(self, election_id: str, approval: bool = True, reason: str = "") -> str:
+        """Helper to cast a direct binary vote on a proposal."""
+        return await self.vote_election(
+            election_id,
+            [{"approve": approval, "reason": reason}]
+        )
+
     async def vote_election(self, election_id: str, votes_data: list[dict]) -> str:
         """
-        Submit a ballot.
+        Submit a ballot with strict type normalization and conflict-of-interest checks.
         votes_data: List of dicts with {"candidate_id": str, "approve": bool, "reason": str, "reward_amount": float}
         """
         if not self.governance_manager:
-            return "Governance failed"
+            return "Governance failed: Governance Manager not initialized"
+
+        election = self.governance_manager.active_elections.get(election_id) or self.governance_manager.finished_elections.get(election_id)
+        if not election:
+            return f"Election {election_id} not found"
+
+        my_node_id = self.governance_manager.node_id
+        # Conflict of Interest / Initiator Recusal: author must recuse from voting on own proposal
+        if my_node_id in election.excluded_voters or (election.initiator_id and my_node_id == election.initiator_id):
+            logger.warning(f"[Governance] Proposer {my_node_id[:8]} must recuse from voting on own proposal {election_id[:8]}")
+            return f"Proposer recusal: author cannot vote on their own proposal {election_id}"
+
+        def _normalize_approval(v_item: dict) -> bool:
+            # Check known stance keys in priority order
+            for key in ["approve", "approval", "position", "decision", "vote", "support"]:
+                if key in v_item:
+                    val = v_item[key]
+                    if isinstance(val, bool):
+                        return val
+                    if isinstance(val, (int, float)):
+                        return bool(val > 0)
+                    if isinstance(val, str):
+                        clean_str = val.strip().lower()
+                        if clean_str in ["approve", "approved", "true", "yes", "support", "passed", "1", "y", "t", "agree"]:
+                            return True
+                        if clean_str in ["reject", "rejected", "false", "no", "oppose", "failed", "0", "n", "f", "disagree"]:
+                            return False
+                        raise ValueError(f"Ambiguous voting stance '{val}'. Expected 'approve' or 'reject'.")
+            raise ValueError(f"Missing explicit approval field in vote entry: {v_item}. Expected 'approve' or 'approval'.")
 
         ballot = []
-        for v_data in votes_data:
-            ballot.append(
-                Vote(
-                    voter_id=self.governance_manager.node_id,
-                    candidate_id=v_data.get("candidate_id"),  # Can be None for proposal
-                    timestamp=datetime.now(UTC),
-                    approval=v_data.get("approve", False),
-                    reason=v_data.get("reason", ""),
-                    reward_amount=v_data.get("reward_amount", 0.0),
+        try:
+            for v_data in votes_data:
+                approval_val = _normalize_approval(v_data)
+                ballot.append(
+                    Vote(
+                        voter_id=my_node_id,
+                        candidate_id=v_data.get("candidate_id"),  # Can be None for proposal
+                        timestamp=datetime.now(UTC),
+                        approval=approval_val,
+                        reason=v_data.get("reason", ""),
+                        reward_amount=float(v_data.get("reward_amount", 0.0) or 0.0),
+                    )
                 )
-            )
+        except ValueError as ve:
+            logger.error(f"[Governance] Vote parameter validation error: {ve}")
+            return f"Vote rejected due to schema error: {ve}"
 
         success = self.governance_manager.receive_ballot(election_id, ballot)
         if success:
             # Broadcast via P2P - Wait for broadcast to complete with timeout
-            election = self.governance_manager.active_elections[election_id]
-            broadcast_tasks = []
-            for v in ballot:
-                task = asyncio.create_task(
-                    p2p_service.broadcast_governance_event(
-                        election.group_id, "vote", {"election_id": election_id, "vote": v.to_dict()}
+            election = self.governance_manager.active_elections.get(election_id) or self.governance_manager.finished_elections.get(election_id)
+            if election and election_id in self.governance_manager.active_elections:
+                broadcast_tasks = []
+                for v in ballot:
+                    task = asyncio.create_task(
+                        p2p_service.broadcast_governance_event(
+                            election.group_id, "vote", {"election_id": election_id, "vote": v.to_dict()}
+                        )
                     )
-                )
-                broadcast_tasks.append(task)
+                    broadcast_tasks.append(task)
 
-            # Wait for all broadcasts to complete (with timeout)
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*broadcast_tasks, return_exceptions=True), timeout=10.0
-                )
-                logger.info(
-                    f"Vote broadcast successfully for election {election_id[:8]} ({len(ballot)} votes)"
-                )
-            except TimeoutError:
-                logger.warning(f"Vote broadcast timeout for election {election_id[:8]}")
-                return "Ballot registered locally but broadcast timed out"
-            except Exception as e:
-                logger.error(f"Vote broadcast failed for election {election_id[:8]}: {e}")
-                return f"Ballot registered locally but broadcast failed: {e}"
+                # Wait for all broadcasts to complete (with timeout)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*broadcast_tasks, return_exceptions=True), timeout=10.0
+                    )
+                    logger.info(
+                        f"Vote broadcast successfully for election {election_id[:8]} ({len(ballot)} votes)"
+                    )
+                except TimeoutError:
+                    logger.warning(f"Vote broadcast timeout for election {election_id[:8]}")
+                    return "Ballot registered locally but broadcast timed out"
+                except Exception as e:
+                    logger.error(f"Vote broadcast failed for election {election_id[:8]}: {e}")
+                    return f"Ballot registered locally but broadcast failed: {e}"
 
             return "Ballot registered and broadcast successfully"
         else:
-            return "Ballot rejected (invalid, closed, or validation failed)"
+            return "Ballot rejected (invalid, closed, recused, or validation failed)"
 
     async def get_election_info(self, election_id: str, include_content: bool = False) -> dict:
         if not self.governance_manager:
@@ -7248,3 +7295,220 @@ def test_reputation_weighted_quadratic_voting():
 
 if __name__ == '__main__':
     test_reputation_weighted_quadratic_voting()
+
+
+# ========================================================
+# [Autonomous Evolution Patch] AIP-5A40-8DED81: QuadraticVotingHelper for Bit Politeia
+# ========================================================
+"""Governance helpers for Bit Politeia: quadratic voting, reputation decay, tally auditing."""
+
+import hashlib
+import json
+import threading
+from typing import Dict
+
+
+class QuadraticVotingHelper:
+    """Quadratic voting cost calculator. Cost scales quadratically to prevent vote concentration."""
+
+    _MAX_COST = 10**8
+
+    def __init__(self, max_budget: int = 1000) -> None:
+        if not isinstance(max_budget, int) or max_budget <= 0 or max_budget > 10000:
+            raise ValueError("max_budget must be an integer in (0, 10000]")
+        self._max_budget = max_budget
+        self._lock = threading.Lock()
+
+    @property
+    def max_budget(self) -> int:
+        """Current budget ceiling."""
+        return self._max_budget
+
+    def calculate_cost(self, vote_count: int) -> int:
+        """Return quadratic cost capped at _MAX_COST for overflow protection."""
+        if not isinstance(vote_count, int) or vote_count < 0:
+            raise ValueError("vote_count must be a non-negative integer")
+        cost = vote_count ** 2
+        return min(cost, self._MAX_COST)
+
+    def validate_vote(self, vote_count: int, budget: int) -> bool:
+        """Check whether *budget* can afford *vote_count* quadratic votes."""
+        with self._lock:
+            return budget >= self.calculate_cost(vote_count)
+
+
+class ReputationDecayCalculator:
+    """Time-based reputation decay with configurable half-life for dynamic governance weighting."""
+
+    def __init__(self, half_life_hours: float = 168.0) -> None:
+        half_life_hours = float(half_life_hours)
+        if half_life_hours <= 0.0 or half_life_hours > 8760.0:
+            raise ValueError("half_life_hours must be in (0.0, 8760.0]")
+        self._half_life = half_life_hours
+
+    def decay(self, reputation: float, elapsed_hours: float) -> float:
+        """Apply exponential decay; result clamped to [0.0, 1.0]."""
+        reputation = float(reputation)
+        elapsed_hours = float(elapsed_hours)
+        if not (0.0 <= reputation <= 1.0):
+            raise ValueError("reputation must be in [0.0, 1.0]")
+        if elapsed_hours < 0.0:
+            raise ValueError("elapsed_hours must be >= 0.0")
+        factor = 0.5 ** (elapsed_hours / self._half_life)
+        return max(0.0, min(1.0, reputation * factor))
+
+
+class ProposalTallyAuditor:
+    """Deterministic tally verification using cryptographic hashing for audit trails."""
+
+    def compute_tally_hash(self, votes: Dict[str, int]) -> str:
+        """SHA-256 hex digest of canonically-sorted vote dict."""
+        if not isinstance(votes, dict):
+            raise TypeError("votes must be a dict")
+        payload = json.dumps(dict(sorted(votes.items())), sort_keys=True)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def verify_tally(self, votes: Dict[str, int], expected_hash: str) -> bool:
+        """Return True when the computed hash matches *expected_hash*."""
+        return self.compute_tally_hash(votes) == expected_hash
+
+
+# --------------- Unit Tests ---------------
+def test_governance_helpers() -> None:
+    # Quadratic cost: 5 votes -> cost 25
+    assert QuadraticVotingHelper(max_budget=100).calculate_cost(5) == 25
+    # Half-life decay: 1.0 after one half-life -> ~0.5
+    assert abs(ReputationDecayCalculator(half_life_hours=168.0).decay(1.0, 168.0) - 0.5) < 0.01
+    # Tally round-trip verification
+    assert ProposalTallyAuditor().verify_tally(
+        {'a': 1, 'b': 2},
+        ProposalTallyAuditor().compute_tally_hash({'a': 1, 'b': 2})
+    ) is True
+
+
+if __name__ == "__main__":
+    test_governance_helpers()
+    print("All governance helper tests passed.")
+
+
+# ========================================================
+# [Autonomous Evolution Patch] AIP-5A40-068AF5: QuadraticVotingHelper based on EigenTrust: Fast and Robust Di
+# ========================================================
+import threading
+from typing import Dict, List, Tuple
+from collections import defaultdict
+
+class QuadraticVotingHelper:
+    """Thread-safe quadratic voting with EigenTrust-based reputation weighting."""
+    
+    def __init__(self, initial_trust: float = 0.5, convergence_threshold: float = 1e-6):
+        self._lock = threading.RLock()
+        self._trust_scores: Dict[str, float] = defaultdict(lambda: initial_trust)
+        self._convergence_threshold = max(1e-9, min(1e-3, float(convergence_threshold)))
+        self._initial_trust = max(0.0, min(1.0, float(initial_trust)))
+    
+    def calculate_vote_cost(self, votes: int) -> float:
+        """Calculate quadratic cost: cost = votes^2."""
+        votes = max(0, int(votes))
+        return float(votes * votes)
+    
+    def get_weighted_voting_power(self, voter_id: str, votes: int) -> Tuple[float, float]:
+        """Calculate trust-weighted voting power and cost.
+        
+        Returns: (weighted_power, cost)
+        """
+        votes = max(0, int(votes))
+        with self._lock:
+            trust = self._trust_scores.get(voter_id, self._initial_trust)
+        
+        trust = max(0.0, min(1.0, float(trust)))
+        weighted_power = float(votes) * trust
+        cost = self.calculate_vote_cost(votes)
+        return weighted_power, cost
+    
+    def update_trust_scores(self, peer_ratings: Dict[str, Dict[str, float]], 
+                            max_iterations: int = 50) -> Dict[str, float]:
+        """EigenTrust-style iterative trust computation.
+        
+        Args:
+            peer_ratings: {rater_id: {ratee_id: rating}} where rating in [0, 1]
+            max_iterations: Max iterations for convergence (bounded to [1, 100])
+        
+        Returns:
+            Updated trust scores
+        """
+        max_iterations = max(1, min(100, int(max_iterations)))
+        
+        # Validate and normalize ratings
+        normalized_ratings = defaultdict(list)
+        for rater_id, ratings in peer_ratings.items():
+            rater_trust = self._trust_scores.get(rater_id, self._initial_trust)
+            for ratee_id, rating in ratings.items():
+                rating = max(0.0, min(1.0, float(rating)))
+                normalized_ratings[ratee_id].append((rater_id, rating, rater_trust))
+        
+        # Iterative trust computation
+        with self._lock:
+            new_scores = dict(self._trust_scores)
+            
+            for _ in range(max_iterations):
+                updated = {}
+                for ratee_id in normalized_ratings:
+                    weighted_sum = 0.0
+                    trust_sum = 0.0
+                    for rater_id, rating, rater_trust in normalized_ratings[ratee_id]:
+                        weighted_sum += rating * rater_trust
+                        trust_sum += rater_trust
+                    
+                    if trust_sum > 0:
+                        updated[ratee_id] = weighted_sum / trust_sum
+                    else:
+                        updated[ratee_id] = self._initial_trust
+                
+                # Check convergence
+                max_delta = max(
+                    abs(updated.get(pid, self._initial_trust) - new_scores.get(pid, self._initial_trust))
+                    for pid in updated
+                ) if updated else 0.0
+                
+                new_scores.update(updated)
+                
+                if max_delta < self._convergence_threshold:
+                    break
+            
+            self._trust_scores.update(new_scores)
+            return dict(self._trust_scores)
+    
+    def get_trust_score(self, voter_id: str) -> float:
+        """Get current trust score for a voter."""
+        with self._lock:
+            return float(self._trust_scores.get(voter_id, self._initial_trust))
+
+
+def test_quadratic_voting_helper():
+    """Minimal test suite for QuadraticVotingHelper."""
+    helper = QuadraticVotingHelper(initial_trust=0.8)
+    
+    # Test 1: Quadratic cost calculation
+    assert helper.calculate_vote_cost(3) == 9.0, "Vote cost should be 3^2 = 9"
+    assert helper.calculate_vote_cost(0) == 0.0, "Zero votes should cost 0"
+    
+    # Test 2: Weighted voting power with trust
+    power, cost = helper.get_weighted_voting_power("voter1", 4)
+    assert abs(power - 3.2) < 1e-6, "Power should be 4 * 0.8 = 3.2"
+    assert cost == 16.0, "Cost should be 4^2 = 16"
+    
+    # Test 3: Trust score update with peer ratings
+    ratings = {
+        "voter1": {"voter2": 0.9, "voter3": 0.7},
+        "voter2": {"voter1": 0.8, "voter3": 0.6}
+    }
+    updated = helper.update_trust_scores(ratings, max_iterations=10)
+    assert "voter1" in updated and "voter2" in updated, "Trust scores should be updated"
+    assert all(0.0 <= score <= 1.0 for score in updated.values()), "All scores must be in [0, 1]"
+    
+    print("All tests passed!")
+
+
+if __name__ == "__main__":
+    test_quadratic_voting_helper()
