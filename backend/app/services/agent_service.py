@@ -154,6 +154,7 @@ class AgentService:
         load_dotenv_safe()
         self.p2p_reply_delay = 60
         self.p2p_random_delay_max = float(os.getenv("AGENT_P2P_RANDOM_DELAY_MAX", "10.0"))
+        self.p2p_random_delay_min = float(os.getenv("AGENT_P2P_RANDOM_DELAY_MIN", "0.0"))
 
         # Initialization logic (Moved to __init__)
         self.tools_map = {getattr(t, "name", getattr(t, "__name__", str(t))): t for t in AGENT_TOOLS}
@@ -1524,30 +1525,41 @@ class AgentService:
                 )
                 return "[NO_RESPONSE_NEEDED]", False, "SUPPRESSED_AUTOMATED_ERROR_OR_ACK"
 
-            now = datetime.now(UTC)
-            msg_ts = msg.timestamp
-            if msg_ts.tzinfo is None:
-                msg_ts = msg_ts.replace(tzinfo=UTC)
+            is_debounced_or_batched = bool(
+                msg.metadata and (msg.metadata.get("debounced") or msg.metadata.get("batched_count", 0) > 0)
+            )
 
-            # 1. Configured base delay (p2p_reply_delay)
-            delay_val = max(0, getattr(self, "p2p_reply_delay", 60))
-            remaining_base_delay = 0.0
-            if delay_val > 0:
-                target_time = msg_ts + timedelta(seconds=delay_val)
-                remaining_base_delay = max(0.0, (target_time - now).total_seconds())
+            if is_debounced_or_batched:
+                logger.info(
+                    f"P2P Debounced message: skipping pipeline delay for {msg.sender_id} "
+                    f"(session: {str(msg.session_id)[:12]}, already waited in debounce quiet window with jitter)."
+                )
+                total_delay = 0.0
+            else:
+                now = datetime.now(UTC)
+                msg_ts = msg.timestamp
+                if msg_ts.tzinfo is None:
+                    msg_ts = msg_ts.replace(tzinfo=UTC)
 
-            # 2. Random delay (0~10s jitter)
-            import random
-            random_max = float(os.getenv("AGENT_P2P_RANDOM_DELAY_MAX", getattr(self, "p2p_random_delay_max", 10.0)))
-            random_min = float(os.getenv("AGENT_P2P_RANDOM_DELAY_MIN", getattr(self, "p2p_random_delay_min", 0.0)))
-            random_delay = round(random.uniform(max(0.0, random_min), max(random_min, random_max)), 2)
+                # 1. Configured base delay (p2p_reply_delay)
+                delay_val = max(0, getattr(self, "p2p_reply_delay", 60))
+                remaining_base_delay = 0.0
+                if delay_val > 0:
+                    target_time = msg_ts + timedelta(seconds=delay_val)
+                    remaining_base_delay = max(0.0, (target_time - now).total_seconds())
 
-            total_delay = remaining_base_delay + random_delay
+                # 2. Random delay (0~10s jitter)
+                import random
+                random_max = float(getattr(self, "p2p_random_delay_max", os.getenv("AGENT_P2P_RANDOM_DELAY_MAX", "10.0")))
+                random_min = float(getattr(self, "p2p_random_delay_min", os.getenv("AGENT_P2P_RANDOM_DELAY_MIN", "0.0")))
+                random_delay = round(random.uniform(max(0.0, random_min), max(random_min, random_max)), 2) if random_max > 0 else 0.0
+
+                total_delay = remaining_base_delay + random_delay
 
             if total_delay > 0:
                 logger.info(
                     f"P2P Wakeup Delay & Jitter: waiting {total_delay:.2f}s before invoking LLM "
-                    f"for message from {msg.sender_id} (session: {msg.session_id[:12]}, "
+                    f"for message from {msg.sender_id} (session: {str(msg.session_id)[:12]}, "
                     f"base remaining: {remaining_base_delay:.2f}s, random jitter: {random_delay:.2f}s)"
                 )
                 ui_session_id = self._normalize_session_id(msg.session_id)
@@ -2527,6 +2539,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     "package_type": it["package_type"],
                     "recipient_type": it["recipient_type"],
                     "batched_count": 1,
+                    "debounced": True,
                 },
             )
             return msg_obj, m_ids, sender_ids, all_pure_ack
@@ -2575,6 +2588,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 "package_type": "chat",
                 "recipient_type": items[0]["recipient_type"],
                 "batched_count": len(items),
+                "debounced": True,
             },
         )
         return msg_obj, m_ids, sender_ids, all_pure_ack
@@ -2782,7 +2796,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             first_arrival = self._session_first_arrival[session_id]
             time_elapsed = now - first_arrival
             time_to_max = max(0.0, self.p2p_debounce_max_wait_seconds - time_elapsed)
-            wait_time = min(self.p2p_debounce_delay_seconds, time_to_max)
+
+            import random
+            random_max = float(getattr(self, "p2p_random_delay_max", os.getenv("AGENT_P2P_RANDOM_DELAY_MAX", "10.0")))
+            random_min = float(getattr(self, "p2p_random_delay_min", os.getenv("AGENT_P2P_RANDOM_DELAY_MIN", "0.0")))
+            jitter = round(random.uniform(max(0.0, random_min), max(random_min, random_max)), 2) if random_max > 0 else 0.0
+            quiet_window = self.p2p_debounce_delay_seconds + jitter
+            wait_time = min(quiet_window, time_to_max)
 
             # Cancel previous debounce task for this session if it is running
             old_task = self._debounce_tasks.get(session_id)
@@ -2794,11 +2814,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             self._debounce_tasks[session_id] = task
 
         s_id_short = msg.sender_id[:8] if msg.sender_id else "unknown"
+        jitter_str = f" (含随机抖动 {jitter:.1f}s)" if jitter > 0 else ""
         await self.message_bus.publish_outbound(
             OutboundMessage(
                 channel="gateway",
                 session_id=session_id,
-                content=f"P2P 自适应防抖模式: 收到来自 {s_id_short} 的消息，已暂存待防抖合并 (当前积压: {q_len} 条，静默等待: {wait_time:.1f}s，剩余最长等待: {time_to_max:.1f}s)。",
+                content=f"P2P 自适应防抖模式: 收到来自 {s_id_short} 的消息，已暂存待防抖合并 (当前积压: {q_len} 条，静默等待: {wait_time:.1f}s{jitter_str}，剩余最长等待: {time_to_max:.1f}s)。",
                 type="thought",
             )
         )
