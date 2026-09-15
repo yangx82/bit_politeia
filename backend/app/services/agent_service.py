@@ -4925,15 +4925,17 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         return False
 
     async def cast_vote(
-        self, election_id: str, approval: bool, reason: str = "", candidate_id: str = None
+        self, election_id: str, approval: bool = True, reason: str = "", candidate_id: str = None
     ) -> dict:
         if not self.governance_manager:
             return {"error": "Governance Manager not initialized"}
 
-        if not p2p_service.local_node:
-            return {"error": "Local node not initialized"}
+        voter_id = getattr(getattr(p2p_service, "local_node", None), "node_id", None)
+        if not voter_id and self.governance_manager:
+            voter_id = self.governance_manager.node_id
 
-        voter_id = p2p_service.local_node.node_id
+        if not voter_id:
+            return {"error": "Neither local node nor governance manager is initialized with a node_id"}
 
         # Pre-flight check: Initiator Recusal / Conflict of Interest
         election = self.governance_manager.active_elections.get(election_id) or (
@@ -4964,7 +4966,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 if hasattr(self.governance_manager, "finished_elections")
                 else None
             )
-            if election:
+            if election and getattr(p2p_service, "local_node", None):
                 try:
                     # 同步等待广播完成，最多等待 5 秒
                     await asyncio.wait_for(
@@ -4983,7 +4985,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 except Exception as e:
                     logger.error(f"Vote broadcast failed for election {election_id[:8]}: {e}")
 
-            return {"status": "success", "election_id": election_id}
+            return {
+                "status": "success",
+                "election_id": election_id,
+                "message": f"Vote registered for election {election_id}: approved={approval}",
+            }
         else:
             return {"status": "failed", "reason": "Vote rejected (invalid, recused, or closed)"}
 
@@ -5554,13 +5560,6 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             logger.error(f"Research proposal broadcast failed for group {group_id}: {e}")
 
         return f"Research published {proposal.pdf_hash}. Evaluation ID: {election.election_id}"
-
-    async def cast_vote(self, election_id: str, approval: bool = True, reason: str = "") -> str:
-        """Helper to cast a direct binary vote on a proposal."""
-        return await self.vote_election(
-            election_id,
-            [{"approve": approval, "reason": reason}]
-        )
 
     async def vote_election(self, election_id: str, votes_data: list[dict]) -> str:
         """
@@ -7316,100 +7315,6 @@ def test_reputation_weighted_quadratic_voting():
 
 if __name__ == '__main__':
     test_reputation_weighted_quadratic_voting()
-
-
-# ========================================================
-# [Autonomous Evolution Patch] AIP-5A40-8DED81: QuadraticVotingHelper for Bit Politeia
-# ========================================================
-"""Governance helpers for Bit Politeia: quadratic voting, reputation decay, tally auditing."""
-
-import hashlib
-import json
-import threading
-from typing import Dict
-
-
-class QuadraticVotingHelper:
-    """Quadratic voting cost calculator. Cost scales quadratically to prevent vote concentration."""
-
-    _MAX_COST = 10**8
-
-    def __init__(self, max_budget: int = 1000) -> None:
-        if not isinstance(max_budget, int) or max_budget <= 0 or max_budget > 10000:
-            raise ValueError("max_budget must be an integer in (0, 10000]")
-        self._max_budget = max_budget
-        self._lock = threading.Lock()
-
-    @property
-    def max_budget(self) -> int:
-        """Current budget ceiling."""
-        return self._max_budget
-
-    def calculate_cost(self, vote_count: int) -> int:
-        """Return quadratic cost capped at _MAX_COST for overflow protection."""
-        if not isinstance(vote_count, int) or vote_count < 0:
-            raise ValueError("vote_count must be a non-negative integer")
-        cost = vote_count ** 2
-        return min(cost, self._MAX_COST)
-
-    def validate_vote(self, vote_count: int, budget: int) -> bool:
-        """Check whether *budget* can afford *vote_count* quadratic votes."""
-        with self._lock:
-            return budget >= self.calculate_cost(vote_count)
-
-
-class ReputationDecayCalculator:
-    """Time-based reputation decay with configurable half-life for dynamic governance weighting."""
-
-    def __init__(self, half_life_hours: float = 168.0) -> None:
-        half_life_hours = float(half_life_hours)
-        if half_life_hours <= 0.0 or half_life_hours > 8760.0:
-            raise ValueError("half_life_hours must be in (0.0, 8760.0]")
-        self._half_life = half_life_hours
-
-    def decay(self, reputation: float, elapsed_hours: float) -> float:
-        """Apply exponential decay; result clamped to [0.0, 1.0]."""
-        reputation = float(reputation)
-        elapsed_hours = float(elapsed_hours)
-        if not (0.0 <= reputation <= 1.0):
-            raise ValueError("reputation must be in [0.0, 1.0]")
-        if elapsed_hours < 0.0:
-            raise ValueError("elapsed_hours must be >= 0.0")
-        factor = 0.5 ** (elapsed_hours / self._half_life)
-        return max(0.0, min(1.0, reputation * factor))
-
-
-class ProposalTallyAuditor:
-    """Deterministic tally verification using cryptographic hashing for audit trails."""
-
-    def compute_tally_hash(self, votes: Dict[str, int]) -> str:
-        """SHA-256 hex digest of canonically-sorted vote dict."""
-        if not isinstance(votes, dict):
-            raise TypeError("votes must be a dict")
-        payload = json.dumps(dict(sorted(votes.items())), sort_keys=True)
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-    def verify_tally(self, votes: Dict[str, int], expected_hash: str) -> bool:
-        """Return True when the computed hash matches *expected_hash*."""
-        return self.compute_tally_hash(votes) == expected_hash
-
-
-# --------------- Unit Tests ---------------
-def test_governance_helpers() -> None:
-    # Quadratic cost: 5 votes -> cost 25
-    assert QuadraticVotingHelper(max_budget=100).calculate_cost(5) == 25
-    # Half-life decay: 1.0 after one half-life -> ~0.5
-    assert abs(ReputationDecayCalculator(half_life_hours=168.0).decay(1.0, 168.0) - 0.5) < 0.01
-    # Tally round-trip verification
-    assert ProposalTallyAuditor().verify_tally(
-        {'a': 1, 'b': 2},
-        ProposalTallyAuditor().compute_tally_hash({'a': 1, 'b': 2})
-    ) is True
-
-
-if __name__ == "__main__":
-    test_governance_helpers()
-    print("All governance helper tests passed.")
 
 
 # ========================================================

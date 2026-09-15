@@ -1613,6 +1613,16 @@ class QuadraticVotingHelper:
         with self._lock:
             return budget >= self.calculate_cost(vote_count)
 
+    def allocate_votes(self, budget: int) -> int:
+        """Calculate maximum votes affordable with given budget: floor(sqrt(budget))."""
+        if not isinstance(budget, int) or isinstance(budget, bool):
+            raise ValueError("budget must be an integer")
+        if budget < 0:
+            raise ValueError("budget must be non-negative")
+        with self._lock:
+            import math
+            return int(math.isqrt(budget))
+
 
 class ReputationDecayCalculator:
     """Time-based reputation decay with configurable half-life for dynamic governance weighting."""
@@ -1648,6 +1658,21 @@ class ProposalTallyAuditor:
     def verify_tally(self, votes: Dict[str, int], expected_hash: str) -> bool:
         """Return True when the computed hash matches *expected_hash*."""
         return self.compute_tally_hash(votes) == expected_hash
+
+    def detect_sybil_heuristic(self, voter_id: str, recent_votes: list, max_burst: int = 5, window_seconds: float = 60.0) -> bool:
+        """
+        Detect Sybil burst rate-limiting violations based on sliding window heuristic.
+        Returns True if more than max_burst votes occur within window_seconds.
+        """
+        if not isinstance(recent_votes, list):
+            raise ValueError("recent_votes must be a list of timestamps")
+        if len(recent_votes) <= max_burst:
+            return False
+        sorted_ts = sorted(float(t) for t in recent_votes)
+        for i in range(len(sorted_ts) - max_burst):
+            if sorted_ts[i + max_burst] - sorted_ts[i] < float(window_seconds):
+                return True
+        return False
 
 
 # --------------- Unit Tests ---------------

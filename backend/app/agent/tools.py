@@ -680,7 +680,8 @@ async def cast_vote(election_id: str, approval: bool = True, reason: str = "") -
 
         # Automated read-back assertion
         gov = getattr(agent_service, "governance_manager", None)
-        if gov and "registered" in result:
+        is_registered = "registered" in str(result) or (isinstance(result, dict) and result.get("status") == "success")
+        if gov and is_registered:
             election = gov.active_elections.get(election_id) or gov.finished_elections.get(election_id)
             if election and gov.node_id in election.votes:
                 recorded_votes = election.votes[gov.node_id]

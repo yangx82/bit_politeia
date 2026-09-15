@@ -11,6 +11,12 @@ Verifies that all 5 governance specifications are enforced as hard code constrai
 7. Evolution broadcast QualityGate barrier
 """
 
+import sys
+from pathlib import Path
+_backend_dir = str(Path(__file__).resolve().parent.parent)
+if _backend_dir not in sys.path or sys.path[0] != _backend_dir:
+    sys.path.insert(0, _backend_dir)
+
 import ast
 import asyncio
 import os
@@ -20,7 +26,16 @@ import uuid
 from datetime import datetime, timezone, timedelta
 UTC = timezone.utc
 
-from app.p2p_community.governance import GovernanceManager, Proposal, Election, ElectionType, Vote
+from app.p2p_community.governance import (
+    GovernanceManager,
+    Proposal,
+    Election,
+    ElectionType,
+    Vote,
+    QuadraticVotingHelper,
+    ProposalTallyAuditor,
+    ReputationDecayCalculator,
+)
 from app.services.agent_service import AgentService
 from app.services.aip_quality_gate import (
     QualityGateService,
@@ -287,3 +302,32 @@ async def test_tools_read_back_verification(temp_gov_store):
     res_ballot = await cast_ballot.ainvoke({"election_id": elec.election_id, "ballot_json": '[{"position": "REJECT", "reason": "Oppose through tool"}]'})
     assert "[VERIFIED:" in res_ballot
     assert "position=REJECT" in res_ballot
+
+
+def test_quadratic_voting_and_sybil_heuristics():
+    """Verifies QuadraticVotingHelper allocate_votes and ProposalTallyAuditor Sybil heuristics."""
+    # 1. Quadratic allocation & cost
+    qv = QuadraticVotingHelper(max_budget=1000)
+    assert qv.calculate_cost(4) == 16
+    assert qv.allocate_votes(16) == 4
+    assert qv.allocate_votes(24) == 4
+    assert qv.allocate_votes(25) == 5
+    assert qv.validate_vote(4, 16) is True
+    assert qv.validate_vote(5, 16) is False
+
+    # 2. Sybil detection heuristic (sliding window burst)
+    auditor = ProposalTallyAuditor()
+    burst_ts = [100.0, 110.0, 120.0, 130.0, 140.0, 150.0]  # 6 votes in 50s (< 60s)
+    assert auditor.detect_sybil_heuristic("attacker_1", burst_ts) is True
+
+    normal_ts = [100.0, 200.0, 300.0, 400.0, 500.0, 600.0]  # 6 votes in 500s (> 60s)
+    assert auditor.detect_sybil_heuristic("legit_user", normal_ts) is False
+
+    short_ts = [100.0, 105.0, 110.0]  # <= 5 votes
+    assert auditor.detect_sybil_heuristic("user_short", short_ts) is False
+
+    # 3. Tally hash verification
+    votes = {"voter_a": 10, "voter_b": 5}
+    h = auditor.compute_tally_hash(votes)
+    assert auditor.verify_tally(votes, h) is True
+
