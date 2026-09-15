@@ -1318,3 +1318,133 @@ class GovernanceManager:
         except Exception as e:
             logger.error(f"Governance P2P Error: {e}")
             return False
+
+
+# ========================================================
+# [Autonomous Evolution Patch] AIP-9778-890120: QuadraticVotingHelper and Governance Audit Components for Bit Politeia
+# ========================================================
+import threading
+import math
+import time
+from collections import defaultdict
+
+
+class QuadraticVotingHelper:
+    """Quadratic voting cost calculator: cost = votes², votes = floor(sqrt(budget))"""
+
+    def __init__(self, token_precision: int = 6):
+        if not isinstance(token_precision, int) or token_precision < 0:
+            raise ValueError("token_precision must be a non-negative integer")
+        self.token_precision = token_precision
+        self._lock = threading.Lock()
+
+    def calculate_cost(self, vote_count: int) -> int:
+        if not isinstance(vote_count, int) or isinstance(vote_count, bool):
+            raise ValueError("vote_count must be an integer")
+        if vote_count < 0 or vote_count > 10000:
+            raise ValueError("vote_count must be between 0 and 10000")
+        with self._lock:
+            return vote_count * vote_count
+
+    def allocate_votes(self, budget: int) -> int:
+        if not isinstance(budget, int) or isinstance(budget, bool):
+            raise ValueError("budget must be an integer")
+        if budget < 0:
+            raise ValueError("budget must be non-negative")
+        with self._lock:
+            return int(math.isqrt(budget))
+
+
+class ReputationDecayCalculator:
+    """Exponential reputation decay: R(t) = R0 * 0.5^(t/half_life)"""
+
+    def __init__(self, half_life_hours: float = 168.0):
+        if not isinstance(half_life_hours, (int, float)) or isinstance(half_life_hours, bool):
+            raise ValueError("half_life_hours must be numeric")
+        if half_life_hours <= 0:
+            raise ValueError("half_life_hours must be positive")
+        self.half_life_hours = float(half_life_hours)
+        self._lock = threading.Lock()
+
+    def decay(self, reputation: float, hours_elapsed: float) -> float:
+        if not isinstance(reputation, (int, float)) or isinstance(reputation, bool):
+            raise ValueError("reputation must be numeric")
+        if not isinstance(hours_elapsed, (int, float)) or isinstance(hours_elapsed, bool):
+            raise ValueError("hours_elapsed must be numeric")
+        if reputation < 0:
+            raise ValueError("reputation must be non-negative")
+        if hours_elapsed < 0:
+            raise ValueError("hours_elapsed must be non-negative")
+        with self._lock:
+            return float(reputation) * (0.5 ** (float(hours_elapsed) / self.half_life_hours))
+
+
+class ProposalTallyAuditor:
+    """Deterministic tally auditor with basic Sybil rate-limiting heuristic"""
+
+    def __init__(self):
+        self._votes = defaultdict(list)  # proposal_id -> [(voter_id, weight, ts, direction)]
+        self._lock = threading.Lock()
+
+    def add_vote(self, voter_id: str, proposal_id: str, vote_weight: int, timestamp: float, direction: str = 'yes'):
+        if not isinstance(voter_id, str) or not voter_id:
+            raise ValueError("voter_id must be a non-empty string")
+        if not isinstance(proposal_id, str) or not proposal_id:
+            raise ValueError("proposal_id must be a non-empty string")
+        if not isinstance(vote_weight, int) or isinstance(vote_weight, bool):
+            raise ValueError("vote_weight must be an integer")
+        if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
+            raise ValueError("timestamp must be numeric")
+        if direction not in ('yes', 'no', 'abstain'):
+            raise ValueError("direction must be 'yes', 'no', or 'abstain'")
+        with self._lock:
+            self._votes[proposal_id].append((voter_id, vote_weight, float(timestamp), direction))
+
+    def detect_sybil_heuristic(self, voter_id: str, recent_votes: list) -> bool:
+        if not isinstance(recent_votes, list):
+            raise ValueError("recent_votes must be a list of timestamps")
+        if len(recent_votes) <= 5:
+            return False
+        sorted_ts = sorted(float(t) for t in recent_votes)
+        for i in range(len(sorted_ts) - 5):
+            if sorted_ts[i + 5] - sorted_ts[i] < 60.0:
+                return True
+        return False
+
+    def tally(self, proposal_id: str) -> dict:
+        with self._lock:
+            votes = self._votes.get(proposal_id, [])
+            result = {'yes': 0, 'no': 0, 'abstain': 0, 'total_voters': 0}
+            seen_voters = set()
+            for voter_id, weight, ts, direction in votes:
+                result[direction] += weight
+                seen_voters.add(voter_id)
+            result['total_voters'] = len(seen_voters)
+            return result
+
+
+def test_governance_components():
+    qv = QuadraticVotingHelper()
+    assert qv.calculate_cost(3) == 9
+    assert qv.allocate_votes(16) == 4
+    try:
+        qv.calculate_cost(-1)
+        assert False, "Should raise ValueError"
+    except ValueError:
+        pass
+
+    rd = ReputationDecayCalculator()
+    assert abs(rd.decay(100.0, 168.0) - 50.0) < 1e-9
+    try:
+        rd.decay(-1.0, 0.0)
+        assert False, "Should raise ValueError"
+    except ValueError:
+        pass
+
+    ta = ProposalTallyAuditor()
+    ta.add_vote('v1', 'prop1', 1, 100.0, 'yes')
+    ta.add_vote('v2', 'prop1', 2, 101.0, 'no')
+    ta.add_vote('v3', 'prop1', 1, 102.0, 'abstain')
+    assert ta.tally('prop1')['total_voters'] == 3
+    assert ta.detect_sybil_heuristic('v1', [1.0, 2.0, 3.0, 4.0, 5.0, 10.0]) is True
+    assert ta.detect_sybil_heuristic('v1', [1.0, 2.0, 3.0]) is False
