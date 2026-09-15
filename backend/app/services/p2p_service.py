@@ -49,8 +49,8 @@ class P2PService:
 
         # Heartbeat mechanism for connection health monitoring
         self._heartbeat_task: asyncio.Task | None = None
-        self._heartbeat_interval = 60  # seconds
-        self._heartbeat_timeout = 30  # seconds
+        self._heartbeat_interval = int(os.getenv("P2P_HEARTBEAT_INTERVAL", "60"))  # seconds
+        self._heartbeat_timeout = int(os.getenv("P2P_HEARTBEAT_TIMEOUT", "180"))  # seconds
         self._peer_last_seen: dict[str, float] = {}  # peer_id -> last message timestamp
 
         # Initialize WebRTC Manager
@@ -387,23 +387,22 @@ class P2PService:
                     if elapsed > self._heartbeat_timeout:
                         dead_peers.append(peer_id)
                         logger.warning(
-                            f"[Heartbeat] Peer {peer_id[:8]}... timed out "
+                            f"[Heartbeat] Peer {peer_id[:8]}... transport timed out "
                             f"(last seen {elapsed:.0f}s ago)"
                         )
 
-                # Remove dead peers
+                # Disconnect dead peer transport
                 for peer_id in dead_peers:
                     self._peer_last_seen.pop(peer_id, None)
-                    # Also disconnect from network manager if connected
-                    if peer_id in self.network_manager.nodes:
-                        try:
-                            await self.network_manager.disconnect_peer(peer_id)
-                            logger.info(f"[Heartbeat] Disconnected dead peer {peer_id[:8]}...")
-                        except Exception as e:
-                            logger.debug(f"[Heartbeat] Error disconnecting {peer_id[:8]}: {e}")
+                    # Disconnect transport in network manager if known (preserves node identity)
+                    try:
+                        await self.network_manager.disconnect_peer(peer_id)
+                        logger.info(f"[Heartbeat] Disconnected transport for idle peer {peer_id[:8]}...")
+                    except Exception as e:
+                        logger.debug(f"[Heartbeat] Error disconnecting transport for {peer_id[:8]}: {e}")
 
                 if dead_peers:
-                    logger.info(f"[Heartbeat] Cleaned up {len(dead_peers)} dead peer(s)")
+                    logger.info(f"[Heartbeat] Transport marked offline for {len(dead_peers)} idle peer(s)")
 
                 # Periodic GDB stale hashes cleanup
                 try:
