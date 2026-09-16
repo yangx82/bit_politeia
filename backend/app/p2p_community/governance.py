@@ -1666,3 +1666,110 @@ def test_governance_helpers() -> None:
 if __name__ == "__main__":
     test_governance_helpers()
     print("All governance helper tests passed.")
+
+
+# ========================================================
+# [Autonomous Evolution Patch] AIP-5FAA-C39ED4: Trust-Weighted Quadratic Voting Helper: Thread-Safe Bounded Governance Utility
+# ========================================================
+import threading
+from typing import Dict
+from collections import defaultdict
+import math
+
+
+class TrustWeightedQuadraticVoting:
+    """Thread-safe quadratic voting helper with static trust-score weighting.
+
+    Each voter's influence is computed as: trust_score * sqrt(vote_count).
+    Trust scores are static values in [0, 1], manually assigned — NOT computed
+    via any iterative reputation algorithm.
+
+    This is a simple bounded aggregation utility for governance proposals.
+    """
+
+    def __init__(self, initial_trust: float = 0.5):
+        self._initial_trust = max(0.0, min(1.0, float(initial_trust)))
+        self._lock = threading.Lock()
+        self._trust_scores: Dict[str, float] = defaultdict(
+            lambda: self._initial_trust
+        )
+        self._votes: Dict[str, Dict[str, float]] = defaultdict(dict)
+
+    def update_trust(self, voter_id: str, new_trust: float) -> None:
+        """Update trust score for a voter with bounds checking [0, 1]."""
+        with self._lock:
+            bounded_trust = max(0.0, min(1.0, float(new_trust)))
+            self._trust_scores[voter_id] = bounded_trust
+
+    def get_trust(self, voter_id: str) -> float:
+        """Get current trust score for a voter."""
+        with self._lock:
+            return self._trust_scores[voter_id]
+
+    def cast_vote(self, voter_id: str, proposal_id: str, vote_count: float) -> float:
+        """Cast quadratic vote weighted by static trust score.
+
+        Voting power = trust_score * sqrt(vote_count).
+        vote_count is bounded to >= 0.
+        """
+        with self._lock:
+            bounded_votes = max(0.0, float(vote_count))
+            trust = self._trust_scores[voter_id]
+            weighted_power = trust * math.sqrt(bounded_votes)
+            self._votes[proposal_id][voter_id] = weighted_power
+            return weighted_power
+
+    def get_proposal_result(self, proposal_id: str) -> float:
+        """Calculate aggregated weighted voting result for a proposal."""
+        with self._lock:
+            if proposal_id not in self._votes:
+                return 0.0
+            total = sum(self._votes[proposal_id].values())
+            return total
+
+    def reset_proposal(self, proposal_id: str) -> None:
+        """Clear all votes for a proposal."""
+        with self._lock:
+            if proposal_id in self._votes:
+                del self._votes[proposal_id]
+
+
+def test_trust_weighted_quadratic_voting():
+    """Minimal test suite for TrustWeightedQuadraticVoting."""
+    helper = TrustWeightedQuadraticVoting(initial_trust=0.8)
+
+    # Test 1: Trust bounds checking
+    helper.update_trust('voter1', 1.5)
+    assert helper.get_trust('voter1') == 1.0, "Trust should be bounded to 1.0"
+
+    helper.update_trust('voter2', -0.5)
+    assert helper.get_trust('voter2') == 0.0, "Trust should be bounded to 0.0"
+
+    # Test 2: Quadratic voting calculation with static trust weight
+    # FIX: Use 'voter3' (untouched, retains default initial_trust=0.8)
+    # instead of 'voter1' whose trust was mutated to 1.0 in Test 1.
+    power = helper.cast_vote('voter3', 'prop1', 4.0)
+    expected = 0.8 * math.sqrt(4.0)  # trust * sqrt(votes) = 0.8 * 2.0 = 1.6
+    assert abs(power - expected) < 1e-9, f"Expected {expected}, got {power}"
+
+    # Test 3: Proposal aggregation (zero-trust voter contributes nothing)
+    helper.cast_vote('voter2', 'prop1', 9.0)  # voter2 has 0.0 trust
+    result = helper.get_proposal_result('prop1')
+    assert abs(result - expected) < 1e-9, "Voter2 should contribute 0 due to 0 trust"
+
+    # Test 4: Reset proposal clears votes
+    helper.reset_proposal('prop1')
+    assert helper.get_proposal_result('prop1') == 0.0, "Reset should clear votes"
+
+    # Test 5: Default initial trust
+    helper2 = TrustWeightedQuadraticVoting()
+    assert helper2.get_trust('unknown_voter') == 0.5, "Default trust should be 0.5"
+
+    # Test 6: Negative vote_count bounded to 0
+    power_zero = helper.cast_vote('voter1', 'prop2', -5.0)
+    assert power_zero == 0.0, "Negative votes should yield 0 power"
+
+
+if __name__ == '__main__':
+    test_trust_weighted_quadratic_voting()
+    print('All tests passed.')
