@@ -167,7 +167,7 @@ class P2PService:
             if "timestamp" in content:
                 msg_data["timestamp"] = content["timestamp"]
 
-            if "text" in content or "data" in content or content.get("type") == "aip_archive":
+            if "text" in content or "data" in content or content.get("type") in ("aip_archive", "aip_consensus_archive"):
                 msg_data["content"] = content
             elif "content" in content:
                 msg_data["content"] = content["content"]

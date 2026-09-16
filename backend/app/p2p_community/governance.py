@@ -27,7 +27,7 @@ class AIPProposal:
     proposed_diff: str = ""
     research_sources: list[str] = field(default_factory=list)
     sandbox_results: dict[str, Any] = field(default_factory=dict)
-    status: str = "draft"  # draft, proposed, debating, voting, sandbox_passed, pr_submitted, merged, rejected, preflight_rejected, stalled, abandoned, archived
+    status: str = "draft"  # draft, proposed, debating, voting, sandbox_passed, pr_submitted, merged, rejected, preflight_rejected, stalled, abandoned, archived, consensus_archived
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     signature: str = ""
     public_key: str = ""
@@ -945,11 +945,11 @@ class GovernanceManager:
             )
 
             if is_my_proposal and aip:
-                if getattr(aip, "status", "") == "pr_submitted":
-                    logger.info(f"[Governance] AIP {aip_id} has already been pushed to GitHub. Skipping duplicate push.")
+                if getattr(aip, "status", "") in ("pr_submitted", "consensus_archived"):
+                    logger.info(f"[Governance] AIP {aip_id} has already been processed ({aip.status}). Skipping duplicate submission/archival.")
                     return
 
-                logger.info(f"[Governance] AIP {aip_id} PASSED! Proposing node ({my_id[:8]}) automatically pushing code to GitHub & creating PR...")
+                logger.info(f"[Governance] AIP {aip_id} PASSED! Proposing node ({my_id[:8]}) landing consensus proposal...")
 
                 try:
                     from app.services.agent_service import agent_service

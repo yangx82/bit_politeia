@@ -2113,6 +2113,59 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 )
                 return
 
+            is_consensus_archive = (
+                (msg.metadata and msg.metadata.get("package_type") == "aip_consensus_archive")
+                or (isinstance(content_dict, dict) and content_dict.get("type") == "aip_consensus_archive")
+                or (
+                    msg.metadata
+                    and isinstance(msg.metadata.get("content"), dict)
+                    and msg.metadata.get("content", {}).get("type") == "aip_consensus_archive"
+                )
+            )
+            if is_consensus_archive:
+                meta_content = (msg.metadata or {}).get("content", {}) if isinstance((msg.metadata or {}).get("content"), dict) else {}
+                aip_id = (
+                    content_dict.get("aip_id")
+                    or (msg.metadata or {}).get("aip_id")
+                    or meta_content.get("aip_id", "unknown")
+                )
+                title = (
+                    content_dict.get("title")
+                    or (msg.metadata or {}).get("title")
+                    or meta_content.get("title", "")
+                )
+                data = (
+                    content_dict.get("data")
+                    or meta_content.get("data")
+                    or content_dict
+                )
+                md_content = (
+                    content_dict.get("md_content")
+                    or meta_content.get("md_content")
+                    or ""
+                )
+                try:
+                    from ..services.evolution_service import evolution_service
+                    evolution_service.save_core_node_archive(
+                        aip_id=aip_id,
+                        data=data,
+                        md_content=md_content,
+                        source_node=msg.sender_id,
+                    )
+                except Exception as ce:
+                    logger.error(f"[ConsensusArchive] Core node failed to save archive for {aip_id}: {ce}")
+
+                s_id_short = msg.sender_id[:8] if msg.sender_id else "unknown"
+                await self.message_bus.publish_outbound(
+                    OutboundMessage(
+                        channel="gateway",
+                        session_id=history_session_id,
+                        content=f"【核心归档仓】核心节点已成功聚合通过网络共识的演化提案 `{aip_id}`: *{title}* (来自节点 {s_id_short})，已写入核心归档总账备选提炼。",
+                        type="thought",
+                    )
+                )
+                return
+
             text_content = msg.content
             if isinstance(text_content, dict) and "text" in text_content:
                 text_content = text_content["text"]
