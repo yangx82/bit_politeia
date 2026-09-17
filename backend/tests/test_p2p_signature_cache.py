@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 import asyncio
-from datetime import datetime, UTC, timezone
+from datetime import datetime, timezone
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = timezone.utc
 import pytest
 
 from app.services.crypto_service import CryptoService

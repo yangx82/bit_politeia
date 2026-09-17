@@ -83,12 +83,13 @@ class Node:
             return False
         import datetime
 
-        now = datetime.datetime.now(datetime.UTC)
+        utc = getattr(datetime, "UTC", datetime.timezone.utc)
+        now = datetime.datetime.now(utc)
 
         # Ensure last_seen is offset-aware for comparison
         target_time = self.last_seen
         if target_time.tzinfo is None:
-            target_time = target_time.replace(tzinfo=datetime.UTC)
+            target_time = target_time.replace(tzinfo=utc)
 
         delta = now - target_time
         return delta.total_seconds() < 300  # 5 minutes
