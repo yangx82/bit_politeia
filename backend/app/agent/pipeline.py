@@ -261,6 +261,7 @@ class SenseStage(PipelineStage):
             chat_name=chat_name,
             governance_context=gov_summary,
             pending_reply=context.session.metadata.get("pending_reply"),
+            media=getattr(context.input_message, "media", None),
         )
 
 
@@ -281,19 +282,43 @@ def _compact_messages_in_flight(messages: list[BaseMessage], aggressiveness: int
 
     pruned_rest = []
     for m in rest:
-        content_str = str(getattr(m, "content", ""))
-        if len(content_str) > char_limit:
-            half = char_limit // 2
-            truncated = (
-                content_str[:half]
-                + f"\n... [Payload truncated ({len(content_str)} chars -> {char_limit} chars) to fit token limit] ...\n"
-                + content_str[-half:]
-            )
+        content = getattr(m, "content", "")
+        if isinstance(content, list):
+            # Multimodal payload: list of dicts like [{"type": "text", "text": ...}, {"type": "image_url", ...}]
+            # Truncate text blocks if too large, leave image_url intact
+            new_blocks = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    t_str = str(block.get("text", ""))
+                    if len(t_str) > char_limit:
+                        half = char_limit // 2
+                        truncated = (
+                            t_str[:half]
+                            + f"\n... [Text truncated ({len(t_str)} -> {char_limit}) to fit token limit] ...\n"
+                            + t_str[-half:]
+                        )
+                        new_blocks.append({**block, "text": truncated})
+                    else:
+                        new_blocks.append(block)
+                else:
+                    new_blocks.append(block)
             m_copy = m.model_copy() if hasattr(m, "model_copy") else m
-            m_copy.content = truncated
+            m_copy.content = new_blocks
             pruned_rest.append(m_copy)
         else:
-            pruned_rest.append(m)
+            content_str = str(content)
+            if len(content_str) > char_limit:
+                half = char_limit // 2
+                truncated = (
+                    content_str[:half]
+                    + f"\n... [Payload truncated ({len(content_str)} chars -> {char_limit} chars) to fit token limit] ...\n"
+                    + content_str[-half:]
+                )
+                m_copy = m.model_copy() if hasattr(m, "model_copy") else m
+                m_copy.content = truncated
+                pruned_rest.append(m_copy)
+            else:
+                pruned_rest.append(m)
 
     if len(pruned_rest) > keep_recent:
         pruned_rest = [pruned_rest[0]] + pruned_rest[-(keep_recent - 1):]

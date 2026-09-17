@@ -247,6 +247,12 @@ class MessageProtocol:
             True if signature is valid, False otherwise
         """
         try:
+            if not sender_public_key or not sender_public_key.strip().startswith("-----BEGIN"):
+                logger.debug(
+                    f"[Protocol] Cannot verify signature for message {message.message_id[:8]}: sender_public_key missing or not PEM."
+                )
+                return False
+
             if hasattr(self.crypto_service, "verify_signature"):
                 candidates = []
                 # 1. Standard candidate: current message fields with standard microseconds isoformat

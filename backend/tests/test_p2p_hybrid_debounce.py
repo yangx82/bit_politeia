@@ -15,9 +15,13 @@ def cleanup_debounce_fixture():
     orig_max_wait = agent_service.p2p_debounce_max_wait_seconds
     orig_rm = agent_service.resident_memory
     orig_ack = agent_service.is_pure_acknowledgment
+    orig_jitter_max = getattr(agent_service, "p2p_random_delay_max", 10.0)
+    orig_jitter_min = getattr(agent_service, "p2p_random_delay_min", 0.0)
 
     agent_service.resident_memory = MagicMock()
     agent_service.is_pure_acknowledgment = AsyncMock(return_value=False)
+    agent_service.p2p_random_delay_max = 0.0
+    agent_service.p2p_random_delay_min = 0.0
 
     for t in list(agent_service._debounce_tasks.values()):
         if t and not t.done():
@@ -39,15 +43,20 @@ def cleanup_debounce_fixture():
     agent_service.p2p_debounce_max_wait_seconds = orig_max_wait
     agent_service.resident_memory = orig_rm
     agent_service.is_pure_acknowledgment = orig_ack
+    agent_service.p2p_random_delay_max = orig_jitter_max
+    agent_service.p2p_random_delay_min = orig_jitter_min
 
 
 def test_default_mode_and_parameters():
     """Verify that hybrid_debounce is the default mode with 30s delay and 300s max wait."""
-    from app.services.agent_service import AgentService
-    fresh_agent = AgentService()
-    assert fresh_agent.p2p_processing_mode == "hybrid_debounce"
-    assert fresh_agent.p2p_debounce_delay_seconds == 30.0
-    assert fresh_agent.p2p_debounce_max_wait_seconds == 300.0
+    import os
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"P2P_DEBOUNCE_DELAY_SECONDS": "30.0", "P2P_DEBOUNCE_MAX_WAIT_SECONDS": "300.0"}):
+        from app.services.agent_service import AgentService
+        fresh_agent = AgentService()
+        assert fresh_agent.p2p_processing_mode == "hybrid_debounce"
+        assert fresh_agent.p2p_debounce_delay_seconds == 30.0
+        assert fresh_agent.p2p_debounce_max_wait_seconds == 300.0
 
 
 @pytest.mark.asyncio
@@ -277,3 +286,40 @@ async def test_set_p2p_processing_mode_dynamic_switch():
 
     with pytest.raises(ValueError):
         agent_service.set_p2p_processing_mode("invalid_mode")
+
+
+@pytest.mark.asyncio
+async def test_debounce_incorporates_random_delay_jitter():
+    """Verify that random jitter is incorporated into the debounce quiet window and reported to gateway."""
+    agent_service.p2p_processing_mode = "hybrid_debounce"
+    agent_service.p2p_debounce_delay_seconds = 30.0
+    agent_service.p2p_debounce_max_wait_seconds = 300.0
+    agent_service.p2p_random_delay_min = 2.0
+    agent_service.p2p_random_delay_max = 8.0
+
+    msg = InboundMessage(
+        channel="p2p",
+        sender_id="peer_jitter_test",
+        session_id="p2p_session_jitter",
+        content="Testing debounce jitter inclusion",
+        metadata={"message_id": "msg_jitter_1", "package_type": "chat"},
+    )
+
+    with patch.object(
+        agent_service, "_debounce_worker", new_callable=AsyncMock
+    ) as mock_worker, patch.object(
+        agent_service.message_bus, "publish_outbound", new_callable=AsyncMock
+    ) as mock_outbound:
+        await agent_service.process_bus_message(msg)
+
+        mock_worker.assert_called_once()
+        call_session_id, wait_time_arg = mock_worker.call_args[0]
+        # Base 30.0s + jitter [2.0, 8.0] => [32.0, 38.0]
+        assert 32.0 <= wait_time_arg <= 38.0
+
+        # Outbound message should report jitter in thought text
+        assert mock_outbound.await_count >= 1
+        published_msgs = [call[0][0] for call in mock_outbound.call_args_list]
+        gateway_thoughts = [m for m in published_msgs if m.channel == "gateway" and m.type == "thought"]
+        assert len(gateway_thoughts) >= 1
+        assert "含随机抖动" in gateway_thoughts[0].content

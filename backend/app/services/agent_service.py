@@ -154,6 +154,7 @@ class AgentService:
         load_dotenv_safe()
         self.p2p_reply_delay = 60
         self.p2p_random_delay_max = float(os.getenv("AGENT_P2P_RANDOM_DELAY_MAX", "10.0"))
+        self.p2p_random_delay_min = float(os.getenv("AGENT_P2P_RANDOM_DELAY_MIN", "0.0"))
 
         # Initialization logic (Moved to __init__)
         self.tools_map = {getattr(t, "name", getattr(t, "__name__", str(t))): t for t in AGENT_TOOLS}
@@ -180,6 +181,7 @@ class AgentService:
         self.base_url = os.getenv("AGENT_BASE_URL", None)
         self.api_key = os.getenv("AGENT_API_KEY", None)
         self.llm = None
+        self.raw_llm = None
         self.context_manager = None
         self.knowledge_base = knowledge_base
 
@@ -778,6 +780,10 @@ class AgentService:
         if self._is_automated_error_notification(text):
             return True
 
+        # Fast-path 1: Deterministic rule-based acknowledgment check (0ms, 0 tokens, immune to 429 quota exhaustion)
+        if self._is_pure_acknowledgment_rules(content):
+            return True
+
         # Try utilizing the auxiliary LLM
         try:
             llm = None
@@ -993,6 +999,7 @@ class AgentService:
                 request_timeout=llm_timeout,
                 max_tokens=max_tokens,
             )
+            self.raw_llm = raw_llm
             # Load custom skills (Run in thread to avoid blocking loop)
             # Load custom skills (Run in thread to avoid blocking loop)
             # 1. Load Autonomous Python Tools
@@ -1518,30 +1525,41 @@ class AgentService:
                 )
                 return "[NO_RESPONSE_NEEDED]", False, "SUPPRESSED_AUTOMATED_ERROR_OR_ACK"
 
-            now = datetime.now(UTC)
-            msg_ts = msg.timestamp
-            if msg_ts.tzinfo is None:
-                msg_ts = msg_ts.replace(tzinfo=UTC)
+            is_debounced_or_batched = bool(
+                msg.metadata and (msg.metadata.get("debounced") or msg.metadata.get("batched_count", 0) > 0)
+            )
 
-            # 1. Configured base delay (p2p_reply_delay)
-            delay_val = max(0, getattr(self, "p2p_reply_delay", 60))
-            remaining_base_delay = 0.0
-            if delay_val > 0:
-                target_time = msg_ts + timedelta(seconds=delay_val)
-                remaining_base_delay = max(0.0, (target_time - now).total_seconds())
+            if is_debounced_or_batched:
+                logger.info(
+                    f"P2P Debounced message: skipping pipeline delay for {msg.sender_id} "
+                    f"(session: {str(msg.session_id)[:12]}, already waited in debounce quiet window with jitter)."
+                )
+                total_delay = 0.0
+            else:
+                now = datetime.now(UTC)
+                msg_ts = msg.timestamp
+                if msg_ts.tzinfo is None:
+                    msg_ts = msg_ts.replace(tzinfo=UTC)
 
-            # 2. Random delay (0~10s jitter)
-            import random
-            random_max = float(os.getenv("AGENT_P2P_RANDOM_DELAY_MAX", getattr(self, "p2p_random_delay_max", 10.0)))
-            random_min = float(os.getenv("AGENT_P2P_RANDOM_DELAY_MIN", getattr(self, "p2p_random_delay_min", 0.0)))
-            random_delay = round(random.uniform(max(0.0, random_min), max(random_min, random_max)), 2)
+                # 1. Configured base delay (p2p_reply_delay)
+                delay_val = max(0, getattr(self, "p2p_reply_delay", 60))
+                remaining_base_delay = 0.0
+                if delay_val > 0:
+                    target_time = msg_ts + timedelta(seconds=delay_val)
+                    remaining_base_delay = max(0.0, (target_time - now).total_seconds())
 
-            total_delay = remaining_base_delay + random_delay
+                # 2. Random delay (0~10s jitter)
+                import random
+                random_max = float(getattr(self, "p2p_random_delay_max", os.getenv("AGENT_P2P_RANDOM_DELAY_MAX", "10.0")))
+                random_min = float(getattr(self, "p2p_random_delay_min", os.getenv("AGENT_P2P_RANDOM_DELAY_MIN", "0.0")))
+                random_delay = round(random.uniform(max(0.0, random_min), max(random_min, random_max)), 2) if random_max > 0 else 0.0
+
+                total_delay = remaining_base_delay + random_delay
 
             if total_delay > 0:
                 logger.info(
                     f"P2P Wakeup Delay & Jitter: waiting {total_delay:.2f}s before invoking LLM "
-                    f"for message from {msg.sender_id} (session: {msg.session_id[:12]}, "
+                    f"for message from {msg.sender_id} (session: {str(msg.session_id)[:12]}, "
                     f"base remaining: {remaining_base_delay:.2f}s, random jitter: {random_delay:.2f}s)"
                 )
                 ui_session_id = self._normalize_session_id(msg.session_id)
@@ -2095,6 +2113,59 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 )
                 return
 
+            is_consensus_archive = (
+                (msg.metadata and msg.metadata.get("package_type") == "aip_consensus_archive")
+                or (isinstance(content_dict, dict) and content_dict.get("type") == "aip_consensus_archive")
+                or (
+                    msg.metadata
+                    and isinstance(msg.metadata.get("content"), dict)
+                    and msg.metadata.get("content", {}).get("type") == "aip_consensus_archive"
+                )
+            )
+            if is_consensus_archive:
+                meta_content = (msg.metadata or {}).get("content", {}) if isinstance((msg.metadata or {}).get("content"), dict) else {}
+                aip_id = (
+                    content_dict.get("aip_id")
+                    or (msg.metadata or {}).get("aip_id")
+                    or meta_content.get("aip_id", "unknown")
+                )
+                title = (
+                    content_dict.get("title")
+                    or (msg.metadata or {}).get("title")
+                    or meta_content.get("title", "")
+                )
+                data = (
+                    content_dict.get("data")
+                    or meta_content.get("data")
+                    or content_dict
+                )
+                md_content = (
+                    content_dict.get("md_content")
+                    or meta_content.get("md_content")
+                    or ""
+                )
+                try:
+                    from ..services.evolution_service import evolution_service
+                    evolution_service.save_core_node_archive(
+                        aip_id=aip_id,
+                        data=data,
+                        md_content=md_content,
+                        source_node=msg.sender_id,
+                    )
+                except Exception as ce:
+                    logger.error(f"[ConsensusArchive] Core node failed to save archive for {aip_id}: {ce}")
+
+                s_id_short = msg.sender_id[:8] if msg.sender_id else "unknown"
+                await self.message_bus.publish_outbound(
+                    OutboundMessage(
+                        channel="gateway",
+                        session_id=history_session_id,
+                        content=f"【核心归档仓】核心节点已成功聚合通过网络共识的演化提案 `{aip_id}`: *{title}* (来自节点 {s_id_short})，已写入核心归档总账备选提炼。",
+                        type="thought",
+                    )
+                )
+                return
+
             text_content = msg.content
             if isinstance(text_content, dict) and "text" in text_content:
                 text_content = text_content["text"]
@@ -2521,6 +2592,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                     "package_type": it["package_type"],
                     "recipient_type": it["recipient_type"],
                     "batched_count": 1,
+                    "debounced": True,
                 },
             )
             return msg_obj, m_ids, sender_ids, all_pure_ack
@@ -2569,6 +2641,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 "package_type": "chat",
                 "recipient_type": items[0]["recipient_type"],
                 "batched_count": len(items),
+                "debounced": True,
             },
         )
         return msg_obj, m_ids, sender_ids, all_pure_ack
@@ -2776,7 +2849,13 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             first_arrival = self._session_first_arrival[session_id]
             time_elapsed = now - first_arrival
             time_to_max = max(0.0, self.p2p_debounce_max_wait_seconds - time_elapsed)
-            wait_time = min(self.p2p_debounce_delay_seconds, time_to_max)
+
+            import random
+            random_max = float(getattr(self, "p2p_random_delay_max", os.getenv("AGENT_P2P_RANDOM_DELAY_MAX", "10.0")))
+            random_min = float(getattr(self, "p2p_random_delay_min", os.getenv("AGENT_P2P_RANDOM_DELAY_MIN", "0.0")))
+            jitter = round(random.uniform(max(0.0, random_min), max(random_min, random_max)), 2) if random_max > 0 else 0.0
+            quiet_window = self.p2p_debounce_delay_seconds + jitter
+            wait_time = min(quiet_window, time_to_max)
 
             # Cancel previous debounce task for this session if it is running
             old_task = self._debounce_tasks.get(session_id)
@@ -2788,11 +2867,12 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
             self._debounce_tasks[session_id] = task
 
         s_id_short = msg.sender_id[:8] if msg.sender_id else "unknown"
+        jitter_str = f" (含随机抖动 {jitter:.1f}s)" if jitter > 0 else ""
         await self.message_bus.publish_outbound(
             OutboundMessage(
                 channel="gateway",
                 session_id=session_id,
-                content=f"P2P 自适应防抖模式: 收到来自 {s_id_short} 的消息，已暂存待防抖合并 (当前积压: {q_len} 条，静默等待: {wait_time:.1f}s，剩余最长等待: {time_to_max:.1f}s)。",
+                content=f"P2P 自适应防抖模式: 收到来自 {s_id_short} 的消息，已暂存待防抖合并 (当前积压: {q_len} 条，静默等待: {wait_time:.1f}s{jitter_str}，剩余最长等待: {time_to_max:.1f}s)。",
                 type="thought",
             )
         )
@@ -4898,15 +4978,17 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         return False
 
     async def cast_vote(
-        self, election_id: str, approval: bool, reason: str = "", candidate_id: str = None
+        self, election_id: str, approval: bool = True, reason: str = "", candidate_id: str = None
     ) -> dict:
         if not self.governance_manager:
             return {"error": "Governance Manager not initialized"}
 
-        if not p2p_service.local_node:
-            return {"error": "Local node not initialized"}
+        voter_id = getattr(getattr(p2p_service, "local_node", None), "node_id", None)
+        if not voter_id and self.governance_manager:
+            voter_id = self.governance_manager.node_id
 
-        voter_id = p2p_service.local_node.node_id
+        if not voter_id:
+            return {"error": "Neither local node nor governance manager is initialized with a node_id"}
 
         # Pre-flight check: Initiator Recusal / Conflict of Interest
         election = self.governance_manager.active_elections.get(election_id) or (
@@ -4937,7 +5019,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 if hasattr(self.governance_manager, "finished_elections")
                 else None
             )
-            if election:
+            if election and getattr(p2p_service, "local_node", None):
                 try:
                     # 同步等待广播完成，最多等待 5 秒
                     await asyncio.wait_for(
@@ -4956,7 +5038,11 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                 except Exception as e:
                     logger.error(f"Vote broadcast failed for election {election_id[:8]}: {e}")
 
-            return {"status": "success", "election_id": election_id}
+            return {
+                "status": "success",
+                "election_id": election_id,
+                "message": f"Vote registered for election {election_id}: approved={approval}",
+            }
         else:
             return {"status": "failed", "reason": "Vote rejected (invalid, recused, or closed)"}
 
@@ -5530,56 +5616,90 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
 
     async def vote_election(self, election_id: str, votes_data: list[dict]) -> str:
         """
-        Submit a ballot.
+        Submit a ballot with strict type normalization and conflict-of-interest checks.
         votes_data: List of dicts with {"candidate_id": str, "approve": bool, "reason": str, "reward_amount": float}
         """
         if not self.governance_manager:
-            return "Governance failed"
+            return "Governance failed: Governance Manager not initialized"
+
+        election = self.governance_manager.active_elections.get(election_id) or self.governance_manager.finished_elections.get(election_id)
+        if not election:
+            return f"Election {election_id} not found"
+
+        my_node_id = self.governance_manager.node_id
+        # Conflict of Interest / Initiator Recusal: author must recuse from voting on own proposal
+        if my_node_id in election.excluded_voters or (election.initiator_id and my_node_id == election.initiator_id):
+            logger.warning(f"[Governance] Proposer {my_node_id[:8]} must recuse from voting on own proposal {election_id[:8]}")
+            return f"Proposer recusal: author cannot vote on their own proposal {election_id}"
+
+        def _normalize_approval(v_item: dict) -> bool:
+            # Check known stance keys in priority order
+            for key in ["approve", "approval", "position", "decision", "vote", "support"]:
+                if key in v_item:
+                    val = v_item[key]
+                    if isinstance(val, bool):
+                        return val
+                    if isinstance(val, (int, float)):
+                        return bool(val > 0)
+                    if isinstance(val, str):
+                        clean_str = val.strip().lower()
+                        if clean_str in ["approve", "approved", "true", "yes", "support", "passed", "1", "y", "t", "agree"]:
+                            return True
+                        if clean_str in ["reject", "rejected", "false", "no", "oppose", "failed", "0", "n", "f", "disagree"]:
+                            return False
+                        raise ValueError(f"Ambiguous voting stance '{val}'. Expected 'approve' or 'reject'.")
+            raise ValueError(f"Missing explicit approval field in vote entry: {v_item}. Expected 'approve' or 'approval'.")
 
         ballot = []
-        for v_data in votes_data:
-            ballot.append(
-                Vote(
-                    voter_id=self.governance_manager.node_id,
-                    candidate_id=v_data.get("candidate_id"),  # Can be None for proposal
-                    timestamp=datetime.now(UTC),
-                    approval=v_data.get("approve", False),
-                    reason=v_data.get("reason", ""),
-                    reward_amount=v_data.get("reward_amount", 0.0),
+        try:
+            for v_data in votes_data:
+                approval_val = _normalize_approval(v_data)
+                ballot.append(
+                    Vote(
+                        voter_id=my_node_id,
+                        candidate_id=v_data.get("candidate_id"),  # Can be None for proposal
+                        timestamp=datetime.now(UTC),
+                        approval=approval_val,
+                        reason=v_data.get("reason", ""),
+                        reward_amount=float(v_data.get("reward_amount", 0.0) or 0.0),
+                    )
                 )
-            )
+        except ValueError as ve:
+            logger.error(f"[Governance] Vote parameter validation error: {ve}")
+            return f"Vote rejected due to schema error: {ve}"
 
         success = self.governance_manager.receive_ballot(election_id, ballot)
         if success:
             # Broadcast via P2P - Wait for broadcast to complete with timeout
-            election = self.governance_manager.active_elections[election_id]
-            broadcast_tasks = []
-            for v in ballot:
-                task = asyncio.create_task(
-                    p2p_service.broadcast_governance_event(
-                        election.group_id, "vote", {"election_id": election_id, "vote": v.to_dict()}
+            election = self.governance_manager.active_elections.get(election_id) or self.governance_manager.finished_elections.get(election_id)
+            if election and election_id in self.governance_manager.active_elections:
+                broadcast_tasks = []
+                for v in ballot:
+                    task = asyncio.create_task(
+                        p2p_service.broadcast_governance_event(
+                            election.group_id, "vote", {"election_id": election_id, "vote": v.to_dict()}
+                        )
                     )
-                )
-                broadcast_tasks.append(task)
+                    broadcast_tasks.append(task)
 
-            # Wait for all broadcasts to complete (with timeout)
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*broadcast_tasks, return_exceptions=True), timeout=10.0
-                )
-                logger.info(
-                    f"Vote broadcast successfully for election {election_id[:8]} ({len(ballot)} votes)"
-                )
-            except TimeoutError:
-                logger.warning(f"Vote broadcast timeout for election {election_id[:8]}")
-                return "Ballot registered locally but broadcast timed out"
-            except Exception as e:
-                logger.error(f"Vote broadcast failed for election {election_id[:8]}: {e}")
-                return f"Ballot registered locally but broadcast failed: {e}"
+                # Wait for all broadcasts to complete (with timeout)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*broadcast_tasks, return_exceptions=True), timeout=10.0
+                    )
+                    logger.info(
+                        f"Vote broadcast successfully for election {election_id[:8]} ({len(ballot)} votes)"
+                    )
+                except TimeoutError:
+                    logger.warning(f"Vote broadcast timeout for election {election_id[:8]}")
+                    return "Ballot registered locally but broadcast timed out"
+                except Exception as e:
+                    logger.error(f"Vote broadcast failed for election {election_id[:8]}: {e}")
+                    return f"Ballot registered locally but broadcast failed: {e}"
 
             return "Ballot registered and broadcast successfully"
         else:
-            return "Ballot rejected (invalid, closed, or validation failed)"
+            return "Ballot rejected (invalid, closed, recused, or validation failed)"
 
     async def get_election_info(self, election_id: str, include_content: bool = False) -> dict:
         if not self.governance_manager:
@@ -6994,3 +7114,380 @@ def test_failure_fallback():
     p.add_tool_call(ToolCall(tool_id="t1", parameters={}))
     res = p.execute(lambda c: (_ for _ in ()).throw(RuntimeError("crash")))
     assert "Error:" in res["t1"] and len(res["t1"]) < 250
+
+
+# ========================================================
+# [Autonomous Evolution Patch] AIP-5A40-01A6A6: Reputation-Weighted Quadratic Voting with Governance Integration
+# ========================================================
+import threading
+import logging
+from typing import Dict, List, Tuple, Optional
+from collections import defaultdict
+import math
+
+logger = logging.getLogger(__name__)
+
+
+class ReputationWeightedQuadraticVoting:
+    """Thread-safe reputation-weighted quadratic voting with deduplication and balance checking.
+    
+    Voting power = vote_count * sqrt(reputation)
+    Cost = voting_power^2
+    
+    This is NOT EigenTrust. Reputation values are externally managed.
+    """
+    
+    def __init__(self, initial_reputations: Optional[Dict[str, float]] = None):
+        self._lock = threading.Lock()
+        self._reputations: Dict[str, float] = {}
+        self._votes: Dict[str, Dict[str, int]] = defaultdict(dict)  # proposal_id -> {voter_id: vote_count}
+        self._balances: Dict[str, float] = defaultdict(float)
+        
+        if initial_reputations:
+            for node_id, rep in initial_reputations.items():
+                try:
+                    self._reputations[node_id] = self._validate_reputation(rep)
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Invalid initial reputation for {node_id}: {e}")
+    
+    def _validate_reputation(self, reputation: float) -> float:
+        """Bounds check reputation value [0.0, 1.0]."""
+        try:
+            rep = float(reputation)
+            if math.isnan(rep) or math.isinf(rep):
+                raise ValueError(f"Reputation must be finite, got {rep}")
+            return max(0.0, min(1.0, rep))
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid reputation value: {e}")
+    
+    def _validate_vote_count(self, votes: int) -> int:
+        """Bounds check vote count [0, 1000]."""
+        try:
+            votes = int(votes)
+            return max(0, min(1000, votes))
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid vote count: {e}")
+    
+    def update_reputation(self, node_id: str, reputation: float) -> None:
+        """Update node reputation with thread safety."""
+        try:
+            with self._lock:
+                self._reputations[node_id] = self._validate_reputation(reputation)
+                logger.debug(f"Updated reputation for {node_id}: {reputation}")
+        except Exception as e:
+            logger.error(f"Failed to update reputation for {node_id}: {e}")
+            raise
+    
+    def update_balance(self, node_id: str, balance: float) -> None:
+        """Update node balance for vote cost verification."""
+        try:
+            with self._lock:
+                self._balances[node_id] = max(0.0, float(balance))
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid balance for {node_id}: {e}")
+            raise ValueError(f"Invalid balance: {e}")
+    
+    def cast_votes(self, voter_id: str, proposal_id: str, vote_count: int) -> float:
+        """Cast quadratic votes weighted by reputation with deduplication and balance check.
+        
+        Returns cost if successful, raises exception if validation fails.
+        """
+        try:
+            vote_count = self._validate_vote_count(vote_count)
+            
+            with self._lock:
+                # Vote deduplication: prevent double-voting
+                if voter_id in self._votes[proposal_id]:
+                    raise ValueError(f"Voter {voter_id} has already voted on proposal {proposal_id}")
+                
+                # Get reputation (default 0.5 for new voters)
+                reputation = self._reputations.get(voter_id, 0.5)
+                
+                # Calculate cost
+                weighted_votes = vote_count * math.sqrt(reputation)
+                cost = weighted_votes ** 2
+                
+                # Balance checking
+                current_balance = self._balances.get(voter_id, 0.0)
+                if current_balance < cost:
+                    raise ValueError(
+                        f"Insufficient balance for {voter_id}: required {cost:.2f}, "
+                        f"available {current_balance:.2f}"
+                    )
+                
+                # Record vote (deduplicated - overwrites if somehow called again)
+                self._votes[proposal_id][voter_id] = vote_count
+                
+                # Deduct balance
+                self._balances[voter_id] = current_balance - cost
+                
+                logger.info(
+                    f"Vote cast: {voter_id} -> {proposal_id}, "
+                    f"votes={vote_count}, cost={cost:.2f}, rep={reputation:.2f}"
+                )
+                
+                return cost
+                
+        except ValueError as e:
+            logger.warning(f"Vote casting failed: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in cast_votes: {e}")
+            raise RuntimeError(f"Vote casting system error: {e}")
+    
+    def get_proposal_results(self, proposal_id: str) -> Dict[str, Tuple[int, float]]:
+        """Get weighted vote totals for a proposal.
+        
+        Returns: Dict[voter_id, (raw_votes, weighted_votes)]
+        """
+        try:
+            with self._lock:
+                results = {}
+                for voter_id, vote_count in self._votes[proposal_id].items():
+                    reputation = self._reputations.get(voter_id, 0.5)
+                    weighted = vote_count * math.sqrt(reputation)
+                    results[voter_id] = (vote_count, weighted)
+                return results
+        except Exception as e:
+            logger.error(f"Error getting proposal results: {e}")
+            raise RuntimeError(f"Failed to retrieve proposal results: {e}")
+    
+    def calculate_quadratic_cost(self, vote_count: int, reputation: float = 0.5) -> float:
+        """Calculate cost for given votes and reputation."""
+        try:
+            vote_count = self._validate_vote_count(vote_count)
+            reputation = self._validate_reputation(reputation)
+            weighted = vote_count * math.sqrt(reputation)
+            return weighted ** 2
+        except Exception as e:
+            logger.error(f"Error calculating cost: {e}")
+            raise
+    
+    def has_voted(self, voter_id: str, proposal_id: str) -> bool:
+        """Check if voter has already voted on proposal."""
+        with self._lock:
+            return voter_id in self._votes[proposal_id]
+    
+    def get_voter_balance(self, voter_id: str) -> float:
+        """Get current balance for voter."""
+        with self._lock:
+            return self._balances.get(voter_id, 0.0)
+
+
+# Integration interface for governance.py
+def integrate_with_governance(governance_module):
+    """Integration point for governance.py
+    
+    Example usage in governance.py:
+        from .reputation_voting import ReputationWeightedQuadraticVoting
+        
+        voting_system = ReputationWeightedQuadraticVoting()
+        
+        def cast_governance_vote(voter_id, proposal_id, vote_count):
+            cost = voting_system.cast_votes(voter_id, proposal_id, vote_count)
+            # Record vote in governance ledger
+            return cost
+    """
+    logger.info("Reputation-weighted quadratic voting integrated with governance module")
+    return ReputationWeightedQuadraticVoting()
+
+
+# Integration interface for agent_service.py
+def integrate_with_agent_service(agent_service_module):
+    """Integration point for agent_service.py
+    
+    Example usage in agent_service.py:
+        from .reputation_voting import ReputationWeightedQuadraticVoting
+        
+        voting_system = ReputationWeightedQuadraticVoting()
+        
+        def update_agent_reputation(agent_id, reputation):
+            voting_system.update_reputation(agent_id, reputation)
+            
+        def update_agent_balance(agent_id, balance):
+            voting_system.update_balance(agent_id, balance)
+    """
+    logger.info("Reputation-weighted quadratic voting integrated with agent service")
+    return ReputationWeightedQuadraticVoting()
+
+
+def test_reputation_weighted_quadratic_voting():
+    """Comprehensive test suite."""
+    print("Running tests...")
+    
+    # Test 1: Basic quadratic cost calculation
+    voting = ReputationWeightedQuadraticVoting({'node1': 1.0, 'node2': 0.25})
+    cost = voting.calculate_quadratic_cost(4, 1.0)
+    assert cost == 16.0, f"Expected 16.0, got {cost}"
+    print("✓ Test 1: Basic cost calculation")
+    
+    # Test 2: Reputation weighting
+    cost_low_rep = voting.calculate_quadratic_cost(4, 0.25)
+    assert cost_low_rep == 4.0, f"Expected 4.0, got {cost_low_rep}"
+    print("✓ Test 2: Reputation weighting")
+    
+    # Test 3: Bounds checking
+    voting.update_reputation('test', 1.5)
+    assert voting._reputations['test'] == 1.0, "Reputation should be capped at 1.0"
+    print("✓ Test 3: Bounds checking")
+    
+    # Test 4: Vote deduplication
+    voting.update_balance('voter1', 100.0)
+    voting.cast_votes('voter1', 'prop1', 2)
+    try:
+        voting.cast_votes('voter1', 'prop1', 3)  # Should fail - already voted
+        assert False, "Should have raised ValueError for double voting"
+    except ValueError as e:
+        assert "already voted" in str(e).lower()
+    print("✓ Test 4: Vote deduplication")
+    
+    # Test 5: Balance checking
+    voting.update_balance('voter2', 5.0)
+    try:
+        voting.cast_votes('voter2', 'prop2', 10)  # Cost would be 100 * 0.5 = 50
+        assert False, "Should have raised ValueError for insufficient balance"
+    except ValueError as e:
+        assert "insufficient balance" in str(e).lower()
+    print("✓ Test 5: Balance checking")
+    
+    # Test 6: Exception handling
+    try:
+        voting.update_reputation('bad_node', 'not_a_number')
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
+    print("✓ Test 6: Exception handling")
+    
+    # Test 7: has_voted check
+    assert voting.has_voted('voter1', 'prop1') == True
+    assert voting.has_voted('voter1', 'prop2') == False
+    print("✓ Test 7: has_voted check")
+    
+    print("\nAll tests passed! ✓")
+
+
+if __name__ == '__main__':
+    test_reputation_weighted_quadratic_voting()
+
+
+# ========================================================
+# [Autonomous Evolution Patch] AIP-5A40-068AF5: QuadraticVotingHelper based on EigenTrust: Fast and Robust Di
+# ========================================================
+import threading
+from typing import Dict, List, Tuple
+from collections import defaultdict
+
+class QuadraticVotingHelper:
+    """Thread-safe quadratic voting with EigenTrust-based reputation weighting."""
+    
+    def __init__(self, initial_trust: float = 0.5, convergence_threshold: float = 1e-6):
+        self._lock = threading.RLock()
+        self._trust_scores: Dict[str, float] = defaultdict(lambda: initial_trust)
+        self._convergence_threshold = max(1e-9, min(1e-3, float(convergence_threshold)))
+        self._initial_trust = max(0.0, min(1.0, float(initial_trust)))
+    
+    def calculate_vote_cost(self, votes: int) -> float:
+        """Calculate quadratic cost: cost = votes^2."""
+        votes = max(0, int(votes))
+        return float(votes * votes)
+    
+    def get_weighted_voting_power(self, voter_id: str, votes: int) -> Tuple[float, float]:
+        """Calculate trust-weighted voting power and cost.
+        
+        Returns: (weighted_power, cost)
+        """
+        votes = max(0, int(votes))
+        with self._lock:
+            trust = self._trust_scores.get(voter_id, self._initial_trust)
+        
+        trust = max(0.0, min(1.0, float(trust)))
+        weighted_power = float(votes) * trust
+        cost = self.calculate_vote_cost(votes)
+        return weighted_power, cost
+    
+    def update_trust_scores(self, peer_ratings: Dict[str, Dict[str, float]], 
+                            max_iterations: int = 50) -> Dict[str, float]:
+        """EigenTrust-style iterative trust computation.
+        
+        Args:
+            peer_ratings: {rater_id: {ratee_id: rating}} where rating in [0, 1]
+            max_iterations: Max iterations for convergence (bounded to [1, 100])
+        
+        Returns:
+            Updated trust scores
+        """
+        max_iterations = max(1, min(100, int(max_iterations)))
+        
+        # Validate and normalize ratings
+        normalized_ratings = defaultdict(list)
+        for rater_id, ratings in peer_ratings.items():
+            rater_trust = self._trust_scores.get(rater_id, self._initial_trust)
+            for ratee_id, rating in ratings.items():
+                rating = max(0.0, min(1.0, float(rating)))
+                normalized_ratings[ratee_id].append((rater_id, rating, rater_trust))
+        
+        # Iterative trust computation
+        with self._lock:
+            new_scores = dict(self._trust_scores)
+            
+            for _ in range(max_iterations):
+                updated = {}
+                for ratee_id in normalized_ratings:
+                    weighted_sum = 0.0
+                    trust_sum = 0.0
+                    for rater_id, rating, rater_trust in normalized_ratings[ratee_id]:
+                        weighted_sum += rating * rater_trust
+                        trust_sum += rater_trust
+                    
+                    if trust_sum > 0:
+                        updated[ratee_id] = weighted_sum / trust_sum
+                    else:
+                        updated[ratee_id] = self._initial_trust
+                
+                # Check convergence
+                max_delta = max(
+                    abs(updated.get(pid, self._initial_trust) - new_scores.get(pid, self._initial_trust))
+                    for pid in updated
+                ) if updated else 0.0
+                
+                new_scores.update(updated)
+                
+                if max_delta < self._convergence_threshold:
+                    break
+            
+            self._trust_scores.update(new_scores)
+            return dict(self._trust_scores)
+    
+    def get_trust_score(self, voter_id: str) -> float:
+        """Get current trust score for a voter."""
+        with self._lock:
+            return float(self._trust_scores.get(voter_id, self._initial_trust))
+
+
+def test_quadratic_voting_helper():
+    """Minimal test suite for QuadraticVotingHelper."""
+    helper = QuadraticVotingHelper(initial_trust=0.8)
+    
+    # Test 1: Quadratic cost calculation
+    assert helper.calculate_vote_cost(3) == 9.0, "Vote cost should be 3^2 = 9"
+    assert helper.calculate_vote_cost(0) == 0.0, "Zero votes should cost 0"
+    
+    # Test 2: Weighted voting power with trust
+    power, cost = helper.get_weighted_voting_power("voter1", 4)
+    assert abs(power - 3.2) < 1e-6, "Power should be 4 * 0.8 = 3.2"
+    assert cost == 16.0, "Cost should be 4^2 = 16"
+    
+    # Test 3: Trust score update with peer ratings
+    ratings = {
+        "voter1": {"voter2": 0.9, "voter3": 0.7},
+        "voter2": {"voter1": 0.8, "voter3": 0.6}
+    }
+    updated = helper.update_trust_scores(ratings, max_iterations=10)
+    assert "voter1" in updated and "voter2" in updated, "Trust scores should be updated"
+    assert all(0.0 <= score <= 1.0 for score in updated.values()), "All scores must be in [0, 1]"
+    
+    print("All tests passed!")
+
+
+if __name__ == "__main__":
+    test_quadratic_voting_helper()

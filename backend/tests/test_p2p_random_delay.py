@@ -138,3 +138,32 @@ async def test_resident_message_skips_delay():
 
         # Resident message should NOT sleep
         mock_sleep.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_debounced_message_skips_pipeline_delay():
+    """Verify that a debounced P2P message skips the pipeline delay and random jitter sleep."""
+    agent_service.p2p_reply_delay = 10
+    agent_service.p2p_random_delay_max = 10.0
+
+    msg = InboundMessage(
+        channel="p2p",
+        sender_id="peer_node_xyz",
+        session_id="peer_node_xyz",
+        content="Debounced batched message content",
+        metadata={"debounced": True, "batched_count": 2, "package_type": "chat"},
+        timestamp=datetime.now(UTC),
+    )
+
+    with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep, \
+         patch("app.agent.pipeline.SenseStage.run", new_callable=AsyncMock) as mock_sense:
+
+        async def stop_pipe(context, agent):
+            context.stop_execution = True
+        mock_sense.side_effect = stop_pipe
+
+        await agent_service.run_pipeline(msg)
+
+        # Debounced message must skip pipeline delay completely
+        mock_sleep.assert_not_called()
+

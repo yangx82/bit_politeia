@@ -195,40 +195,46 @@ class Node:
                 )
 
                 # Verify signature
-                # FIX: sender_id is a hex Node ID, we need the actual PEM Public Key for verification.
-                public_key = sender_id
-                has_pem_key = False
-                if self.network_manager and sender_id in self.network_manager.nodes:
-                    public_key = self.network_manager.nodes[sender_id].public_key
-                    has_pem_key = True
-                elif self.network_manager:
-                    logger.debug(f"Unknown sender {sender_id[:8]} during verification, public key lookup failed.")
+                # sender_id is a hex Node ID, we need the actual PEM Public Key for verification.
+                sender_node = None
+                if self.network_manager:
+                    if hasattr(self.network_manager, "get_node"):
+                        sender_node = self.network_manager.get_node(sender_id)
+                    elif sender_id in getattr(self.network_manager, "nodes", {}):
+                        sender_node = self.network_manager.nodes[sender_id]
 
-                # If we have a valid PEM public key, perform strict signature check.
-                # If key is missing (new node joining), fallback to sanity check rather than dropping.
-                if self.network_manager and hasattr(self.network_manager, "message_protocol"):
+                public_key = sender_node.public_key if sender_node else ""
+                has_pem_key = bool(public_key and public_key.strip().startswith("-----BEGIN"))
+
+                msg_type_lower = str(msg_data.get("message_type", "")).lower()
+                is_governance = msg_type_lower in ("proposal", "vote", "election")
+
+                if has_pem_key and self.network_manager and hasattr(self.network_manager, "message_protocol"):
                     is_valid = self.network_manager.message_protocol.verify_message(msg_obj, public_key)
-                    msg_type_lower = str(msg_data.get("message_type", "")).lower()
-                    is_governance = msg_type_lower in ("proposal", "vote", "election")
-
                     if not is_valid:
-                        if has_pem_key and is_governance:
+                        if is_governance:
                             logger.warning(
                                 f"[Security] Received governance message {m_id} from {sender_id[:8]} with INVALID signature. Dropping."
                             )
                             return
-                        elif has_pem_key:
+                        else:
                             msg_data["signature_verified"] = False
                             logger.warning(
                                 f"[Security] Received {msg_type_lower} message {m_id} from {sender_id[:8]} with unverified signature. Ingesting with warning."
                             )
-                        else:
-                            msg_data["signature_verified"] = False
-                            logger.info(
-                                f"[Security] Public key for node {sender_id[:8]} not in topology yet. Ingesting with basic integrity check."
-                            )
                     else:
                         msg_data["signature_verified"] = True
+                else:
+                    # Key is missing or not PEM (e.g. peer topology not yet synced or temporary bootstrap lag)
+                    msg_data["signature_verified"] = False
+                    if is_governance:
+                        logger.warning(
+                            f"[Security] Public key for node {sender_id[:8]} not available to verify governance message {m_id}. Ingesting with unverified flag."
+                        )
+                    else:
+                        logger.info(
+                            f"[Security] Public key for node {sender_id[:8]} not in topology yet. Ingesting with basic integrity check."
+                        )
             except Exception as ve:
                 logger.error(f"[Security] Failed to verify message {m_id}: {ve}")
 

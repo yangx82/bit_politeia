@@ -548,6 +548,11 @@ class BitPoliteiaContextManager:
         
         Returns:
             (compacted_history, cold_summary) - The hot messages to keep + cold tier summary
+        
+        Integration with HierarchicalMemoryCompactor:
+        - Hot tier: Most recent messages kept verbatim (governance-aware)
+        - Warm tier: Clustered by lexical similarity for topic grouping
+        - Cold tier: Distilled summary with topic extraction
         """
         if len(history) < 20:
             return history, ""  # Too few messages for meaningful compaction
@@ -568,10 +573,20 @@ class BitPoliteiaContextManager:
             # Cold tier: distilled summary of oldest messages
             cold_summary = tier.cold if tier.cold else ""
             
+            # Warm tier: topic-clustered summaries (used for context injection)
+            warm_context = ""
+            if tier.warm:
+                warm_context = "\n".join(tier.warm[:10])  # Limit to 10 warm entries
+            
             logger.info(
                 f"[AIP-5A40-798604] Hierarchical compaction: "
                 f"hot={len(tier.hot)}, warm={len(tier.warm)}, cold_chars={len(tier.cold)}"
             )
+            
+            # Inject warm tier context if significant
+            if warm_context and len(warm_context) > 100:
+                warm_msg = SystemMessage(content=f"[Recent Context]\n{warm_context[:500]}")
+                compacted_history = [warm_msg] + compacted_history
             
             return compacted_history, cold_summary
             

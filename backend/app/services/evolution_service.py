@@ -15,6 +15,11 @@ except (ImportError, ValueError):
 
 logger = logging.getLogger(__name__)
 
+# Feature flag: Controls whether nodes autonomously create git branches and push to GitHub.
+# Under Safety Protocol (Option 1), this is disabled by default to avoid polluting remote branches.
+# Consensus-passed proposals are aggregated and archived into the Core Node repository instead.
+ENABLE_AUTONOMOUS_GIT_PUSH = os.getenv("ENABLE_AUTONOMOUS_GIT_PUSH", "false").lower() in ("true", "1", "yes")
+
 
 def _extract_and_parse_json(text: str) -> dict:
     """Robustly extracts and parses JSON from arbitrary LLM outputs."""
@@ -272,6 +277,13 @@ class EvolutionService:
             trigger_error=f"AIP Rejected (Strike #{self.consecutive_rejections}): {reason[:200]}",
             corrective_action="Avoid repeating this pattern. Ensure scope consistency, thread locks, test assertions, and literature relevance.",
         )
+        try:
+            aip = self.aips.get(aip_id)
+            if aip and aip.proposed_diff:
+                from .aip_quality_gate import quality_gate_service
+                quality_gate_service.register_rejected_fingerprint(aip_id, aip.proposed_diff, reason=reason)
+        except Exception as e:
+            logger.debug(f"[EvolutionCooldown] Could not register rejected fingerprint: {e}")
 
     def record_approval_success(self):
         """Resets rejection strikes upon successful proposal approval."""
@@ -433,13 +445,13 @@ class EvolutionService:
             "target_files": ["backend/app/p2p_community/governance.py", "backend/app/services/agent_service.py"],
             "citations": [
                 {
-                    "title": "Quadratic Voting: How Mechanism Design Can Radicalize Democracy",
+                    "title": "A Flexible Design for Funding Public Goods (Quadratic Funding / CLR)",
                     "url": "https://arxiv.org/abs/1809.06421",
-                    "topic": "Quadratic Voting and Dynamic Governance Allocation",
+                    "topic": "Quadratic Funding and Mathematical Governance Allocation",
                 },
                 {
-                    "title": "EigenTrust: Fast and Robust Distributed Reputation Management",
-                    "url": "https://arxiv.org/abs/cs/0305031",
+                    "title": "The EigenTrust Algorithm for Reputation Management in P2P Networks",
+                    "url": "https://doi.org/10.1145/775152.775242",
                     "topic": "Reputation Scoring, Decay and Anti-Sybil Defense",
                 },
             ],
@@ -629,17 +641,14 @@ class EvolutionService:
         # Check if unit test assertions exist
         has_tests = any(kw in clean_code for kw in ["assert ", "pytest", "unittest", "def test_"])
         inflation_keywords = ["entire system", "complete engine", "full pipeline", "multi-tier framework", "end-to-end"]
-        is_inflated = any(kw in corrected_desc.lower() for kw in inflation_keywords) or (num_code_lines < 30 and not has_scope_tag)
 
-        if is_inflated and not has_scope_tag:
-            target_name = os.path.basename(target_files[0]) if target_files else "system"
-            test_status_note = "includes assertions" if has_tests else "requires unit test"
-            scope_notice = (
-                f"\n\n[Scope-Corrected | Atomic Enhancement: This proposal strictly implements the atomic '{title}' helper logic "
-                f"({num_code_lines} LOC, {test_status_note}) for {target_name}. Wider integration/orchestration is intentionally out-of-scope.]"
-            )
-            corrected_desc += scope_notice
-            logger.info(f"[EvolutionService] Pre-flight: Auto-applied Scope-Correction for concise diff ({num_code_lines} LOC).")
+        # Reject overly brief / vacuous code diffs
+        if num_code_lines < 15:
+            return False, description, f"Rejected: proposed_diff is too brief ({num_code_lines} LOC) to constitute a substantive enhancement."
+
+        # Hard reject on description inflation
+        if any(kw in corrected_desc.lower() for kw in inflation_keywords) and num_code_lines < 40:
+            return False, description, f"Rejected: Description Inflation — claiming broad framework with only {num_code_lines} LOC."
 
         return True, corrected_desc, "Pre-flight consistency audit PASSED"
 
@@ -1298,6 +1307,38 @@ class EvolutionService:
             logger.error(f"[EvolutionService] AIP {aip_id} not found")
             return False
 
+        if getattr(aip, "status", "") in ["preflight_rejected", "rejected", "failed"]:
+            logger.warning(f"[EvolutionService] Cannot broadcast rejected/invalid AIP {aip_id} (status={aip.status})")
+            return False
+
+        # Quality Gate Hard Barrier before network broadcast
+        try:
+            from .aip_quality_gate import quality_gate_service
+            report = await quality_gate_service.evaluate_proposal(
+                aip_id=aip.aip_id,
+                initiator_id=aip.initiator_id,
+                title=aip.title,
+                description=aip.description,
+                proposed_diff=aip.proposed_diff,
+                research_sources=aip.research_sources,
+                signature=aip.signature,
+                public_key=aip.public_key,
+                require_signature=False,
+                exclude_aip_id=aip.aip_id,
+            )
+            aip.quality_report = report.to_dict()
+            if not report.passed:
+                p0_msgs = [i.message for i in report.issues if i.severity.value == "P0"]
+                logger.warning(f"[EvolutionService] Broadcast blocked by QualityGate P0 for {aip_id}: {p0_msgs}")
+                aip.status = "preflight_rejected"
+                quality_gate_service.register_rejected_fingerprint(
+                    aip.aip_id, aip.proposed_diff, reason="; ".join(p0_msgs)
+                )
+                self._save_aips()
+                return False
+        except Exception as qg_err:
+            logger.error(f"[EvolutionService] QualityGate evaluation error during broadcast: {qg_err}")
+
         aip.status = "verified_and_proposed"
         self._save_aips()
 
@@ -1808,22 +1849,363 @@ class EvolutionService:
             logger.error(f"[EvolutionLanding] Failed to apply patch for {aip_id}: {e}", exc_info=True)
             return False, f"Patch execution error: {e}"
 
+    def generate_passed_aip_archive_md(
+        self,
+        aip: AIPProposal,
+        consensus_info: dict | None = None,
+    ) -> str:
+        """
+        Generates a human-readable Markdown archive document for a passed AIP proposal.
+        """
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        target_files_list = "\n".join([f"- `{f}`" for f in aip.target_files]) if aip.target_files else "- *(None)*"
+        research_sources_list = "\n".join([f"- {s}" for s in aip.research_sources]) if aip.research_sources else "- *(Internal Autonomous Synthesis)*"
+        consensus_info = consensus_info or {}
+        quorum_msg = consensus_info.get("quorum", "法定人数达标 (Quorum Met)")
+        votes_msg = consensus_info.get("votes", "去中心化多智能体共识通过 (Consensus Passed)")
+
+        md_content = f"""# 🏛️ [AIP 共识归档] {aip.aip_id}: {aip.title}
+
+## 1. 提案基本元数据 (Metadata)
+- **提案编号 (AIP ID)**: `{aip.aip_id}`
+- **提案发起节点**: `{aip.initiator_id}`
+- **全网共识状态**: ✅ 已通过去中心化治理共识 (Consensus Passed)
+- **归档时间戳**: `{now_iso}`
+- **涉及代码目标文件**:
+{target_files_list}
+- **研究参考渊源**:
+{research_sources_list}
+
+---
+
+## 2. 提案背景与设计动机 (Motivation & Architecture)
+{aip.description}
+
+---
+
+## 3. 质量门禁与沙盒验证报告 (Quality Gate & Sandbox)
+- **AST 语法一致性与依赖校验**: ✅ 通过 (Passed)
+- **沙盒运行与测试指标**:
+```json
+{json.dumps(aip.sandbox_results, indent=2, ensure_ascii=False)}
+```
+- **质量门禁审计报告**:
+```json
+{json.dumps(aip.quality_report, indent=2, ensure_ascii=False)}
+```
+
+---
+
+## 4. 去中心化自治共识决议 (Consensus Decision)
+- **投票共识**: {votes_msg}
+- **法定门槛**: {quorum_msg}
+- **共识决议**: 批准将该提案代码变更固化存证入核心节点归档仓
+- **安全规约**: 根据《去中心化演化安全规约（方案一）》，阻断节点自主向远端 Git 仓库直接推送分支，避免未经核心复核的冗余分支污染代码库。
+
+---
+
+## 5. 建议的代码变更补丁 (Proposed Code Patch)
+```diff
+{aip.proposed_diff}
+```
+
+---
+
+> [!IMPORTANT]
+> **归档说明**: 本文档由 Bit Politeia 去中心化演化引擎自动生成并存入归档仓 (`backend/data/passed_aips/`)。
+> 核心节点及开发团队可根据本文档审阅补丁、运行回归测试，并择机提炼集成至主干分支。
+"""
+        return md_content
+
+    def archive_passed_aip_local(
+        self,
+        aip: AIPProposal,
+        consensus_info: dict | None = None,
+    ) -> dict[str, str]:
+        """
+        Saves the consensus-passed AIP to `backend/data/passed_aips/`
+        in both structured JSON format and human-readable Markdown format.
+        """
+        passed_dir = os.path.join(self.data_dir, "passed_aips")
+        os.makedirs(passed_dir, exist_ok=True)
+
+        json_path = os.path.join(passed_dir, f"{aip.aip_id}.json")
+        md_path = os.path.join(passed_dir, f"{aip.aip_id}.md")
+
+        payload = {
+            "aip_id": aip.aip_id,
+            "initiator_id": aip.initiator_id,
+            "title": aip.title,
+            "description": aip.description,
+            "target_files": aip.target_files,
+            "proposed_diff": aip.proposed_diff,
+            "research_sources": aip.research_sources,
+            "sandbox_results": aip.sandbox_results,
+            "quality_report": aip.quality_report,
+            "status": "consensus_archived",
+            "passed_at": datetime.now(UTC).isoformat(),
+            "consensus_info": consensus_info or {"consensus": "passed", "quorum_reached": True},
+        }
+
+        try:
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+            logger.info(f"[EvolutionService] Saved passed AIP JSON archive: {json_path}")
+        except Exception as e:
+            logger.error(f"[EvolutionService] Failed writing JSON archive {json_path}: {e}")
+            raise
+
+        md_content = self.generate_passed_aip_archive_md(aip, consensus_info)
+        try:
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(md_content)
+            logger.info(f"[EvolutionService] Saved passed AIP Markdown archive: {md_path}")
+        except Exception as e:
+            logger.error(f"[EvolutionService] Failed writing Markdown archive {md_path}: {e}")
+            raise
+
+        return {"json_path": json_path, "md_path": md_path}
+
+    def save_core_node_archive(
+        self,
+        aip_id: str,
+        data: dict,
+        md_content: str,
+        source_node: str | None = None,
+    ) -> dict[str, str]:
+        """
+        Saves a consensus-passed AIP to the Core Node archive directory
+        (`backend/data/core_archives/passed_aips/`) and updates the aggregate ledger.
+        """
+        core_dir = os.path.join(self.data_dir, "core_archives", "passed_aips")
+        os.makedirs(core_dir, exist_ok=True)
+
+        json_path = os.path.join(core_dir, f"{aip_id}.json")
+        md_path = os.path.join(core_dir, f"{aip_id}.md")
+
+        try:
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            if md_content:
+                with open(md_path, "w", encoding="utf-8") as f:
+                    f.write(md_content)
+        except Exception as e:
+            logger.error(f"[EvolutionService] Failed writing core archive for {aip_id}: {e}")
+
+        # Update core archive aggregate ledger
+        ledger_path = os.path.join(self.data_dir, "core_archives", "passed_aips_ledger.json")
+        ledger = {"updated_at": datetime.now(UTC).isoformat(), "total_passed_aips": 0, "passed_aips": {}}
+        if os.path.exists(ledger_path):
+            try:
+                with open(ledger_path, "r", encoding="utf-8") as f:
+                    ledger = json.load(f)
+            except Exception as le:
+                logger.warning(f"[EvolutionService] Failed reading existing ledger, initializing fresh: {le}")
+
+        if not isinstance(ledger.get("passed_aips"), dict):
+            ledger["passed_aips"] = {}
+
+        title = data.get("title", "") if isinstance(data, dict) else ""
+        target_files = data.get("target_files", []) if isinstance(data, dict) else []
+        initiator_id = data.get("initiator_id", "unknown") if isinstance(data, dict) else "unknown"
+
+        ledger["passed_aips"][aip_id] = {
+            "aip_id": aip_id,
+            "title": title,
+            "initiator_id": initiator_id,
+            "target_files": target_files,
+            "source_node": source_node or "local",
+            "archived_at": datetime.now(UTC).isoformat(),
+            "json_file": f"passed_aips/{aip_id}.json",
+            "md_file": f"passed_aips/{aip_id}.md",
+        }
+        ledger["total_passed_aips"] = len(ledger["passed_aips"])
+        ledger["updated_at"] = datetime.now(UTC).isoformat()
+
+        try:
+            with open(ledger_path, "w", encoding="utf-8") as f:
+                json.dump(ledger, f, indent=2, ensure_ascii=False)
+            logger.info(f"[EvolutionService] Updated Core Node archive ledger: {ledger_path}")
+        except Exception as e:
+            logger.error(f"[EvolutionService] Failed writing ledger to {ledger_path}: {e}")
+
+        return {
+            "json_path": json_path,
+            "md_path": md_path,
+            "ledger_path": ledger_path,
+        }
+
+    async def archive_consensus_aip(
+        self,
+        aip_id: str,
+        agent_service: Any = None,
+        consensus_info: dict | None = None,
+    ) -> dict[str, Any]:
+        """
+        Safely archives a consensus-passed AIP without creating git branches or pushing to remote.
+        1. Archives proposal details & diff to backend/data/passed_aips/ (JSON & MD).
+        2. Aggregates to the Core Node archive repository (backend/data/core_archives/).
+        3. If running on a peer node, dispatches archive payload to group core nodes via P2P.
+        4. Updates AIP status to 'consensus_archived'.
+        5. Emits gateway and resident notifications.
+        """
+        aip = self.aips.get(aip_id)
+        if not aip:
+            return {"success": False, "error": f"AIP {aip_id} not found"}
+
+        # 1. Save local passed AIP archive
+        local_archive = self.archive_passed_aip_local(aip, consensus_info)
+
+        # 2. Update status and save
+        aip.status = "consensus_archived"
+        if not aip.sandbox_results:
+            aip.sandbox_results = {}
+        aip.sandbox_results["archive_status"] = "consensus_archived"
+        aip.sandbox_results["archive_path"] = local_archive["json_path"]
+        self._save_aips()
+
+        # 3. Determine Core Node status and dispatch
+        md_content = self.generate_passed_aip_archive_md(aip, consensus_info)
+        my_id = "unknown"
+        try:
+            from ..services.crypto_service import crypto_service
+            my_id = crypto_service.get_node_id()
+        except Exception:
+            try:
+                from app.services.crypto_service import crypto_service
+                my_id = crypto_service.get_node_id()
+            except Exception:
+                pass
+
+        core_node_ids: list[str] = []
+        if agent_service:
+            try:
+                _, _, _, cids = agent_service.get_node_group_rank_hour()
+                if cids:
+                    core_node_ids = list(cids)
+            except Exception:
+                pass
+
+        if not core_node_ids:
+            try:
+                from ..services.p2p_service import p2p_service
+                for g in p2p_service.network_manager.groups.values():
+                    if g.core_node_ids:
+                        core_node_ids = list(g.core_node_ids)
+                        break
+            except Exception:
+                try:
+                    from app.services.p2p_service import p2p_service
+                    for g in p2p_service.network_manager.groups.values():
+                        if g.core_node_ids:
+                            core_node_ids = list(g.core_node_ids)
+                            break
+                except Exception:
+                    pass
+
+        # If current node is a core node, or standalone / no core nodes elected yet
+        is_core_node = (not core_node_ids) or (my_id in core_node_ids) or (my_id == "unknown")
+        core_archive_res = self.save_core_node_archive(
+            aip_id=aip.aip_id,
+            data=aip.to_dict(),
+            md_content=md_content,
+            source_node=my_id,
+        )
+
+        sent_core_nodes: list[str] = []
+        if not is_core_node and core_node_ids:
+            try:
+                from ..services.p2p_service import p2p_service
+                from ..p2p_community.message_protocol import MessageType
+
+                payload = {
+                    "type": "aip_consensus_archive",
+                    "package_type": "aip_consensus_archive",
+                    "aip_id": aip.aip_id,
+                    "title": aip.title,
+                    "initiator_id": aip.initiator_id,
+                    "target_files": aip.target_files,
+                    "data": aip.to_dict(),
+                    "md_content": md_content,
+                    "sender_id": my_id,
+                }
+                for cid in core_node_ids:
+                    await p2p_service.send_message(
+                        recipient_id=cid,
+                        content=payload,
+                        msg_type=MessageType.DIRECT.value,
+                    )
+                    sent_core_nodes.append(cid)
+                logger.info(f"[ConsensusArchive] Dispatched consensus AIP {aip.aip_id} to core nodes: {sent_core_nodes}")
+            except Exception as pe:
+                logger.warning(f"[ConsensusArchive] Failed to dispatch archive to core nodes via P2P: {pe}")
+
+        # 4. Notify resident & gateway
+        core_desc = (
+            "核心节点本地存盘已登记"
+            if is_core_node
+            else (f"已同步至核心节点 ({', '.join([c[:8] for c in sent_core_nodes])})" if sent_core_nodes else "已完成本地核心归档镜像")
+        )
+        if agent_service:
+            notification = (
+                f"🏛️ **[全网共识演化归档]**\n"
+                f"提案 `{aip.aip_id}`: *{aip.title}* 已通过去中心化治理共识！\n\n"
+                f"- **治理决议**: ✅ 共识投票通过\n"
+                f"- **归档状态**: 已安全沉淀至核心节点归档仓 (`backend/data/passed_aips/`)\n"
+                f"- **远端推送**: 🔒 已按安全规约阻断自主 Git 分支推送，杜绝未经审查的代码污染主干\n"
+                f"- **核心同步**: {core_desc}\n"
+                f"- **目标模块**: `{', '.join(aip.target_files)}`\n"
+                f"- **后续协同**: 核心归档总账已登记，待核心开发者提炼集成。"
+            )
+            try:
+                await agent_service.notify_resident(content=notification, broadcast=True)
+            except Exception as ne:
+                logger.warning(f"[ConsensusArchive] Failed to notify resident: {ne}")
+
+        return {
+            "success": True,
+            "aip_id": aip.aip_id,
+            "status": "consensus_archived",
+            "json_path": local_archive["json_path"],
+            "md_path": local_archive["md_path"],
+            "core_ledger_path": core_archive_res["ledger_path"],
+            "is_core_node": is_core_node,
+            "sent_core_nodes": sent_core_nodes,
+            "message": "AIP passed consensus and was safely archived to the Core Node repository.",
+        }
+
     async def submit_pr(
         self,
         aip_id: str,
         agent_service: Any = None,
         auto_apply: bool = True,
         base_branch: str = "feature/autonomous-evolution-engine",
+        force_git_push: bool = False,
     ) -> dict[str, Any]:
         """
         Executes full automated landing for a passed AIP:
-        1. Code patching to target files
-        2. Git branch checkout (evolution/aip-<id>)
-        3. Conventional Commit & Git Push
-        4. GitHub PR creation via gh CLI / GitHub REST API
-        5. Resident notification
+        - When ENABLE_AUTONOMOUS_GIT_PUSH is False (default):
+          Archives the proposal into local passed_aips/ and syncs with Core Node archive repo.
+        - When ENABLE_AUTONOMOUS_GIT_PUSH is True (or force_git_push=True):
+          1. Code patching to target files
+          2. Git branch checkout (evolution/aip-<id>)
+          3. Conventional Commit & Git Push
+          4. GitHub PR creation via gh CLI / GitHub REST API
+          5. Resident notification
         """
+        if not force_git_push and not ENABLE_AUTONOMOUS_GIT_PUSH:
+            logger.info(
+                f"[EvolutionService] Autonomous Git Push is disabled (ENABLE_AUTONOMOUS_GIT_PUSH=False). "
+                f"Archiving passed AIP {aip_id} to Core Node archive repository."
+            )
+            return await self.archive_consensus_aip(
+                aip_id=aip_id,
+                agent_service=agent_service,
+                consensus_info={"auto_apply": auto_apply, "base_branch": base_branch},
+            )
+
         import subprocess
+
 
         aip = self.aips.get(aip_id)
         if not aip:

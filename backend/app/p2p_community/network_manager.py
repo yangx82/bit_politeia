@@ -312,6 +312,18 @@ class NetworkManager:
     def get_group(self, group_id: str) -> Group | None:
         return self.groups.get(group_id)
 
+    def get_node(self, node_id: str) -> Node | None:
+        """Retrieve a node by exact ID or prefix match (e.g. 8-char short hex ID)."""
+        if not node_id:
+            return None
+        if node_id in self.nodes:
+            return self.nodes[node_id]
+        if len(node_id) >= 8:
+            for nid, node in self.nodes.items():
+                if nid.startswith(node_id) or node_id.startswith(nid):
+                    return node
+        return None
+
     async def register_node(self, node: Node):
         """Register the local node and join an entry group."""
         self.nodes[node.node_id] = node
@@ -419,14 +431,14 @@ class NetworkManager:
 
             # SECURITY: Verify signature for governance-impacting messages before routing/ingesting
             if message.message_type == MessageType.GROUP_CONFIG:
-                # Resolve Public Key from ID
-                public_key = message.sender_id
-                if message.sender_id in self.nodes:
-                    public_key = self.nodes[message.sender_id].public_key
+                # Resolve Public Key from ID (supporting prefix lookup)
+                sender_node = self.get_node(message.sender_id)
+                public_key = sender_node.public_key if sender_node else ""
+                has_pem_key = bool(public_key and public_key.strip().startswith("-----BEGIN"))
 
-                if not self.message_protocol.verify_message(message, public_key):
+                if not has_pem_key or not self.message_protocol.verify_message(message, public_key):
                     logger.warning(
-                        f"[Network] Security Alert: Invalid signature for GROUP_CONFIG from {message.sender_id}. Dropping."
+                        f"[Network] Security Alert: Invalid or unverified signature for GROUP_CONFIG from {message.sender_id}. Dropping."
                     )
                     return
 
@@ -635,8 +647,8 @@ class NetworkManager:
                 return False
 
             delivered = False
-            if node_id in self.nodes:
-                target = self.nodes[node_id]
+            target = self.get_node(node_id)
+            if target:
                 if target.endpoint:
                     delivered = await self._send_http_message(target.endpoint, msg)
 
@@ -672,7 +684,7 @@ class NetworkManager:
 
         # Determine if the recipient is actually a node ID to prevent misrouting broadcast types
         is_recipient_node = (
-            message.recipient_id in self.nodes
+            self.get_node(message.recipient_id) is not None
             or (isinstance(message.recipient_id, str) and len(message.recipient_id) == 64)
         )
 
@@ -700,12 +712,12 @@ class NetworkManager:
                         # Note: Most verification happens at the ingress point (Relay or HTTP)
                         # but we check again for group config.
                         if message.message_type == MessageType.GROUP_CONFIG:
-                            # Resolve Public Key from ID
-                            public_key = message.sender_id
-                            if message.sender_id in self.nodes:
-                                public_key = self.nodes[message.sender_id].public_key
+                            # Resolve Public Key from ID (supporting prefix lookup)
+                            sender_node = self.get_node(message.sender_id)
+                            public_key = sender_node.public_key if sender_node else ""
+                            has_pem_key = bool(public_key and public_key.strip().startswith("-----BEGIN"))
 
-                            if not self.message_protocol.verify_message(message, public_key):
+                            if not has_pem_key or not self.message_protocol.verify_message(message, public_key):
                                 logger.warning(
                                     f"[Network] Dropping unverified GROUP_CONFIG message from {message.sender_id}"
                                 )
@@ -746,11 +758,10 @@ class NetworkManager:
 
                 # Parallel Task: Attempt direct HTTP for each member
                 async def attempt_direct(m_id: str):
-                    if m_id in self.nodes:
-                        target_node = self.nodes[m_id]
-                        if target_node.endpoint:
-                            success = await self._send_http_message(target_node.endpoint, message)
-                            return m_id if not success else None
+                    target_node = self.get_node(m_id)
+                    if target_node and target_node.endpoint:
+                        success = await self._send_http_message(target_node.endpoint, message)
+                        return m_id if not success else None
                     return m_id  # No endpoint or unknown node = Failure for direct
 
                 direct_tasks = [attempt_direct(m_id) for m_id in targets]
@@ -852,55 +863,46 @@ class NetworkManager:
     async def _forward_to_peer(self, message: SignedMessage, peer_id: str) -> bool:
         """Forward a message to a specific peer via HTTP or Relay."""
         # If peer is known and has endpoint, try HTTP
-        if peer_id in self.nodes:
-            peer = self.nodes[peer_id]
-            if peer.endpoint:
-                success = await self._send_http_message(peer.endpoint, message)
-                if success:
-                    return True
+        peer = self.get_node(peer_id)
+        if peer and peer.endpoint:
+            success = await self._send_http_message(peer.endpoint, message)
+            if success:
+                return True
 
         # Fallback to relay
         return await self._send_via_relay(peer_id, message)
 
     async def disconnect_peer(self, peer_id: str) -> bool:
-        """Disconnect a peer from the network.
+        """Disconnect a peer transport from the local network view.
         
-        This removes the peer from local tracking and cleans up any resources.
-        Note: This does NOT remove the peer from the bootstrap server - it only
-        affects the local node's view of the network.
+        This marks the peer as offline and clears its endpoint.
+        Note: The peer's node identity and public key remain in self.nodes
+        so that signatures on messages from this peer can still be verified,
+        and its group membership is preserved.
         
         Args:
             peer_id: The node ID of the peer to disconnect
             
         Returns:
-            True if the peer was found and disconnected, False otherwise
+            True if the peer was found and marked offline, False otherwise
         """
-        if peer_id not in self.nodes:
+        peer = self.get_node(peer_id)
+        if not peer:
             logger.debug(f"[Network] Peer {peer_id[:8]}... not in local nodes, nothing to disconnect")
             return False
         
         # Don't disconnect ourselves
-        if peer_id == self.local_node_id:
-            logger.warning(f"[Network] Cannot disconnect local node {peer_id[:8]}...")
+        if peer.node_id == self.local_node_id:
+            logger.warning(f"[Network] Cannot disconnect local node {peer.node_id[:8]}...")
             return False
         
-        peer = self.nodes[peer_id]
-        logger.info(f"[Network] Disconnecting peer {peer_id[:8]}... (endpoint: {peer.endpoint})")
+        logger.info(f"[Network] Marking peer {peer.node_id[:8]}... transport offline (endpoint: {peer.endpoint})")
         
-        # Mark peer as offline by clearing its endpoint
+        # Mark peer as offline by clearing its endpoint and resetting last_seen
         peer.endpoint = None
         peer.last_seen = datetime.min.replace(tzinfo=timezone.utc)
         
-        # Remove peer from all groups' member lists
-        for group in self.groups.values():
-            if peer_id in group.members:
-                group.members.discard(peer_id)
-                logger.debug(f"[Network] Removed {peer_id[:8]}... from group {group.group_id[:8]}...")
-        
-        # Remove from local nodes cache
-        del self.nodes[peer_id]
-        
-        logger.info(f"[Network] Successfully disconnected peer {peer_id[:8]}...")
+        logger.info(f"[Network] Successfully marked peer {peer.node_id[:8]}... as offline (identity preserved)")
         return True
 
     def get_network_structure(self):
