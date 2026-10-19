@@ -223,6 +223,8 @@ class P2PService:
             MessageType.PROPOSAL.value,
             MessageType.VOTE.value,
             MessageType.ELECTION.value,
+            MessageType.REVIEW_CARD.value,
+            MessageType.CONSENSUS_REPORT.value,
         ]
 
         if msg_type in gov_msg_types:
@@ -255,12 +257,19 @@ class P2PService:
                 )
                 logger.info(f"[Governance] Ingested P2P {event_type} event: status={success}")
 
-                # Realtime Trigger: Immediately wake up agent to evaluate and vote upon proposal/research arrival
-                if success and event_type in ("proposal", "research_eval"):
-                    safe_create_task(
-                        agent_service.check_governance_proposals(),
-                        name=f"p2p_gov_trigger_{event_type}",
-                    )
+                # Realtime Trigger: Immediately wake up agent to evaluate and vote upon proposal/research arrival, or trigger arbiter audit
+                if success:
+                    if event_type in ("proposal", "research_eval", "consensus_report"):
+                        safe_create_task(
+                            agent_service.check_governance_proposals(),
+                            name=f"p2p_gov_trigger_{event_type}",
+                        )
+                    elif event_type == "review_card":
+                        # If a new review card arrived, let the arbiter check if debate can conclude early
+                        safe_create_task(
+                            asyncio.to_thread(agent_service.governance_manager.audit_active_debates),
+                            name="audit_debates_trigger",
+                        )
 
                 # GOSSIP FORWARD: Ensure propagation
                 recipient_id = message.get("recipient_id")

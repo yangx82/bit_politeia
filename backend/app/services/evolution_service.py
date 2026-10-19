@@ -1312,7 +1312,28 @@ class EvolutionService:
             return False
 
         # Quality Gate Hard Barrier before network broadcast
+        preflight_score = 100.0
+        ast_valid = True
+        dangerous_patterns = []
         try:
+            import ast
+            clean_diff = (aip.proposed_diff or "").strip()
+            if not clean_diff:
+                ast_valid = False
+                preflight_score = 0.0
+            else:
+                try:
+                    ast.parse(clean_diff)
+                except SyntaxError:
+                    ast_valid = False
+                    preflight_score = 0.0
+
+            for pattern in ["eval(", "exec(", "os.system(", "__import__", "shutil.rmtree"]:
+                if pattern in clean_diff:
+                    dangerous_patterns.append(pattern)
+            if dangerous_patterns:
+                preflight_score = 0.0
+
             from .aip_quality_gate import quality_gate_service
             report = await quality_gate_service.evaluate_proposal(
                 aip_id=aip.aip_id,
@@ -1327,9 +1348,28 @@ class EvolutionService:
                 exclude_aip_id=aip.aip_id,
             )
             aip.quality_report = report.to_dict()
-            if not report.passed:
+
+            p0_issues = [i for i in report.issues if i.severity.value == "P0"]
+            p1_issues = [i for i in report.issues if i.severity.value == "P1"]
+
+            # Calculate composite preflight score (0 - 100)
+            if ast_valid and not dangerous_patterns and clean_diff:
+                preflight_score = max(0.0, 100.0 - (len(p0_issues) * 50.0) - (len(p1_issues) * 10.0))
+            else:
+                preflight_score = 0.0
+
+            if not report.passed or not ast_valid or dangerous_patterns or preflight_score < 80.0:
                 p0_msgs = [i.message for i in report.issues if i.severity.value == "P0"]
-                logger.warning(f"[EvolutionService] Broadcast blocked by QualityGate P0 for {aip_id}: {p0_msgs}")
+                if not ast_valid:
+                    p0_msgs.append("AST syntax check failed")
+                if dangerous_patterns:
+                    p0_msgs.append(f"Forbidden dangerous patterns: {dangerous_patterns}")
+                if preflight_score < 80.0:
+                    p0_msgs.append(f"Preflight quality score ({preflight_score:.1f}) is below threshold 80.0")
+
+                logger.warning(
+                    f"[EvolutionService] Broadcast blocked by QualityGate for {aip_id} (Score: {preflight_score:.1f}/100): {p0_msgs}"
+                )
                 aip.status = "preflight_rejected"
                 quality_gate_service.register_rejected_fingerprint(
                     aip.aip_id, aip.proposed_diff, reason="; ".join(p0_msgs)
@@ -1368,6 +1408,16 @@ class EvolutionService:
                 if not group_id:
                     logger.warning(f"[EvolutionService] No group found for broadcasting AIP {aip_id}")
                     return False
+
+                # Ensure structured debate session is started in governance manager
+                if agent_service and hasattr(agent_service, "governance_manager") and agent_service.governance_manager:
+                    gov_mgr = agent_service.governance_manager
+                    if aip_id not in gov_mgr.active_debates:
+                        gov_mgr.start_debate_session(
+                            aip_id=aip_id,
+                            group_id=group_id,
+                            initiator_id=aip.initiator_id,
+                        )
 
                 # 2. Construct P2P governance proposal message
                 content_payload = json.dumps({
@@ -2193,6 +2243,34 @@ class EvolutionService:
           4. GitHub PR creation via gh CLI / GitHub REST API
           5. Resident notification
         """
+        # Check Core Node authorization: regular member nodes are strictly prohibited from pushing git branches.
+        # Only elected Core Nodes (synchronized from bootstrap server, NOT .env) may land into git.
+        is_core = False
+        try:
+            if agent_service and hasattr(agent_service, "governance_manager") and agent_service.governance_manager:
+                is_core = agent_service.governance_manager.is_core_node()
+            else:
+                from .p2p_service import p2p_service
+                my_id = self._get_local_node_id()
+                for g in p2p_service.network_manager.groups.values():
+                    if g.core_node_ids and my_id in g.core_node_ids:
+                        is_core = True
+                        break
+        except Exception as ce:
+            logger.debug(f"[EvolutionService] Core Node check error: {ce}")
+
+        if not is_core:
+            logger.info(
+                f"[EvolutionService] Node is a regular member (not elected Core Node). "
+                f"Per multi-agent collaboration policy, regular nodes are prohibited from pushing Git branches. "
+                f"Archiving passed AIP {aip_id} to Core Node archive repository."
+            )
+            return await self.archive_consensus_aip(
+                aip_id=aip_id,
+                agent_service=agent_service,
+                consensus_info={"auto_apply": auto_apply, "base_branch": base_branch, "node_role": "member_node"},
+            )
+
         if not force_git_push and not ENABLE_AUTONOMOUS_GIT_PUSH:
             logger.info(
                 f"[EvolutionService] Autonomous Git Push is disabled (ENABLE_AUTONOMOUS_GIT_PUSH=False). "
@@ -2201,7 +2279,7 @@ class EvolutionService:
             return await self.archive_consensus_aip(
                 aip_id=aip_id,
                 agent_service=agent_service,
-                consensus_info={"auto_apply": auto_apply, "base_branch": base_branch},
+                consensus_info={"auto_apply": auto_apply, "base_branch": base_branch, "node_role": "core_node"},
             )
 
         import subprocess

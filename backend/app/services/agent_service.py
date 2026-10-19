@@ -6075,6 +6075,14 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
         # PROACTIVE SYNC: Finalize any elections that just expired
         self.governance_manager.finalize_expired_elections()
 
+        # AUDIT ACTIVE DEBATES: Core Arbiter checks for timeout or full reviews to conclude debate
+        try:
+            concluded_debates = self.governance_manager.audit_active_debates()
+            if concluded_debates:
+                logger.info(f"Governance Monitor: Concluded {len(concluded_debates)} debate sessions as Core Arbiter: {concluded_debates}")
+        except Exception as de:
+            logger.warning(f"Governance Monitor: Error auditing active debates: {de}")
+
         active_elections = self.governance_manager.active_elections
         my_id = None
         if p2p_service.local_node:
@@ -6127,7 +6135,7 @@ Use the self-improvement skill format: [ERR-YYYYMMDD-XXX]
                         f"- AIP ID: {aip_meta.get('aip_id')}\n"
                         f"- 演化标题: {aip_meta.get('title')}\n"
                         f"- 目标模块: {aip_meta.get('target_module')}\n"
-                        f"- 审计建议: 请先使用 `audit_p2p_aip_proposal` 工具进行 5 维合规性评估，再根据报告调用 `cast_vote`。\n"
+                        f"- 审计建议: 请先使用 `audit_p2p_aip_proposal` 工具进行 5 维合规性评估，并调用 `submit_aip_review_card` 提交标准化评审卡，待核心节点汇总共识后调用 `cast_vote`。\n"
                     )
             except Exception:
                 pass

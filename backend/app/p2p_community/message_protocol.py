@@ -41,6 +41,10 @@ class MessageType(Enum):
     SDP_ANSWER = "sdp_answer"
     ICE_CANDIDATE = "ice_candidate"
 
+    # Multi-Agent High-Efficiency Collaboration SOP
+    REVIEW_CARD = "review_card"  # 结构化同行评审单 (AIP Review Card)
+    CONSENSUS_REPORT = "consensus_report"  # 核心节点仲裁报告 (Core Node Arbiter Consensus Report)
+
 
 @dataclass
 class SignedMessage:

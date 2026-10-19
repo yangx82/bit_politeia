@@ -173,8 +173,117 @@ class Vote:
 
 
 @dataclass
+class DebateSession:
+    """
+    Finite-round debate session managed by the Core Node Arbiter.
+    Limits unstructured chat, enforces ReviewCard schema, and guarantees deterministic convergence.
+    """
+    session_id: str
+    aip_id: str
+    group_id: str
+    initiator_id: str
+    arbiter_id: str
+    current_round: int = 1
+    max_rounds: int = 2
+    round_timeout_seconds: int = 180  # 180 seconds per round as confirmed by user
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    last_round_started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    status: str = "round_1_collecting"  # "round_1_collecting", "round_2_amendment", "concluded", "rejected"
+    review_cards: dict[str, list[dict[str, Any]]] = field(default_factory=dict)  # reviewer_id -> list of review cards
+    consensus_report: dict[str, Any] | None = None
+
+    def is_round_timed_out(self) -> bool:
+        now = datetime.now(UTC)
+        start = self.last_round_started_at
+        if isinstance(start, str):
+            try:
+                start = datetime.fromisoformat(start)
+            except Exception:
+                start = now
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=UTC)
+        return (now - start).total_seconds() >= self.round_timeout_seconds
+
+    def add_review_card(self, reviewer_id: str, card: dict[str, Any]) -> bool:
+        if reviewer_id not in self.review_cards:
+            self.review_cards[reviewer_id] = []
+        self.review_cards[reviewer_id].append(card)
+        return True
+
+    def calculate_synthesis(self) -> dict[str, Any]:
+        """Calculates average score and approval ratio across all submitted review cards."""
+        all_cards = []
+        for cards in self.review_cards.values():
+            if cards:
+                all_cards.append(cards[-1])  # Use latest card per reviewer
+        if not all_cards:
+            return {"average_score": 0.0, "approval_ratio": 0.0, "total_reviews": 0, "decision": "REJECTED"}
+
+        scores = [float(c.get("score", 0.0)) for c in all_cards]
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+
+        approvals = sum(1 for c in all_cards if str(c.get("stance", "")).upper() in ("APPROVE", "PASS"))
+        approval_ratio = approvals / len(all_cards) if all_cards else 0.0
+
+        decision = "PROCEED_TO_VOTE" if (avg_score >= 7.0 and approval_ratio >= 0.5) else "REJECTED"
+        return {
+            "average_score": round(avg_score, 2),
+            "approval_ratio": round(approval_ratio, 2),
+            "total_reviews": len(all_cards),
+            "decision": decision,
+        }
+
+    def to_dict(self) -> dict:
+        return {
+            "session_id": self.session_id,
+            "aip_id": self.aip_id,
+            "group_id": self.group_id,
+            "initiator_id": self.initiator_id,
+            "arbiter_id": self.arbiter_id,
+            "current_round": self.current_round,
+            "max_rounds": self.max_rounds,
+            "round_timeout_seconds": self.round_timeout_seconds,
+            "started_at": self.started_at.isoformat() if isinstance(self.started_at, datetime) else str(self.started_at),
+            "last_round_started_at": self.last_round_started_at.isoformat() if isinstance(self.last_round_started_at, datetime) else str(self.last_round_started_at),
+            "status": self.status,
+            "review_cards": self.review_cards,
+            "consensus_report": self.consensus_report,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        def parse_dt(v):
+            if isinstance(v, str):
+                try:
+                    dt = datetime.fromisoformat(v)
+                    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+                except Exception:
+                    return datetime.now(UTC)
+            elif isinstance(v, datetime):
+                return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+            return datetime.now(UTC)
+
+        return cls(
+            session_id=str(data.get("session_id") or uuid.uuid4()),
+            aip_id=str(data.get("aip_id", "")),
+            group_id=str(data.get("group_id", "global")),
+            initiator_id=str(data.get("initiator_id", "unknown")),
+            arbiter_id=str(data.get("arbiter_id", "unknown")),
+            current_round=int(data.get("current_round", 1)),
+            max_rounds=int(data.get("max_rounds", 2)),
+            round_timeout_seconds=int(data.get("round_timeout_seconds", 180)),
+            started_at=parse_dt(data.get("started_at")),
+            last_round_started_at=parse_dt(data.get("last_round_started_at")),
+            status=str(data.get("status", "round_1_collecting")),
+            review_cards=data.get("review_cards", {}),
+            consensus_report=data.get("consensus_report"),
+        )
+
+
+@dataclass
 class Election:
     election_id: str
+
     group_id: str
     election_type: ElectionType
     initiator_id: str
@@ -476,6 +585,7 @@ class GovernanceManager:
         self.proposals: dict[str, Proposal] = {}
         self.active_elections: dict[str, Election] = {}
         self.finished_elections: dict[str, Election] = {}
+        self.active_debates: dict[str, DebateSession] = {}
         self.load_state()
 
     def save_state(self):
@@ -485,6 +595,7 @@ class GovernanceManager:
             "proposals": {k: v.to_dict() for k, v in self.proposals.items()},
             "active_elections": {k: v.to_dict() for k, v in self.active_elections.items()},
             "finished_elections": {k: v.to_dict() for k, v in self.finished_elections.items()},
+            "active_debates": {k: v.to_dict() for k, v in self.active_debates.items()},
         }
         try:
             with open(self.storage_path, "w", encoding="utf-8") as f:
@@ -512,11 +623,294 @@ class GovernanceManager:
             for k, v in data.get("finished_elections", {}).items():
                 self.finished_elections[k] = Election.from_dict(v)
 
+            for k, v in data.get("active_debates", {}).items():
+                self.active_debates[k] = DebateSession.from_dict(v)
+
             logger.info(
-                f"Loaded {len(self.proposals)} proposals and {len(self.active_elections)} elections."
+                f"Loaded {len(self.proposals)} proposals, {len(self.active_elections)} elections, and {len(self.active_debates)} debate sessions."
             )
         except Exception as e:
             logger.error(f"Failed to load governance state: {e}")
+
+    def is_core_node(self, group_id: str | None = None) -> bool:
+        """Determines if this node is an elected Core Node for the given group (or any group if group_id is None).
+
+        The Core Node status is elected by groups and synchronized via the bootstrap server,
+        stored in group.core_node_ids. It is NEVER hardcoded in .env.
+        Fallback rule: If a group has members but no core nodes elected yet,
+        the top-ranked member alphabetically (or local node if sole member) acts as bootstrap arbiter.
+        """
+        try:
+            from ..services.p2p_service import p2p_service
+            if not p2p_service.network_manager:
+                return False
+            nm = p2p_service.network_manager
+            my_id = self.node_id or (p2p_service.local_node.node_id if p2p_service.local_node else None)
+            if not my_id:
+                return False
+
+            if group_id and group_id in nm.groups:
+                g = nm.groups[group_id]
+                if g.core_node_ids:
+                    return my_id in g.core_node_ids
+                members = sorted(list(g.members))
+                return bool(members and members[0] == my_id)
+
+            for g in nm.groups.values():
+                if my_id in g.members:
+                    if g.core_node_ids and my_id in g.core_node_ids:
+                        return True
+                    members = sorted(list(g.members))
+                    if not g.core_node_ids and members and members[0] == my_id:
+                        return True
+            return False
+        except Exception as e:
+            logger.warning(f"[Governance] Error checking is_core_node: {e}")
+            return False
+
+    def get_core_node_ids(self, group_id: str | None = None) -> list[str]:
+        """Returns the list of core node IDs for a group, or the fallback arbiter node."""
+        try:
+            from ..services.p2p_service import p2p_service
+            if not p2p_service.network_manager:
+                return [self.node_id] if self.node_id else []
+            nm = p2p_service.network_manager
+            if group_id and group_id in nm.groups:
+                g = nm.groups[group_id]
+                if g.core_node_ids:
+                    return list(g.core_node_ids)
+                members = sorted(list(g.members))
+                if members:
+                    return [members[0]]
+            for g in nm.groups.values():
+                if g.core_node_ids:
+                    return list(g.core_node_ids)
+                members = sorted(list(g.members))
+                if members:
+                    return [members[0]]
+            return [self.node_id] if self.node_id else []
+        except Exception:
+            return [self.node_id] if self.node_id else []
+
+    def start_debate_session(
+        self,
+        aip_id: str,
+        group_id: str,
+        initiator_id: str,
+        round_timeout_seconds: int = 180,
+    ) -> DebateSession:
+        """Starts a structured two-round debate session moderated by the group's Core Node."""
+        core_ids = self.get_core_node_ids(group_id)
+        arbiter_id = core_ids[0] if core_ids else initiator_id
+
+        session = DebateSession(
+            session_id=str(uuid.uuid4()),
+            aip_id=aip_id,
+            group_id=group_id,
+            initiator_id=initiator_id,
+            arbiter_id=arbiter_id,
+            current_round=1,
+            max_rounds=2,
+            round_timeout_seconds=round_timeout_seconds,
+            started_at=datetime.now(UTC),
+            last_round_started_at=datetime.now(UTC),
+            status="round_1_collecting",
+            review_cards={},
+            consensus_report=None,
+        )
+        self.active_debates[aip_id] = session
+        self.save_state()
+        logger.info(
+            f"[Governance] Started debate session {session.session_id[:8]} for AIP {aip_id} "
+            f"(Arbiter: {arbiter_id[:8]}, Group: {group_id})"
+        )
+        return session
+
+    def submit_review_card(self, card_data: dict[str, Any]) -> tuple[bool, str]:
+        """Ingests a structured AIPReviewCard from a peer reviewer."""
+        if not isinstance(card_data, dict):
+            return False, "Card data must be a dictionary"
+
+        aip_id = card_data.get("aip_id")
+        reviewer_id = card_data.get("reviewer_id")
+        if not aip_id or not reviewer_id:
+            return False, "Missing aip_id or reviewer_id"
+
+        session = self.active_debates.get(aip_id)
+        if not session:
+            # Look up matching proposal to auto-create debate session
+            proposal = self.proposals.get(aip_id)
+            group_id = proposal.group_id if proposal else "global"
+            initiator_id = proposal.initiator_id if proposal else "unknown"
+            session = self.start_debate_session(aip_id, group_id, initiator_id)
+
+        session.add_review_card(reviewer_id, card_data)
+        self.save_state()
+        logger.info(
+            f"[Governance] Recorded review card for AIP {aip_id} from reviewer {reviewer_id[:8]} "
+            f"(Stance: {card_data.get('stance')}, Score: {card_data.get('score')})"
+        )
+        return True, "Review card recorded successfully"
+
+    def ingest_consensus_report(self, report_data: dict[str, Any]) -> bool:
+        """Ingests an authoritative consensus report published by the Core Arbiter Node."""
+        if not isinstance(report_data, dict):
+            return False
+
+        aip_id = report_data.get("aip_id")
+        if not aip_id:
+            return False
+
+        session = self.active_debates.get(aip_id)
+        if not session:
+            session = self.start_debate_session(
+                aip_id,
+                report_data.get("group_id", "global"),
+                report_data.get("arbiter_id", "unknown"),
+            )
+
+        session.consensus_report = report_data
+        decision = str(report_data.get("decision", "")).upper()
+
+        if decision == "PROCEED_TO_VOTE":
+            session.status = "concluded"
+            if aip_id in self.proposals:
+                self.proposals[aip_id].status = "voting"
+        elif decision == "REJECTED":
+            session.status = "rejected"
+            if aip_id in self.proposals:
+                self.proposals[aip_id].status = "failed"
+        elif decision in ("ROUND_2_AMENDMENT", "AMENDMENT"):
+            session.status = "round_2_amendment"
+            session.current_round = int(report_data.get("current_round", 2))
+
+        self.save_state()
+        logger.info(
+            f"[Governance] Ingested Consensus Report for AIP {aip_id}: Decision={decision}, "
+            f"AvgScore={report_data.get('average_score')}, ApprovalRatio={report_data.get('approval_ratio')}"
+        )
+        return True
+
+    def conclude_debate_as_arbiter(self, aip_id: str) -> dict[str, Any] | None:
+        """Core Node arbitration function: synthesizes review cards and issues an authoritative Consensus Report."""
+        session = self.active_debates.get(aip_id)
+        if not session:
+            logger.warning(f"[Governance] No active debate session found for AIP {aip_id}")
+            return None
+
+        my_id = self.node_id
+        if not self.is_core_node(session.group_id) and session.arbiter_id != my_id:
+            logger.warning(
+                f"[Governance] Node {my_id[:8]} is not the Core Arbiter for group {session.group_id}. Cannot conclude debate."
+            )
+            return None
+
+        synthesis = session.calculate_synthesis()
+        avg_score = synthesis["average_score"]
+        approval_ratio = synthesis["approval_ratio"]
+        total_reviews = synthesis["total_reviews"]
+
+        now = datetime.now(UTC)
+        if avg_score >= 7.0 and approval_ratio >= 0.5:
+            decision = "PROCEED_TO_VOTE"
+            session.status = "concluded"
+            if aip_id in self.proposals:
+                self.proposals[aip_id].status = "voting"
+        elif session.current_round < session.max_rounds:
+            decision = "ROUND_2_AMENDMENT"
+            session.status = "round_2_amendment"
+            session.current_round += 1
+            session.last_round_started_at = now
+        else:
+            decision = "REJECTED"
+            session.status = "rejected"
+            if aip_id in self.proposals:
+                self.proposals[aip_id].status = "failed"
+
+        report = {
+            "aip_id": aip_id,
+            "session_id": session.session_id,
+            "arbiter_id": my_id,
+            "group_id": session.group_id,
+            "current_round": session.current_round,
+            "total_reviews": total_reviews,
+            "average_score": avg_score,
+            "approval_ratio": approval_ratio,
+            "decision": decision,
+            "synthesis_summary": (
+                f"Core Arbiter Node ({my_id[:8]}) synthesized {total_reviews} review cards. "
+                f"Average score: {avg_score}/10.0, Approval ratio: {int(approval_ratio * 100)}%. "
+                f"Consensus Verdict: {decision}."
+            ),
+            "timestamp": now.isoformat(),
+        }
+        session.consensus_report = report
+        self.save_state()
+
+        logger.info(
+            f"[Governance] Arbiter {my_id[:8]} concluded debate for AIP {aip_id}: {decision} "
+            f"(Avg: {avg_score}, Approvals: {int(approval_ratio * 100)}%)"
+        )
+
+        # Broadcast Consensus Report via P2P
+        try:
+            from ..services.p2p_service import p2p_service
+            if p2p_service.local_node:
+                import asyncio
+                async def _broadcast_report():
+                    try:
+                        await p2p_service.broadcast_governance_event(
+                            group_id=session.group_id,
+                            event_type="consensus_report",
+                            data=report,
+                        )
+                    except Exception as be:
+                        logger.warning(f"[Governance] Failed to broadcast consensus report: {be}")
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_broadcast_report())
+                except RuntimeError:
+                    import threading
+                    threading.Thread(target=lambda: asyncio.run(_broadcast_report()), daemon=True).start()
+        except Exception as e:
+            logger.warning(f"[Governance] P2P broadcast setup error: {e}")
+
+        return report
+
+    def audit_active_debates(self) -> list[str]:
+        """Scans active debates, checks round timeouts, and concludes as Core Arbiter if conditions are met."""
+        concluded_ids = []
+        for aip_id, session in list(self.active_debates.items()):
+            if session.status not in ("round_1_collecting", "round_2_amendment"):
+                continue
+
+            if not self.is_core_node(session.group_id) and session.arbiter_id != self.node_id:
+                continue
+
+            # Check if all group members have submitted review cards
+            all_reviewed = False
+            try:
+                from ..services.p2p_service import p2p_service
+                if p2p_service.network_manager and session.group_id in p2p_service.network_manager.groups:
+                    members = p2p_service.network_manager.groups[session.group_id].members
+                    other_members = [m for m in members if m != session.initiator_id]
+                    if other_members and all(m in session.review_cards for m in other_members):
+                        all_reviewed = True
+            except Exception:
+                pass
+
+            timed_out = session.is_round_timed_out()
+
+            if all_reviewed or timed_out:
+                reason = "all members reviewed" if all_reviewed else f"round timeout ({session.round_timeout_seconds}s)"
+                logger.info(
+                    f"[Governance] Core Arbiter triggering debate conclusion for AIP {aip_id} (Reason: {reason})"
+                )
+                report = self.conclude_debate_as_arbiter(aip_id)
+                if report:
+                    concluded_ids.append(aip_id)
+
+        return concluded_ids
 
     def submit_research_evaluation(self, election_id: str, evaluator_id: str, score: float, feedback: str, reward_amount: float = 0) -> tuple[bool, str]:
         """Submit an evaluation for a research publication.
@@ -937,19 +1331,21 @@ class GovernanceManager:
                 evolution_service._save_aips()
                 evolution_service.record_approval_success()
 
-            # Determine if this node is the proposer
+            # Determine if this node is an elected Core Node for this group, or the proposer
+            is_core = self.is_core_node(proposal.group_id)
             is_my_proposal = (
                 proposal.initiator_id in [my_id, "self"]
                 or proposal.initiator_id.startswith(my_id[:8])
                 or (aip and (aip.initiator_id in [my_id, "self"] or aip.initiator_id.startswith(my_id[:8])))
             )
 
-            if is_my_proposal and aip:
+            if (is_core or is_my_proposal) and aip:
                 if getattr(aip, "status", "") in ("pr_submitted", "consensus_archived"):
                     logger.info(f"[Governance] AIP {aip_id} has already been processed ({aip.status}). Skipping duplicate submission/archival.")
                     return
 
-                logger.info(f"[Governance] AIP {aip_id} PASSED! Proposing node ({my_id[:8]}) landing consensus proposal...")
+                role_label = "Core Arbiter Node" if is_core else f"Proposing Node ({my_id[:8]})"
+                logger.info(f"[Governance] AIP {aip_id} PASSED! {role_label} landing consensus proposal...")
 
                 try:
                     from app.services.agent_service import agent_service
@@ -1313,6 +1709,18 @@ class GovernanceManager:
                     )
                     return True
                 return False
+
+            elif event_type in ("review_card", "reviewcard"):
+                card_data = content.get("review_card", content)
+                ok, msg = self.submit_review_card(card_data)
+                logger.info(f"Governance P2P: Ingested review_card: {ok} ({msg})")
+                return ok
+
+            elif event_type in ("consensus_report", "consensusreport"):
+                report_data = content.get("consensus_report", content)
+                ok = self.ingest_consensus_report(report_data)
+                logger.info(f"Governance P2P: Ingested consensus_report: {ok}")
+                return ok
 
             return False
         except Exception as e:

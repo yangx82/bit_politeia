@@ -1110,11 +1110,99 @@ async def audit_p2p_aip_proposal(aip_id: str) -> str:
         from app.services.evolution_service import evolution_service
 
         llm_client = getattr(agent_service, "llm", None)
-        vote = await evolution_service.audit_aip(aip_id, llm_client=llm_client)
         status_str = "APPROVED" if vote.approval else "REJECTED"
         return f"Audit complete for {aip_id}: [{status_str}] Reason: {vote.reason}"
     except Exception as e:
         return f"Error auditing AIP proposal {aip_id}: {e!s}"
+
+
+@tool
+async def submit_aip_review_card(
+    aip_id: str,
+    stance: str,
+    score: float,
+    dimension_scores: str = "{}",
+    findings: str = "[]",
+    suggested_action: str = "",
+) -> str:
+    """
+    Submit a structured AIP review card during group debate under the Multi-Agent SOP.
+    Replaces unstructured conversation chatter with standardized evaluation metrics.
+
+    Args:
+        aip_id: The ID of the AIP being reviewed (e.g., 'AIP-8F2C1A').
+        stance: Review stance. Options: 'APPROVE', 'REJECT', 'REQUEST_CHANGES'.
+        score: Overall quality score (0.0 to 10.0). Threshold for proceeding to vote is 7.0.
+        dimension_scores: Optional JSON string mapping dimensions to scores (0-10), e.g. '{"syntax": 10, "thread_safety": 9, "citation": 8}'.
+        findings: Optional JSON list of key observations or critique points, e.g. '["Clean AST", "Proper bounds checking"]'.
+        suggested_action: Concrete revision suggestion or approval summary.
+    """
+    try:
+        from app.services.agent_service import agent_service
+        from app.services.p2p_service import p2p_service
+        from app.services.crypto_service import crypto_service
+        from app.models.schemas import AIPReviewCard
+
+        my_id = crypto_service.get_node_id()
+
+        # Parse dimension_scores and findings
+        dim_dict = {}
+        if dimension_scores:
+            try:
+                dim_dict = json.loads(dimension_scores) if isinstance(dimension_scores, str) else dimension_scores
+            except Exception:
+                dim_dict = {}
+
+        findings_list = []
+        if findings:
+            try:
+                findings_list = json.loads(findings) if isinstance(findings, str) else findings
+            except Exception:
+                findings_list = [str(findings)]
+
+        clean_stance = stance.strip().upper()
+        if clean_stance not in ("APPROVE", "REJECT", "REQUEST_CHANGES"):
+            clean_stance = "APPROVE" if score >= 7.0 else "REJECT"
+
+        card = AIPReviewCard(
+            aip_id=aip_id,
+            round_number=1,
+            reviewer_id=my_id,
+            stance=clean_stance,
+            score=max(0.0, min(10.0, float(score))),
+            dimension_scores=dim_dict,
+            findings=findings_list,
+            suggested_action=suggested_action,
+        )
+
+        card_dict = card.model_dump()
+
+        # 1. Ingest into local GovernanceManager
+        gov_mgr = getattr(agent_service, "governance_manager", None)
+        group_id = "global"
+        if gov_mgr:
+            gov_mgr.submit_review_card(card_dict)
+            session = gov_mgr.active_debates.get(aip_id)
+            if session:
+                card.round_number = session.current_round
+                card_dict["round_number"] = session.current_round
+                group_id = session.group_id
+
+        # 2. Broadcast REVIEW_CARD via P2P
+        if p2p_service and p2p_service.local_node:
+            await p2p_service.broadcast_governance_event(
+                group_id=group_id,
+                event_type="review_card",
+                data=card_dict,
+            )
+
+        return (
+            f"Review Card submitted for {aip_id}: [Stance: {clean_stance}, Score: {score:.1f}/10.0] "
+            f"Broadcasted to group '{group_id}' under Multi-Agent SOP."
+        )
+    except Exception as e:
+        logger.error(f"Error submitting AIP review card for {aip_id}: {e}", exc_info=True)
+        return f"Error submitting review card: {e!s}"
 
 
 @tool
@@ -1327,6 +1415,7 @@ AGENT_TOOLS = [
     unbind_account,
     propose_architecture_update,
     audit_p2p_aip_proposal,
+    submit_aip_review_card,
     run_aip_sandbox_test,
     submit_aip_pr,
     configure_p2p_processing_mode,

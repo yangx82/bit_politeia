@@ -7,6 +7,7 @@ if user_site and user_site not in sys.path:
     sys.path.insert(0, user_site)
 
 from datetime import datetime
+from typing import Any
 
 try:
     from pydantic import BaseModel
@@ -140,3 +141,66 @@ class ResearchProposalResponse(BaseModel):
     initiator_id: str
     start_time: str
     end_time: str
+
+
+# ========================================================
+# Multi-Agent High-Efficiency Collaboration SOP Schemas
+# ========================================================
+
+class AIPReviewCard(BaseModel):
+    """Structured critique and assessment artifact submitted by peer nodes."""
+    aip_id: str
+    reviewer_id: str
+    round: int = 1
+    round_number: int = 1
+    stance: str = "APPROVE"  # "APPROVE", "REJECT", "REQUEST_CHANGES"
+    score: float = 0.0  # 0.0 - 10.0
+    dimension_scores: dict[str, float] = {}  # correctness, security, modularity, necessity
+    findings: list[str] = []
+    critique_items: list[dict[str, Any]] = []  # [{"file": "...", "line_range": "...", "issue": "..."}]
+    suggested_diff: str = ""
+    suggested_action: str = ""
+    confidence: float = 1.0
+    timestamp: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class AIPConsensusReport(BaseModel):
+    """Synthesis and arbitration decision published by the Core Node Arbiter."""
+    aip_id: str
+    session_id: str = ""
+    arbiter_id: str = ""
+    arbiter_node_id: str = ""
+    current_round: int = 1
+    decision: str = "PROCEED_TO_VOTE"  # "PROCEED_TO_VOTE", "REJECTED", "ROUND_2_AMENDMENT"
+    average_score: float = 0.0
+    approval_ratio: float = 0.0
+    total_reviews: int = 0
+    summary: str = ""
+    synthesis_summary: str = ""
+    timestamp: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class PreflightCheckResult(BaseModel):
+    """Local static gate check result before broadcasting an AIP proposal."""
+    aip_id: str = ""
+    passed: bool = True
+    score: float = 100.0
+    ast_valid: bool = True
+    dangerous_patterns_found: list[str] = []
+    diff_non_empty: bool = True
+    syntax_errors: list[str] = []
+    missing_files: list[str] = []
+    dependency_issues: list[str] = []
+    summary: str = ""
+    feedback: str = ""
+    timestamp: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
