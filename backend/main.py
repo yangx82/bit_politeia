@@ -47,9 +47,11 @@ feishu_channel = None
 async def lifespan(app: FastAPI):
     # Startup
     global telegram_channel, feishu_channel
+    print("[*] Lifespan startup: initializing message bus and channels...", flush=True)
 
     # 0. Start Message Bus dispatcher
     await message_bus.start()
+    print("[*] Message bus started.", flush=True)
 
     # 1. Telegram
     token = os.getenv("TELEGRAM_TOKEN")
@@ -58,6 +60,7 @@ async def lifespan(app: FastAPI):
         telegram_channel = TelegramChannel(token=token, bus=message_bus)
         message_bus.subscribe_outbound("telegram", telegram_channel.send)
         asyncio.create_task(telegram_channel.start())
+        print("[*] Telegram channel initialized.", flush=True)
     else:
         logger.warning("TELEGRAM_TOKEN not found, Telegram channel disabled.")
 
@@ -72,6 +75,7 @@ async def lifespan(app: FastAPI):
         )
         message_bus.subscribe_outbound("feishu", feishu_channel.send)
         asyncio.create_task(feishu_channel.start())
+        print("[*] Feishu channel initialized.", flush=True)
     else:
         logger.warning("FEISHU_APP_ID/SECRET not found, Feishu channel disabled.")
 
@@ -80,25 +84,37 @@ async def lifespan(app: FastAPI):
 
     env_config = agent_service.load_config_from_env()
     if env_config:
+        agent_name = env_config.get("name", "Agent")
         logger.info("Found persisted configuration in .env, auto-configuring Agent...")
         # configure_agent is async
         asyncio.create_task(agent_service.configure_agent(**env_config))
+        print(f"[*] Agent auto-configuration initiated for '{agent_name}'.", flush=True)
 
     # 4. Start Scheduler
     # Must be done after loop is running
     agent_service.start_scheduler()
+    print("[*] Background scheduler started.", flush=True)
+    print("\n" + "=" * 60, flush=True)
+    print("  Bit Politeia Agent Node is READY and LISTENING", flush=True)
+    print("  API Docs: http://0.0.0.0:8100/docs", flush=True)
+    print("  Health:   http://0.0.0.0:8100/", flush=True)
+    print("=" * 60 + "\n", flush=True)
 
     yield
 
     # Shutdown
+    print("[*] Lifespan shutdown: stopping channels...", flush=True)
     if telegram_channel:
         await telegram_channel.stop()
     if feishu_channel:
         await feishu_channel.stop()
+    print("[*] Backend shutdown complete.", flush=True)
 
 
-# Ensure log directory exists
-os.makedirs("backend/data/logs", exist_ok=True)
+# Ensure log directory exists (anchor to backend directory to avoid nested backend/backend/data/logs)
+backend_base_dir = os.path.dirname(os.path.abspath(__file__))
+log_dir = os.path.join(backend_base_dir, "data", "logs")
+os.makedirs(log_dir, exist_ok=True)
 
 # Configure logging
 console_handler = logging.StreamHandler()
@@ -109,7 +125,7 @@ handlers = [console_handler]
 # Feature: Conditional Debug File Logging
 ENABLE_DEBUG_LOG = os.getenv("ENABLE_DEBUG_LOGGING", "true").lower() == "true"
 if ENABLE_DEBUG_LOG:
-    file_handler = logging.FileHandler("backend/data/logs/p2p_network.log", encoding="utf-8")
+    file_handler = logging.FileHandler(os.path.join(log_dir, "p2p_network.log"), encoding="utf-8")
     file_handler.setFormatter(logging.Formatter(log_format))
 
     # Optional filter based on DEBUG_MODULES
@@ -162,24 +178,47 @@ if __name__ == "__main__":
     backend_dir = os.path.dirname(os.path.abspath(__file__))
     app_dir = os.path.join(backend_dir, "app")
 
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8100,
-        reload=True,
-        app_dir=backend_dir,
-        reload_dirs=[app_dir],
-        reload_excludes=[
-            "data",
-            "data/*",
-            "data/**",
-            "backend/data",
-            "backend/data/*",
-            "backend/data/**",
-            "*.csv",
-            "*.json",
-            "*.png",
-            "*.jpg",
-            "*.fig",
-        ],
-    )
+    # Smart Reload Detection:
+    # On WSL2 DrvFs mounts (/mnt/c, /mnt/d) or active sync disks (BaiduSyncdisk),
+    # uvicorn's watchfiles reloader frequently deadlocks or freezes during inotify recursive scanning.
+    # Default to False unless explicitly enabled via UVICORN_RELOAD=true
+    is_wsl_mnt = sys.platform.startswith("linux") and os.path.abspath(__file__).startswith("/mnt/")
+    default_reload = "false" if is_wsl_mnt else os.getenv("UVICORN_RELOAD", "false")
+    reload_enabled = os.getenv("UVICORN_RELOAD", default_reload).lower() in ("true", "1", "yes")
+
+    host = os.getenv("SERVER_HOST", "0.0.0.0")
+    port = int(os.getenv("SERVER_PORT", "8100"))
+
+    print(f"[*] Launching Bit Politeia Node on http://{host}:{port} (reload={reload_enabled})...", flush=True)
+
+    if reload_enabled:
+        uvicorn.run(
+            "main:app",
+            host=host,
+            port=port,
+            reload=True,
+            app_dir=backend_dir,
+            reload_dirs=[app_dir],
+            reload_excludes=[
+                "data",
+                "data/*",
+                "data/**",
+                "backend/data",
+                "backend/data/*",
+                "backend/data/**",
+                "*.csv",
+                "*.json",
+                "*.png",
+                "*.jpg",
+                "*.fig",
+            ],
+        )
+    else:
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            reload=False,
+            log_level="info",
+        )
+

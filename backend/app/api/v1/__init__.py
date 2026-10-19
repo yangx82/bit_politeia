@@ -18,7 +18,8 @@ from ...services.crypto_service import crypto_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-print("\n[!!!] API init loaded from " + __file__ + " [!!!]\n")
+logger.info(f"API v1 router loaded from {__file__}")
+print(f"[*] API v1 router loaded from {__file__}", flush=True)
 
 
 @router.post("/config", response_model=AgentStatus)
