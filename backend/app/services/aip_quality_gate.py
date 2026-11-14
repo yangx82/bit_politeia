@@ -756,6 +756,275 @@ class ASTConsistencyAuditor:
             "passed": coverage_ratio >= threshold and not is_inflated,
         }
 
+    @classmethod
+    def check_semantic_antipatterns(cls, code: str, tree: ast.Module) -> list[QualityIssue]:
+        """
+        Detects deep semantic, algorithmic, and determinism anti-patterns in proposed code:
+        1. Non-deterministic wall-clock calls (time.time / datetime.now) in audit/tally/hash/weight functions.
+        2. Degenerate Quadratic Funding/Voting math (summing per-project before sqrt & square).
+        3. Silent upward clamping of negative inputs via max(min_val, ...) without raising ValueError.
+        4. Uninvoked test_...() functions in standalone verification scripts.
+        5. Stateless lock theatre (acquiring self._lock on classes with zero mutable state).
+        6. Duplicate ballot Sybil vulnerability in tally verification (Counter accumulation without deduplication).
+        """
+        issues: list[QualityIssue] = []
+        clean_code = (code or "").strip()
+        if not clean_code or tree is None:
+            return issues
+
+        loc = len([l for l in clean_code.splitlines() if l.strip() and not l.strip().startswith("#")])
+
+        # 1. Check for uninvoked test_* functions at module level (for standalone scripts >= 25 LOC)
+        top_level_test_defs = [
+            node.name for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_")
+        ]
+        if top_level_test_defs and loc >= 25:
+            # Check if any test function is called outside its own definition
+            called_names = set()
+            for stmt in tree.body:
+                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    continue
+                for sub in ast.walk(stmt):
+                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                        called_names.add(sub.func.id)
+            if not any(tf in called_names for tf in top_level_test_defs):
+                issues.append(QualityIssue(
+                    severity=Severity.P0,
+                    category="uninvoked_test_suite",
+                    message=(
+                        f"Sandbox False-Positive Risk: Proposal defines test function(s) {top_level_test_defs} "
+                        f"but never invokes them in module or __main__ scope."
+                    ),
+                    details=f"Uninvoked test functions: {top_level_test_defs}",
+                ))
+
+        # 2. Walk classes and methods for determinism, math fidelity, and input validation flaws
+        deterministic_keywords = ("verify", "tally", "audit", "hash", "calculate_vote_weight", "compute_tally")
+        time_Param_names = {"now", "reference_time", "current_time", "ref_time", "as_of", "eval_time", "snapshot_time"}
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                fname = node.name.lower()
+                arg_names = {a.arg.lower() for a in node.args.args}
+
+                # 2a. Non-deterministic wall-clock time.time() / datetime.now() in audit/weight/hash methods
+                if not fname.startswith("test_") and any(kw in fname for kw in deterministic_keywords):
+                    has_wall_clock = False
+                    for sub in ast.walk(node):
+                        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
+                            if sub.func.attr in ("time", "now", "utcnow") and isinstance(sub.func.value, ast.Name):
+                                if sub.func.value.id in ("time", "datetime"):
+                                    has_wall_clock = True
+                    if has_wall_clock and not (arg_names & time_Param_names):
+                        issues.append(QualityIssue(
+                            severity=Severity.P0,
+                            category="non_deterministic_audit",
+                            message=(
+                                f"Non-Deterministic Audit Defect: Function '{node.name}' calls wall-clock "
+                                f"time.time()/datetime.now() without an injectable reference_time parameter, "
+                                f"causing tally verification and cryptographic hashes to drift over time."
+                            ),
+                            details=f"Function '{node.name}' args={sorted(arg_names)}",
+                        ))
+
+                # 2b. Silent negative clamping in contribution/vote/stake methods
+                if any(kw in fname for kw in ("add_contribution", "contribute", "stake", "cast_vote")):
+                    func_src = ast.get_source_segment(clean_code, node) or ast.unparse(node)
+                    has_max_clamp = "max(" in func_src and ("min_contribution" in func_src or "0.01" in func_src)
+                    has_value_error = "ValueError" in func_src and ("amount" in func_src.split("ValueError")[0] or "<" in func_src)
+                    # Check specifically if amount is clamped with max() without raising ValueError on negative amount
+                    raises_on_negative = False
+                    for sub in ast.walk(node):
+                        if isinstance(sub, ast.Compare):
+                            comp_src = ast.unparse(sub)
+                            if "amount" in comp_src and ("<" in comp_src or "<=" in comp_src):
+                                raises_on_negative = True
+                    if has_max_clamp and not raises_on_negative:
+                        issues.append(QualityIssue(
+                            severity=Severity.P0,
+                            category="silent_negative_clamping",
+                            message=(
+                                f"Input Validation Defect: Method '{node.name}' silently clamps negative/zero "
+                                f"amounts upward via max() instead of raising ValueError."
+                            ),
+                            details=f"Method '{node.name}' clamps invalid negative inputs into positive contributions",
+                        ))
+
+                # 2c. Duplicate voter ballot accumulation in ProposalTallyAuditor.verify_tally
+                if fname == "verify_tally":
+                    func_src = ast.unparse(node)
+                    if "Counter()" in func_src and "+= weight" in func_src and "len(set(" not in func_src:
+                        issues.append(QualityIssue(
+                            severity=Severity.P0,
+                            category="tally_sybil_duplicate_ballot",
+                            message=(
+                                "Tally Audit Vulnerability: 'verify_tally' accumulates multiple entries from the "
+                                "same voter_id via Counter += weight without rejecting duplicate voter ballots."
+                            ),
+                            details="Duplicate voter_id entries are summed rather than deduplicated or rejected.",
+                        ))
+
+            elif isinstance(node, ast.ClassDef):
+                cls_src = ast.unparse(node)
+                # 2d. Degenerate Quadratic Funding math: summing contributions per project before sqrt and **2
+                if "Quadratic" in node.name or "quadratic" in cls_src.lower():
+                    has_cumulative_project_sum = (
+                        "_contributions[" in cls_src
+                        and "+ amount" in cls_src
+                        and "math.sqrt(" in cls_src
+                        and "** 2" in cls_src
+                    )
+                    if has_cumulative_project_sum:
+                        issues.append(QualityIssue(
+                            severity=Severity.P0,
+                            category="mathematical_fidelity_violation",
+                            message=(
+                                f"Mathematical Fidelity Violation in '{node.name}': Sums raw contributions per project "
+                                f"before taking sqrt and squaring ((√Σc_i)² = Σc_i), which cancels out the square root "
+                                f"and degenerates Quadratic Funding into linear allocation without whale/Sybil resistance."
+                            ),
+                            details="True CLR/QF requires summing individual √c_{p,i} across distinct contributors before squaring.",
+                        ))
+
+                # 2e. Stateless Lock Theatre detection
+                init_methods = [
+                    n for n in node.body
+                    if isinstance(n, ast.FunctionDef) and n.name == "__init__"
+                ]
+                if init_methods:
+                    init_node = init_methods[0]
+                    self_attrs = set()
+                    for sub in ast.walk(init_node):
+                        if isinstance(sub, (ast.Assign, ast.AnnAssign)):
+                            targets = sub.targets if isinstance(sub, ast.Assign) else [sub.target]
+                            for t in targets:
+                                if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == "self":
+                                    self_attrs.add(t.attr)
+                    if self_attrs == {"_lock"} or self_attrs == {"lock"}:
+                        issues.append(QualityIssue(
+                            severity=Severity.P0,
+                            category="stateless_lock_theatre",
+                            message=(
+                                f"Stateless Lock Theatre in '{node.name}': Class holds zero mutable state in __init__ "
+                                f"(only {sorted(self_attrs)}), making threading.Lock acquisition pure overhead."
+                            ),
+                            details=f"Class '{node.name}' has no mutable state attributes to protect.",
+                        ))
+
+        return issues
+
+
+# ============================================================================
+# Dimension 2.5: Repository AST Symbol Grounding & Collision Inspector
+# ============================================================================
+
+class RepoSymbolInspector:
+    """
+    Layer 1 (Agentless / SWE-agent Grounding):
+    Inspects target repository files via AST to extract existing classes and functions,
+    provides context skeletons for LLM prompts, and blocks proposals that blindly
+    re-implement existing classes in target files.
+    """
+
+    @staticmethod
+    def resolve_repo_path(rel_or_abs_path: str) -> str:
+        """Resolves a relative repository file path (e.g. 'backend/app/...') to an absolute path."""
+        if os.path.isabs(rel_or_abs_path) and os.path.exists(rel_or_abs_path):
+            return rel_or_abs_path
+        # Find repo root relative to this file (backend/app/services/aip_quality_gate.py)
+        services_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = os.path.dirname(os.path.dirname(services_dir))
+        repo_root = os.path.dirname(backend_dir)
+        cand1 = os.path.join(repo_root, rel_or_abs_path.replace("/", os.sep))
+        if os.path.exists(cand1):
+            return cand1
+        cand2 = os.path.join(backend_dir, rel_or_abs_path.replace("/", os.sep))
+        if os.path.exists(cand2):
+            return cand2
+        return cand1
+
+    @classmethod
+    def extract_file_symbols(cls, file_path: str) -> dict[str, Any]:
+        """Extracts top-level class names, methods, and functions from a repository Python file."""
+        resolved = cls.resolve_repo_path(file_path)
+        if not os.path.exists(resolved):
+            return {"classes": {}, "functions": [], "exists": False}
+        try:
+            with open(resolved, "r", encoding="utf-8") as f:
+                src = f.read()
+            tree = ast.parse(src)
+            classes: dict[str, list[str]] = {}
+            functions: list[str] = []
+            for node in tree.body:
+                if isinstance(node, ast.ClassDef):
+                    methods = [
+                        m.name for m in node.body
+                        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and not m.name.startswith("_")
+                    ]
+                    classes[node.name] = methods
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if not node.name.startswith("test_"):
+                        functions.append(node.name)
+            return {"classes": classes, "functions": functions, "exists": True}
+        except Exception as e:
+            logger.debug(f"[RepoSymbolInspector] Failed to parse {resolved}: {e}")
+            return {"classes": {}, "functions": [], "exists": False}
+
+    @classmethod
+    def build_target_files_skeleton(cls, target_files: list[str]) -> str:
+        """Builds a concise AST symbol summary of target_files to ground the Planner & Coder LLMs."""
+        if not target_files:
+            return "No specific target files inspected."
+        lines = []
+        all_existing_classes = set()
+        for tf in target_files:
+            info = cls.extract_file_symbols(tf)
+            if not info.get("exists"):
+                continue
+            cls_map = info.get("classes", {})
+            all_existing_classes.update(cls_map.keys())
+            cls_summaries = [
+                f"{cname}({', '.join(meths[:5])})" if meths else cname
+                for cname, meths in list(cls_map.items())[:25]
+            ]
+            lines.append(f"- `{tf}` already defines classes: {', '.join(cls_summaries) or 'None'}")
+        if not lines:
+            return "No existing classes found in target files."
+        header = (
+            "EXISTING REPOSITORY AST SYMBOLS IN TARGET FILES (DO NOT RE-IMPLEMENT OR DUPLICATE THESE CLASSES):\n"
+            + "\n".join(lines)
+            + f"\nFORBIDDEN EXISTING CLASS NAMES (must NOT be redefined): {sorted(all_existing_classes)}"
+        )
+        return header
+
+    @classmethod
+    def check_symbol_collision(cls, proposed_code: str, target_files: list[str]) -> list[dict[str, str]]:
+        """
+        Checks if proposed_code redefines top-level classes that already exist in target_files.
+        Returns a list of collision dicts: [{'class_name': ..., 'target_file': ...}].
+        """
+        if not proposed_code or not target_files:
+            return []
+        try:
+            tree = ast.parse(proposed_code.strip())
+        except Exception:
+            return []
+
+        proposed_classes = [node.name for node in tree.body if isinstance(node, ast.ClassDef)]
+        if not proposed_classes:
+            return []
+
+        collisions = []
+        for tf in target_files:
+            info = cls.extract_file_symbols(tf)
+            existing_classes = set(info.get("classes", {}).keys())
+            for p_cls in proposed_classes:
+                if p_cls in existing_classes:
+                    collisions.append({"class_name": p_cls, "target_file": tf})
+        return collisions
+
+
 
 # ============================================================================
 # Dimension 3: Cryptographic Identity & Signature Binding
@@ -914,6 +1183,302 @@ class StructuralDuplicateDetector:
                 return True, existing_id
         return False, ""
 
+    @staticmethod
+    def compute_ast_shingles(code: str, k: int = 3) -> set[str]:
+        """
+        Extracts normalized AST node-type k-gram shingles and domain call signatures
+        for fuzzy structural similarity detection (MAP-Elites / Clone Detection).
+        """
+        clean_code = (code or "").strip()
+        if not clean_code:
+            return set()
+        try:
+            tree = ast.parse(clean_code)
+            node_seq = [
+                type(n).__name__
+                for n in ast.walk(tree)
+                if not isinstance(n, (ast.Load, ast.Store, ast.Del, ast.expr_context))
+            ]
+            shingles = set()
+            for i in range(max(0, len(node_seq) - k + 1)):
+                shingles.add("->".join(node_seq[i : i + k]))
+            return shingles
+        except Exception:
+            return set()
+
+    @classmethod
+    def compute_fuzzy_similarity(cls, code_a: str, code_b: str) -> float:
+        """
+        Computes combined AST shingle Jaccard similarity and class/method name overlap.
+        """
+        shingles_a = cls.compute_ast_shingles(code_a)
+        shingles_b = cls.compute_ast_shingles(code_b)
+        if not shingles_a or not shingles_b:
+            return 0.0
+        shingle_sim = len(shingles_a & shingles_b) / len(shingles_a | shingles_b)
+
+        try:
+            tree_a = ast.parse(code_a.strip())
+            tree_b = ast.parse(code_b.strip())
+            cls_a = {n.name.lower() for n in ast.walk(tree_a) if isinstance(n, ast.ClassDef)}
+            cls_b = {n.name.lower() for n in ast.walk(tree_b) if isinstance(n, ast.ClassDef)}
+            if cls_a and cls_b and (cls_a & cls_b):
+                # Boost similarity when defining identical class names with similar AST structure
+                return min(1.0, shingle_sim * 0.7 + 0.35)
+        except Exception:
+            pass
+        return shingle_sim
+
+    @classmethod
+    def check_fuzzy_duplicate(
+        cls,
+        code: str,
+        known_codes: dict[str, str],
+        threshold: float = 0.78,
+    ) -> tuple[bool, str, float]:
+        """
+        Checks if proposed code is a near-duplicate variant of any known code snippet.
+        Returns (is_near_duplicate, matched_aip_id, similarity_score).
+        """
+        for existing_id, existing_code in known_codes.items():
+            sim = cls.compute_fuzzy_similarity(code, existing_code)
+            if sim >= threshold:
+                return True, existing_id, round(sim, 3)
+        return False, "", 0.0
+
+
+# ============================================================================
+# Dimension 5: Execution-Guided Test Discovery & AST Micro-Mutation Tester
+# ============================================================================
+
+class ASTMutationTester:
+    """
+    Layer 4 (Meta TestGen-LLM / MuTAP Mutation Gate):
+    1. Discovers all `test_*` functions in proposed code and forces execution.
+    2. Generates single-point AST mutants of the production logic (operator flips,
+       constant perturbations) and executes the test suite against each mutant.
+    3. Computes mutation kill rate to reject tautological/weak test suites.
+    """
+
+    @classmethod
+    def generate_ast_mutants(cls, code: str, max_mutants: int = 4) -> list[tuple[str, str]]:
+        """
+        Generates up to `max_mutants` single-point mutated Python source strings
+        targeting non-test functions/methods.
+        Returns list of (mutant_description, mutated_code_str).
+        """
+        clean = (code or "").strip()
+        if not clean:
+            return []
+        try:
+            base_tree = ast.parse(clean)
+        except Exception:
+            return []
+
+        mutants: list[tuple[str, str]] = []
+
+        # Collect candidate mutation sites inside non-test functions/classes
+        # Site types: ('binop', idx), ('cmpop', idx), ('const_num', idx)
+        sites: list[tuple[str, int, str]] = []
+        node_idx = 0
+        for stmt in base_tree.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name.startswith("test_"):
+                continue
+            if isinstance(stmt, ast.If):
+                continue
+            for sub in ast.walk(stmt):
+                node_idx += 1
+                if isinstance(sub, ast.BinOp) and isinstance(
+                    sub.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow)
+                ):
+                    sites.append(("binop", node_idx, type(sub.op).__name__))
+                elif isinstance(sub, ast.Compare) and len(sub.ops) == 1 and isinstance(
+                    sub.ops[0], (ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Eq)
+                ):
+                    sites.append(("cmpop", node_idx, type(sub.ops[0]).__name__))
+
+        for site_type, target_idx, op_name in sites:
+            if len(mutants) >= max_mutants:
+                break
+            tree_copy = ast.parse(clean)
+            curr_idx = 0
+            mutated_desc = ""
+            for stmt in tree_copy.body:
+                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name.startswith("test_"):
+                    continue
+                if isinstance(stmt, ast.If):
+                    continue
+                for sub in ast.walk(stmt):
+                    curr_idx += 1
+                    if curr_idx == target_idx:
+                        if site_type == "binop" and isinstance(sub, ast.BinOp):
+                            if isinstance(sub.op, ast.Add):
+                                sub.op = ast.Sub()
+                                mutated_desc = "Flip BinOp Add(+) -> Sub(-)"
+                            elif isinstance(sub.op, ast.Sub):
+                                sub.op = ast.Add()
+                                mutated_desc = "Flip BinOp Sub(-) -> Add(+)"
+                            elif isinstance(sub.op, ast.Mult):
+                                sub.op = ast.Div()
+                                mutated_desc = "Flip BinOp Mult(*) -> Div(/)"
+                            elif isinstance(sub.op, ast.Div):
+                                sub.op = ast.Mult()
+                                mutated_desc = "Flip BinOp Div(/) -> Mult(*)"
+                            elif isinstance(sub.op, ast.Pow):
+                                sub.op = ast.Mult()
+                                mutated_desc = "Flip BinOp Pow(**) -> Mult(*)"
+                        elif site_type == "cmpop" and isinstance(sub, ast.Compare):
+                            op0 = sub.ops[0]
+                            if isinstance(op0, ast.Lt):
+                                sub.ops[0] = ast.GtE()
+                                mutated_desc = "Flip Compare Lt(<) -> GtE(>=)"
+                            elif isinstance(op0, ast.LtE):
+                                sub.ops[0] = ast.Gt()
+                                mutated_desc = "Flip Compare LtE(<=) -> Gt(>)"
+                            elif isinstance(op0, ast.Gt):
+                                sub.ops[0] = ast.LtE()
+                                mutated_desc = "Flip Compare Gt(>) -> LtE(<=)"
+                            elif isinstance(op0, ast.GtE):
+                                sub.ops[0] = ast.Lt()
+                                mutated_desc = "Flip Compare GtE(>=) -> Lt(<)"
+                            elif isinstance(op0, ast.Eq):
+                                sub.ops[0] = ast.NotEq()
+                                mutated_desc = "Flip Compare Eq(==) -> NotEq(!=)"
+            if mutated_desc:
+                try:
+                    ast.fix_missing_locations(tree_copy)
+                    mutated_src = ast.unparse(tree_copy)
+                    if mutated_src != clean:
+                        mutants.append((mutated_desc, mutated_src))
+                except Exception:
+                    pass
+
+        return mutants
+
+    @classmethod
+    def run_in_process_verification(
+        cls,
+        code: str,
+        min_kill_rate: float = 0.50,
+    ) -> dict[str, Any]:
+        """
+        Executes the proposed code, discovers and runs all `test_*` functions,
+        and evaluates AST micro-mutants against those `test_*` functions.
+        """
+        clean = (code or "").strip()
+        if not clean:
+            return {"passed": False, "error": "Empty code", "tests_run": 0, "mutation_kill_rate": 0.0}
+
+        try:
+            tree = ast.parse(clean)
+        except SyntaxError as e:
+            return {"passed": False, "error": f"SyntaxError: {e}", "tests_run": 0, "mutation_kill_rate": 0.0}
+
+        test_func_names = [
+            n.name for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test_")
+        ]
+        top_level_asserts = [
+            n for n in tree.body if isinstance(n, ast.Assert)
+        ]
+
+        # Check if test functions were defined but never invoked in the original script
+        called_names = set()
+        for stmt in tree.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            for sub in ast.walk(stmt):
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                    called_names.add(sub.func.id)
+        uninvoked_tests = [tf for tf in test_func_names if tf not in called_names]
+
+        # Strip `if __name__ == "__main__":` when building reusable module namespace
+        module_tree = ast.parse(clean)
+        module_tree.body = [
+            stmt for stmt in module_tree.body
+            if not (
+                isinstance(stmt, ast.If)
+                and "__name__" in ast.unparse(stmt.test)
+            )
+        ]
+        module_src = ast.unparse(module_tree)
+
+        # 1. Execute base module and run all discovered test_* functions
+        ns: dict[str, Any] = {"__name__": "__aip_sandbox__"}
+        try:
+            exec(compile(module_src, "<aip_candidate>", "exec"), ns)
+            for tf_name in test_func_names:
+                fn = ns.get(tf_name)
+                if callable(fn):
+                    fn()
+        except Exception as e:
+            return {
+                "passed": False,
+                "error": f"Unit test execution failed: {type(e).__name__}: {e}",
+                "tests_run": len(test_func_names),
+                "uninvoked_tests": uninvoked_tests,
+                "mutation_kill_rate": 0.0,
+            }
+
+        total_tests = len(test_func_names) + len(top_level_asserts)
+        if total_tests == 0:
+            return {
+                "passed": False,
+                "error": "No unit tests (def test_* or assert) found in proposed code.",
+                "tests_run": 0,
+                "uninvoked_tests": [],
+                "mutation_kill_rate": 0.0,
+            }
+
+        # 2. Run AST Micro-Mutation Testing against discovered test_* functions
+        mutants = cls.generate_ast_mutants(module_src, max_mutants=4)
+        killed = 0
+        survived_descriptions = []
+
+        if mutants and test_func_names:
+            for desc, m_src in mutants:
+                m_ns: dict[str, Any] = {"__name__": "__aip_mutant__"}
+                mutant_killed = False
+                try:
+                    exec(compile(m_src, "<aip_mutant>", "exec"), m_ns)
+                    for tf_name in test_func_names:
+                        fn = m_ns.get(tf_name)
+                        if callable(fn):
+                            fn()
+                except Exception:
+                    mutant_killed = True
+
+                if mutant_killed:
+                    killed += 1
+                else:
+                    survived_descriptions.append(desc)
+
+            kill_rate = killed / len(mutants)
+        else:
+            kill_rate = 1.0
+
+        passed = (kill_rate >= min_kill_rate) and (len(uninvoked_tests) == 0)
+        err_reasons = []
+        if uninvoked_tests:
+            err_reasons.append(f"Uninvoked test functions detected: {uninvoked_tests}")
+        if kill_rate < min_kill_rate:
+            err_reasons.append(
+                f"Low mutation kill rate ({kill_rate:.0%} < {min_kill_rate:.0%}); "
+                f"survived mutants: {survived_descriptions}"
+            )
+
+        return {
+            "passed": passed,
+            "error": "; ".join(err_reasons) if err_reasons else None,
+            "tests_run": total_tests,
+            "tests_executed": test_func_names,
+            "uninvoked_tests": uninvoked_tests,
+            "mutants_total": len(mutants),
+            "mutants_killed": killed,
+            "mutation_kill_rate": round(kill_rate, 2),
+            "survived_mutants": survived_descriptions,
+        }
+
 
 # ============================================================================
 # Main Quality Gate Service Orchestrator
@@ -928,6 +1493,7 @@ class QualityGateService:
     def __init__(self, data_dir: Optional[str] = None):
         self.citation_verifier = AsyncCitationVerifier()
         self.known_fingerprints: dict[str, str] = {}
+        self.known_codes: dict[str, str] = {}
         if data_dir is None:
             base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             self.data_dir = os.path.join(base_dir, "data")
@@ -963,10 +1529,12 @@ class QualityGateService:
                 logger.warning(f"[QualityGate] Failed to save rejected fingerprints: {e}")
 
     def register_fingerprint(self, aip_id: str, code: str):
-        """Registers a known code fingerprint for duplicate detection."""
+        """Registers a known code fingerprint and source for exact and fuzzy duplicate detection."""
         fp = StructuralDuplicateDetector.compute_ast_fingerprint(code)
         if fp:
             self.known_fingerprints[aip_id] = fp
+        if code and code.strip():
+            self.known_codes[aip_id] = code.strip()
 
     async def evaluate_proposal(
         self,
@@ -980,6 +1548,7 @@ class QualityGateService:
         public_key: str = "",
         require_signature: bool = False,
         exclude_aip_id: str = "",
+        target_files: Optional[list[str]] = None,
     ) -> QualityReport:
         """
         Executes complete quality gate audit across P0 and P1 criteria.
@@ -995,6 +1564,7 @@ class QualityGateService:
             public_key: Public key PEM
             require_signature: Whether to enforce P0 signature check (True for P2P network verification)
             exclude_aip_id: AIP ID to exclude from duplicate check
+            target_files: Optional list of target repository files to check for symbol collision
 
         Returns:
             QualityReport with passed (True/False), issues list, and summary dict
@@ -1023,7 +1593,7 @@ class QualityGateService:
                 ))
 
         # --------------------------------------------------------------------
-        # P0 Check 2: AST Syntax & Dangerous Code Prevention
+        # P0 Check 2: AST Syntax, Dangerous Code & Semantic Anti-Patterns
         # --------------------------------------------------------------------
         tree, syntax_err = ASTConsistencyAuditor.parse_code(proposed_diff)
         if tree is None:
@@ -1041,6 +1611,26 @@ class QualityGateService:
                     category="security",
                     message=f"Prohibited dangerous execution pattern detected: {', '.join(dangerous)}",
                     details=f"Forbidden patterns: {dangerous}",
+                ))
+            # Check deep semantic & algorithmic anti-patterns
+            antipattern_issues = ASTConsistencyAuditor.check_semantic_antipatterns(proposed_diff, tree)
+            issues.extend(antipattern_issues)
+
+        # --------------------------------------------------------------------
+        # P0 Check 2.5: Repository AST Symbol Collision Gate (Layer 1)
+        # --------------------------------------------------------------------
+        if tree is not None and target_files:
+            collisions = RepoSymbolInspector.check_symbol_collision(proposed_diff, target_files)
+            if collisions:
+                coll_strs = [f"'{c['class_name']}' in {c['target_file']}" for c in collisions]
+                issues.append(QualityIssue(
+                    severity=Severity.P0,
+                    category="repo_symbol_collision",
+                    message=(
+                        f"Repository Symbol Collision / Reinvention: Proposal redefines existing class(es) "
+                        f"{', '.join(coll_strs)}. Extend or integrate with existing classes instead of duplicating them."
+                    ),
+                    details=f"Collisions: {collisions}",
                 ))
 
         # --------------------------------------------------------------------
@@ -1091,9 +1681,9 @@ class QualityGateService:
                 ))
 
         # --------------------------------------------------------------------
-        # P0 Check 4: AST Structural Deduplication (Active & Historically Rejected)
+        # P0 Check 4: AST Structural & Fuzzy Deduplication (Active & Rejected)
         # --------------------------------------------------------------------
-        # 4.1 Check against actively tracked proposals
+        # 4.1 Check exact fingerprint against actively tracked proposals
         active_fps = {k: v for k, v in self.known_fingerprints.items() if k != exclude_aip_id and k != aip_id}
         is_dup, dup_id = StructuralDuplicateDetector.check_duplicate(proposed_diff, active_fps)
         if is_dup:
@@ -1103,6 +1693,22 @@ class QualityGateService:
                 message=f"Proposed code is structurally duplicate of existing proposal '{dup_id}'",
                 details=f"AST Fingerprint matches {dup_id}",
             ))
+        else:
+            # 4.1b Check fuzzy AST shingle similarity against known proposal codes
+            active_codes = {k: v for k, v in self.known_codes.items() if k != exclude_aip_id and k != aip_id}
+            is_fuzzy_dup, fuzzy_id, fuzzy_sim = StructuralDuplicateDetector.check_fuzzy_duplicate(
+                proposed_diff, active_codes, threshold=0.78
+            )
+            if is_fuzzy_dup:
+                issues.append(QualityIssue(
+                    severity=Severity.P0,
+                    category="near_duplicate_variant",
+                    message=(
+                        f"Near-Duplicate Variant Detected: Proposed code shares {fuzzy_sim:.0%} structural/symbol "
+                        f"similarity with existing proposal '{fuzzy_id}'."
+                    ),
+                    details=f"Fuzzy AST similarity={fuzzy_sim:.3f} with {fuzzy_id}",
+                ))
 
         # 4.2 Check against historically rejected proposal templates
         new_fp = StructuralDuplicateDetector.compute_ast_fingerprint(proposed_diff)

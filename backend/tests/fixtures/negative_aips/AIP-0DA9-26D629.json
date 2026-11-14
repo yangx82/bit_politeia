@@ -1,0 +1,42 @@
+{
+  "aip_id": "AIP-0DA9-26D629",
+  "initiator_id": "0da9e18d02c1dbea101090fd8b1d89ca1eb0715ab00dd7dde448d3fa7cb67ff3",
+  "title": "QuadraticVotingHelper with Reputation-Weighted Tally Verification",
+  "description": "[Scope-Corrected | Atomic Enhancement] Implements quadratic vote weight calculation (sqrt of token amount) with time-decayed reputation multipliers for governance proposals, enabling Sybil-resistant capital-efficient voting aligned with CLR mechanism design. Provides deterministic tally verification via hash-based audit trail. Non-Goals: No dynamic reputation scoring system (reputation values are inputs, not computed here), no Sybil detection heuristics (assumes pre-verified node identities), no multi-round funding allocation (single proposal voting only), no cross-group vote aggregation.",
+  "target_files": [
+    "backend/app/p2p_community/governance.py",
+    "backend/app/services/agent_service.py"
+  ],
+  "proposed_diff": "\"\"\"QuadraticVotingHelper with Reputation-Weighted Tally Verification.\n\nTrack-A: Decentralized Governance & Game Theory.\nTarget: backend/app/p2p_community/governance.py\n\"\"\"\nimport hashlib\nimport math\nimport threading\nimport time\n\n\nclass QuadraticVotingHelper:\n    \"\"\"Thread-safe quadratic voting helper with reputation-weighted decay.\"\"\"\n\n    def __init__(self, decay_halflife_hours: float = 168.0) -> None:\n        \"\"\"Initialize the voting helper.\n\n        Args:\n            decay_halflife_hours: Half-life in hours for reputation decay.\n                Defaults to 168.0 (one week).\n        \"\"\"\n        if decay_halflife_hours <= 0:\n            raise ValueError(\"decay_halflife_hours must be positive\")\n        self._halflife_hours: float = float(decay_halflife_hours)\n        self._lock = threading.Lock()\n\n    def calculate_vote_weight(\n        self,\n        token_amount: int,\n        reputation_score: float,\n        last_activity_timestamp: float,\n    ) -> float:\n        \"\"\"Compute reputation-weighted quadratic vote weight with time decay.\n\n        Args:\n            token_amount: Number of tokens staked (0 <= x <= 10**9).\n            reputation_score: Agent reputation in [0.0, 10.0].\n            last_activity_timestamp: Unix epoch of last activity.\n\n        Returns:\n            Weighted vote score as a float.\n\n        Raises:\n            ValueError: If any input is outside valid bounds.\n        \"\"\"\n        if not isinstance(token_amount, (int, float)) or token_amount < 0 or token_amount > 10**9:\n            raise ValueError(f\"token_amount must be in [0, 10**9], got {token_amount}\")\n        reputation_score = float(reputation_score)\n        if reputation_score < 0.0 or reputation_score > 10.0:\n            raise ValueError(f\"reputation_score must be in [0.0, 10.0], got {reputation_score}\")\n        last_activity_timestamp = float(last_activity_timestamp)\n        if last_activity_timestamp > time.time():\n            raise ValueError(\"last_activity_timestamp cannot be in the future\")\n\n        elapsed_seconds = time.time() - last_activity_timestamp\n        decay_factor = math.pow(0.5, elapsed_seconds / (self._halflife_hours * 3600))\n        weight = math.sqrt(token_amount) * (reputation_score / 10.0) * decay_factor\n        return weight\n\n    def verify_tally(self, ballots: list, expected_tally: float) -> bool:\n        \"\"\"Verify that the sum of ballot weights matches the expected tally.\n\n        Args:\n            ballots: List of ballot dicts, each containing 'token_amount',\n                'reputation_score', and 'last_activity_timestamp'.\n            expected_tally: The expected total tally value.\n\n        Returns:\n            True if computed tally matches expected within 1e-6 tolerance.\n        \"\"\"\n        with self._lock:\n            computed = sum(\n                self.calculate_vote_weight(\n                    b[\"token_amount\"], b[\"reputation_score\"], b[\"last_activity_timestamp\"]\n                )\n                for b in ballots\n            )\n        return abs(computed - expected_tally) <= 1e-6\n\n    def compute_tally_hash(self, ballots: list) -> str:\n        \"\"\"Compute a deterministic SHA-256 hash of sorted ballot IDs and weights.\n\n        Args:\n            ballots: List of ballot dicts with 'id' and weight fields\n                ('token_amount', 'reputation_score', 'last_activity_timestamp').\n\n        Returns:\n            Hex-encoded SHA-256 digest string.\n        \"\"\"\n        with self._lock:\n            entries = []\n            for b in ballots:\n                w = self.calculate_vote_weight(\n                    b[\"token_amount\"], b[\"reputation_score\"], b[\"last_activity_timestamp\"]\n                )\n                entries.append((str(b[\"id\"]), f\"{w:.10f}\"))\n        entries.sort(key=lambda e: e[0])\n        payload = \"\".join(f\"{bid}:{wt}\" for bid, wt in entries)\n        return hashlib.sha256(payload.encode(\"utf-8\")).hexdigest()\n\n\n# --------------- Minimal Unit Tests ---------------\n\ndef test_calculate_vote_weight():\n    \"\"\"Test weight calculation with known inputs and decay.\"\"\"\n    helper = QuadraticVotingHelper(decay_halflife_hours=168.0)\n    now = time.time()\n    weight = helper.calculate_vote_weight(100, 8.0, now - 3600)\n    elapsed = time.time() - (now - 3600)\n    expected = math.sqrt(100) * (8.0 / 10.0) * math.pow(0.5, elapsed / (168.0 * 3600))\n    assert abs(weight - expected) < 1e-9, f\"Expected ~{expected}, got {weight}\"\n    print(f\"[PASS] test_calculate_vote_weight: weight={weight:.6f}\")\n\n\ndef test_verify_tally_known_ballots():\n    \"\"\"Test verify_tally returns True for correctly computed tally.\"\"\"\n    helper = QuadraticVotingHelper(decay_halflife_hours=168.0)\n    now = time.time()\n    ballots = [\n        {\"id\": \"b1\", \"token_amount\": 100, \"reputation_score\": 8.0, \"last_activity_timestamp\": now - 3600},\n        {\"id\": \"b2\", \"token_amount\": 400, \"reputation_score\": 5.0, \"last_activity_timestamp\": now - 7200},\n    ]\n    w1 = helper.calculate_vote_weight(100, 8.0, now - 3600)\n    w2 = helper.calculate_vote_weight(400, 5.0, now - 7200)\n    assert helper.verify_tally(ballots, w1 + w2) is True\n    print(f\"[PASS] test_verify_tally_known_ballots: tally={w1 + w2:.6f}\")\n\n\ndef test_invalid_token_raises():\n    \"\"\"Test that negative token_amount raises ValueError.\"\"\"\n    helper = QuadraticVotingHelper()\n    try:\n        helper.calculate_vote_weight(-1, 5.0, time.time() - 60)\n        assert False, \"Should have raised ValueError\"\n    except ValueError:\n        print(\"[PASS] test_invalid_token_raises: ValueError raised for token_amount=-1\")\n\n\nif __name__ == \"__main__\":\n    test_calculate_vote_weight()\n    test_verify_tally_known_ballots()\n    test_invalid_token_raises()\n    print(\"All tests passed.\")",
+  "research_sources": [
+    "https://arxiv.org/abs/1809.06421"
+  ],
+  "sandbox_results": {
+    "success": true,
+    "stdout": "[PASS] test_calculate_vote_weight: weight=7.967061\n[PASS] test_verify_tally_known_ballots: tally=17.884883\n[PASS] test_invalid_token_raises: ValueError raised for token_amount=-1\nAll tests passed.\n[Sandbox Verification] Code executed cleanly without exceptions.\n",
+    "stderr": "",
+    "timestamp": "2026-10-30T00:27:51.316491+00:00"
+  },
+  "quality_report": {
+    "passed": true,
+    "issues": [],
+    "summary": {
+      "aip_id": "AIP-0DA9-26D629",
+      "passed": true,
+      "total_issues": 0,
+      "p0_count": 0,
+      "p1_count": 0,
+      "code_loc": 117,
+      "claims_coverage": 1.0,
+      "citations_checked": 1,
+      "has_scope_tag": true
+    }
+  },
+  "status": "consensus_archived",
+  "passed_at": "2026-10-30T00:30:11.319441+00:00",
+  "consensus_info": {
+    "auto_apply": true,
+    "base_branch": "feature/autonomous-evolution-engine",
+    "node_role": "core_node"
+  }
+}

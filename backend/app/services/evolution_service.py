@@ -149,12 +149,19 @@ class EvolutionService:
         self.aips: dict[str, AIPProposal] = {}
         self.consecutive_rejections: int = 0
         self.cooldown_until: datetime | None = None
-        # User defined cooldown ladder: 1 hour -> 2 hours -> 6 hours
-        self.cooldown_ladder = [timedelta(hours=1), timedelta(hours=2), timedelta(hours=6)]
+        # Exponential cooldown ladder: 1h -> 2h -> 6h -> 12h -> 24h
+        self.cooldown_ladder = [
+            timedelta(hours=1),
+            timedelta(hours=2),
+            timedelta(hours=6),
+            timedelta(hours=12),
+            timedelta(hours=24),
+        ]
+        self._track_exploration_offset: int = 0
         self._load_aips()
 
     def _load_aips(self):
-        """Loads persisted AIPs from disk."""
+        """Loads persisted AIPs and passed_aips archives from disk."""
         if os.path.exists(self.aips_file):
             try:
                 with open(self.aips_file, "r", encoding="utf-8") as f:
@@ -171,6 +178,23 @@ class EvolutionService:
                 self._migrate_legacy_self_aips()
             except Exception as e:
                 logger.error(f"[EvolutionService] Failed to load AIPs: {e}")
+
+        # Also register fingerprints from passed_aips archive directory to prevent re-proposing archived AIPs
+        passed_dir = os.path.join(self.data_dir, "passed_aips")
+        if os.path.isdir(passed_dir):
+            try:
+                from .aip_quality_gate import quality_gate_service
+                for fname in os.listdir(passed_dir):
+                    if fname.endswith(".json"):
+                        fpath = os.path.join(passed_dir, fname)
+                        with open(fpath, "r", encoding="utf-8") as pf:
+                            pdata = json.load(pf)
+                        pid = pdata.get("aip_id") or fname[:-5]
+                        pdiff = pdata.get("proposed_diff", "")
+                        if pdiff:
+                            quality_gate_service.register_fingerprint(pid, pdiff)
+            except Exception as e:
+                logger.debug(f"[EvolutionService] Failed to register passed_aips fingerprints: {e}")
 
     def _compute_ast_fingerprint(self, code_str: str) -> str:
         """
@@ -236,12 +260,17 @@ class EvolutionService:
 
     def _is_duplicate_proposal(self, proposed_diff: str, exclude_aip_id: str = "") -> tuple[bool, str, str]:
         """
-        Checks if the proposed diff is structurally duplicate to any existing proposal.
+        Checks if the proposed diff is structurally or fuzzily duplicate to any existing proposal.
         Returns (is_duplicate, duplicate_aip_id, duplicate_title).
         """
         new_fp = self._compute_ast_fingerprint(proposed_diff)
         if not new_fp:
             return False, "", ""
+
+        try:
+            from .aip_quality_gate import StructuralDuplicateDetector
+        except Exception:
+            StructuralDuplicateDetector = None
 
         for aid, aip in self.aips.items():
             if aid == exclude_aip_id:
@@ -251,6 +280,10 @@ class EvolutionService:
             existing_fp = self._compute_ast_fingerprint(aip.proposed_diff)
             if existing_fp == new_fp:
                 return True, aid, aip.title
+            if StructuralDuplicateDetector is not None:
+                sim = StructuralDuplicateDetector.compute_fuzzy_similarity(proposed_diff, aip.proposed_diff)
+                if sim >= 0.78:
+                    return True, aid, f"{aip.title} (fuzzy similarity={sim:.0%})"
 
         return False, "", ""
 
@@ -455,7 +488,7 @@ class EvolutionService:
                     "topic": "Reputation Scoring, Decay and Anti-Sybil Defense",
                 },
             ],
-            "component_examples": "QuadraticVotingHelper, ReputationDecayCalculator, ProposalTallyAuditor",
+            "component_examples": "CollusionGraphDetector, AdaptiveQuorumGovernor, StakeSlashingLedger",
         },
         {
             "track_id": "Track-B",
@@ -512,7 +545,7 @@ class EvolutionService:
                     "topic": "Agent Memory, Reflexion and Semantic Importance Scoring",
                 },
             ],
-            "component_examples": "HierarchicalMemoryCompactor, SemanticContextPruner, AdaptiveVectorCache",
+            "component_examples": "EpisodicSalienceScorer, SlidingWindowDistiller, VectorRecallOptimizer",
         },
         {
             "track_id": "Track-E",
@@ -535,18 +568,49 @@ class EvolutionService:
         },
     ]
 
-    def _select_evolution_track(self, node_id: str | None = None) -> dict[str, Any]:
+    def _get_track_niche_saturation(self) -> dict[str, int]:
         """
-        Dynamically selects an evolution track based on (node_id_hash + day_of_year) % 5.
+        MAP-Elites Niche Archive Counter:
+        Counts how many existing proposals already occupy each track's target files
+        so exploration rotates away from saturated niches (preventing Track-A monoculture).
+        """
+        counts = {t["track_id"]: 0 for t in self.EVOLUTION_TRACKS}
+        for aip in self.aips.values():
+            tfiles = set(aip.target_files or [])
+            for t in self.EVOLUTION_TRACKS:
+                if tfiles & set(t.get("target_files", [])):
+                    counts[t["track_id"]] += 1
+        return counts
+
+    def _select_evolution_track(self, node_id: str | None = None, advance_step: bool = False) -> dict[str, Any]:
+        """
+        Dynamically selects an evolution track using MAP-Elites niche saturation +
+        (node_id_hash + day_of_year + exploration_offset) % 5.
         Guarantees that different nodes explore different tracks on any given day,
-        and individual nodes rotate tracks across days, eliminating monoculture collapse.
+        and consecutive proposals on the same day automatically rotate across tracks.
         """
         resolved_id = node_id or self._get_local_node_id()
         clean_id = resolved_id.replace("node_", "").replace("-", "").lower()
         node_hash = int(hashlib.sha256(clean_id.encode("utf-8")).hexdigest()[:8], 16)
         day_of_year = datetime.now(UTC).timetuple().tm_yday
-        track_idx = (node_hash + day_of_year) % len(self.EVOLUTION_TRACKS)
-        return self.EVOLUTION_TRACKS[track_idx]
+        offset = self._track_exploration_offset
+        if advance_step:
+            self._track_exploration_offset += 1
+        track_idx = (node_hash + day_of_year + offset) % len(self.EVOLUTION_TRACKS)
+        candidate = self.EVOLUTION_TRACKS[track_idx]
+
+        # If advancing in live exploration and candidate niche is heavily saturated relative to others,
+        # pick the least-saturated track starting from track_idx
+        if advance_step and self.aips:
+            saturation = self._get_track_niche_saturation()
+            min_sat = min(saturation.values()) if saturation else 0
+            if saturation.get(candidate["track_id"], 0) > min_sat + 2:
+                for step in range(1, len(self.EVOLUTION_TRACKS)):
+                    alt = self.EVOLUTION_TRACKS[(track_idx + step) % len(self.EVOLUTION_TRACKS)]
+                    if saturation.get(alt["track_id"], 0) <= min_sat + 1:
+                        return alt
+
+        return candidate
 
     def _fetch_real_literature_inspiration(self, track: dict[str, Any] | None = None) -> dict[str, str]:
         """
@@ -598,9 +662,9 @@ class EvolutionService:
         """
         Pre-flight Consistency & Quality Gate executed BEFORE saving/broadcasting any proposal.
         1. Validates AST syntax.
-        2. Detects description inflation ('吹水') vs actual diff length/substance.
-        3. Enforces Scope-Corrected honesty declarations for MVP helper functions.
-        4. Validates defensive coding (thread safety, bounds checking).
+        2. Checks Repository AST Symbol Collisions (blocks re-implementing existing classes).
+        3. Screens semantic & algorithmic anti-patterns (non-deterministic time.time(), degenerate QF math, etc.).
+        4. Detects description inflation ('吹水') vs actual diff length/substance.
         Returns: (is_valid, corrected_description, feedback_message)
         """
         import ast
@@ -611,7 +675,7 @@ class EvolutionService:
             return False, description, "Rejected: proposed_diff is completely empty."
 
         try:
-            ast.parse(clean_code)
+            tree = ast.parse(clean_code)
         except SyntaxError as e:
             return False, description, f"Rejected: proposed_diff contains syntax error: {e}"
 
@@ -620,7 +684,22 @@ class EvolutionService:
             if pattern in clean_code:
                 return False, description, f"Rejected: Contains forbidden dangerous pattern '{pattern}'."
 
-        # 3. Check for Duplicate AST Fingerprint
+        # 2.5 Check Repository AST Symbol Collision & Semantic Anti-Patterns
+        try:
+            from .aip_quality_gate import ASTConsistencyAuditor, RepoSymbolInspector, Severity
+            if target_files:
+                collisions = RepoSymbolInspector.check_symbol_collision(clean_code, target_files)
+                if collisions:
+                    c_names = ", ".join(f"{c['class_name']} ({c['target_file']})" for c in collisions)
+                    return False, description, f"Rejected: Repository Symbol Collision — redefines existing class(es): {c_names}."
+            antipatterns = ASTConsistencyAuditor.check_semantic_antipatterns(clean_code, tree)
+            p0_anti = [i for i in antipatterns if i.severity == Severity.P0]
+            if p0_anti:
+                return False, description, f"Rejected: {p0_anti[0].message}"
+        except Exception as e:
+            logger.debug(f"[EvolutionService] Pre-flight symbol/antipattern check warning: {e}")
+
+        # 3. Check for Duplicate AST Fingerprint (Exact & Fuzzy)
         is_dup, dup_id, dup_title = self._is_duplicate_proposal(clean_code)
         if is_dup:
             return False, description, f"Rejected: Proposed code AST is structurally duplicate of '{dup_id}' ({dup_title})."
@@ -1083,12 +1162,19 @@ class EvolutionService:
                 if hasattr(agent_service, "node_id") and agent_service.node_id:
                     initiator_id = agent_service.node_id
 
-            track = self._select_evolution_track(initiator_id)
+            track = self._select_evolution_track(initiator_id, advance_step=True)
             track_id = track.get("track_id", "Track-D")
             track_name = track.get("name", "")
             track_focus = track.get("focus", "")
             track_targets = track.get("target_files") or ["backend/app/services/agent_service.py"]
             track_examples = track.get("component_examples", "ComponentHelper")
+
+            # Inspect existing repository AST symbols in target_files (Layer 1 Grounding)
+            try:
+                from .aip_quality_gate import RepoSymbolInspector
+                repo_skeleton = RepoSymbolInspector.build_target_files_skeleton(track_targets)
+            except Exception:
+                repo_skeleton = ""
 
             # Step 2: Fetch real academic literature inspiration & recent reflection lessons
             lit_item = self._fetch_real_literature_inspiration(track=track)
@@ -1101,7 +1187,7 @@ class EvolutionService:
             if lessons:
                 lessons_text = "\n\n【历史失败教训与禁区 (Lessons Learned - 必须严格规避，不得重复犯错)】:\n" + "\n".join(lessons)
 
-            # Step 3: Architecture Planning Prompt tailored to selected dynamic track
+            # Step 3: Architecture Planning + Blind Test Oracle Specification (CodeT Dual-Blind)
             first_example = track_examples.split(",")[0].strip()
             plan_prompt = (
                 f"You are the Lead Architecture Planner for Bit Politeia (a decentralized P2P AI Agent framework).\n"
@@ -1111,6 +1197,7 @@ class EvolutionService:
                 f"- Expected Component Types: {track_examples}\n"
                 f"- Grounding Verified Academic Paper: \"{lit_title}\" ({lit_url})\n"
                 f"- Academic Domain: {lit_topic}\n"
+                f"{repo_skeleton}\n"
                 f"{lessons_text}\n\n"
                 f"PONYTAIL MINIMALIST ARCHITECTURE PRINCIPLES (The Ladder - Anti-Over-Engineering):\n"
                 f"1. Does this speculative complexity need to exist at all? (YAGNI -> omit it). Solve real immediate bottlenecks, not hypothetical future needs.\n"
@@ -1118,14 +1205,16 @@ class EvolutionService:
                 f"3. Prioritize standard library (collections, dataclasses, functools, hashlib, itertools, math, typing) over external dependencies.\n"
                 f"4. NO unrequested abstractions: NO single-implementation interfaces, NO single-product factories, NO redundant wrapper classes.\n"
                 f"5. Atomic Enhancement: The proposal MUST be 50-150 lines of code, NOT a massive overhaul.\n"
-                f"6. MANDATORY SCOPE HONESTY & NON-GOALS: Explicitly declare what this proposal will NOT do. Never claim broad systems or unbuilt features.\n\n"
+                f"6. MANDATORY SCOPE HONESTY & NON-GOALS: Explicitly declare what this proposal will NOT do. Never claim broad systems or unbuilt features.\n"
+                f"7. MATHEMATICAL FIDELITY & DETERMINISM: Never use uninjected wall-clock time.time() inside audit/tally/hash methods; always raise ValueError on negative/invalid bounds rather than silently clamping.\n\n"
                 f"Design a concrete, highly actionable Agent Improvement Proposal (AIP) for this specific track.\n"
                 f"Return strictly valid JSON matching this schema:\n"
                 f"{{\n"
                 f'  "title": "Concise specific title (e.g. {first_example} for Bit Politeia)",\n'
                 f'  "description": "Architectural benefit followed by mandatory non-goals formatted as: [Scope-Corrected | Atomic Enhancement] <Benefit>. Non-Goals: <Explicit list of unbuilt/out-of-scope items>",\n'
                 f'  "target_files": {json.dumps(track_targets)},\n'
-                f'  "coding_specification": "Detailed specification: class/function signatures, input validation with max/min, threading.Lock thread-safety, docstrings, and 2-3 focused unit test assertions."\n'
+                f'  "coding_specification": "Detailed specification: class/function signatures, input validation raising ValueError on invalid inputs, deterministic reference_time parameters, and threading.Lock thread-safety.",\n'
+                f'  "mathematical_invariants": "2-3 strict domain invariants from the paper that the implementation and blind test oracle MUST satisfy (e.g. whale-resistance, determinism across time, mutation-killing assertions)."\n'
                 f"}}\n\n"
                 f"IMPORTANT: Output ONLY the raw JSON object. Do not output conversational preambles."
             )
@@ -1138,8 +1227,12 @@ class EvolutionService:
             )
             target_files = plan_json.get("target_files") or track_targets
             coding_spec = plan_json.get("coding_specification") or f"Implement thread-safe {title} with input bounds checking."
+            math_invariants = plan_json.get(
+                "mathematical_invariants",
+                "1. Deterministic output for identical inputs; 2. Raises ValueError on negative/invalid inputs; 3. Non-trivial assertions that fail if operators are mutated.",
+            )
 
-            # Step 4: Coding Sub-Agent Execution with Strict Length & Truncation Bounds
+            # Step 4: Coding Sub-Agent Execution with Strict Length, Determinism & Mutation-Killing Tests
             code_prompt = (
                 f"You are the Specialized Coding Sub-Agent for Bit Politeia.\n"
                 f"TASK: Write production-ready, thread-safe Python code implementing the following atomic specification:\n"
@@ -1147,19 +1240,21 @@ class EvolutionService:
                 f"Title: {title}\n"
                 f"Target Files: {target_files}\n"
                 f"Specification: {coding_spec}\n"
+                f"Mandatory Mathematical & Domain Invariants (Blind Oracle Contract): {math_invariants}\n"
+                f"{repo_skeleton}\n"
                 f"{lessons_text}\n\n"
                 f"CRITICAL CODE SCALE & QUALITY CONSTRAINTS (STRICT PONYTAIL RULES):\n"
                 f"1. The Ladder: Stdlib first, native syntax, existing codebase patterns. The best code is the code you never wrote.\n"
                 f"2. Code Length: The code MUST be between 50 and 150 lines. Do NOT write oversized bloated code that gets truncated by token limits.\n"
                 f"3. Zero Over-Engineering: No boilerplate, no scaffolding 'for later', no single-implementation abstract base classes. Keep to 1-2 focused classes.\n"
-                f"4. Thread Safety: Use `threading.Lock()` or `threading.RLock()` if maintaining mutable internal state.\n"
-                f"5. Defensive Validation: Explicit bounds checking on all inputs (e.g. `rate = max(0.0, min(1.0, float(rate)))`).\n"
-                f"6. Minimalist Focused Unit Tests: Include exactly 2 to 3 self-contained assertion statements or a small test function (`def test_...()`). Do NOT generate 10+ test cases.\n"
+                f"4. Thread Safety: Use `threading.Lock()` or `threading.RLock()` ONLY if maintaining mutable internal state (do NOT add locks to stateless classes).\n"
+                f"5. Defensive Validation: Raise `ValueError` on negative or out-of-domain inputs; do NOT silently clamp negative inputs into valid ones.\n"
+                f"6. Mutation-Killing Unit Tests: Include 2 to 3 focused `def test_...()` functions with exact numeric/invariant assertions AND explicitly call them under `if __name__ == '__main__':`.\n"
                 f"7. Complete Syntax: Ensure every class, function, and block is fully closed and valid Python syntax without trailing cuts.\n"
-                f"8. Strict Scope Alignment: Implement ONLY what is in the specific atomic scope. Do NOT attempt out-of-scope features declared in Non-Goals.\n\n"
+                f"8. Strict Scope Alignment: Do NOT redefine any forbidden existing class names in Target Files.\n\n"
                 f"Output strictly valid JSON:\n"
                 f"{{\n"
-                f'  "proposed_diff": "Complete valid Python code with imports, atomic class/functions, and 2-3 tests (50-150 LOC)."\n'
+                f'  "proposed_diff": "Complete valid Python code with imports, atomic class/functions, and 2-3 invoked tests (50-150 LOC)."\n'
                 f"}}\n"
                 f"Output ONLY the raw JSON object."
             )
@@ -1196,6 +1291,28 @@ class EvolutionService:
                     "    hint.record_access(True)\n"
                     "    assert hint._stats['hits'] == 1\n"
                 )
+            else:
+                # Auto-append __main__ test invocation if LLM defined test_* functions without calling them
+                try:
+                    import ast as _ast
+                    _tree = _ast.parse(proposed_diff)
+                    _test_names = [
+                        n.name for n in _tree.body
+                        if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and n.name.startswith("test_")
+                    ]
+                    if _test_names:
+                        _called = set()
+                        for _stmt in _tree.body:
+                            if not isinstance(_stmt, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                                for _sub in _ast.walk(_stmt):
+                                    if isinstance(_sub, _ast.Call) and isinstance(_sub.func, _ast.Name):
+                                        _called.add(_sub.func.id)
+                        _uncalled = [t for t in _test_names if t not in _called]
+                        if _uncalled and len(proposed_diff.splitlines()) >= 25:
+                            _runner = "\n\nif __name__ == '__main__':\n" + "".join(f"    {t}()\n" for t in _uncalled)
+                            proposed_diff = proposed_diff.rstrip() + _runner
+                except Exception:
+                    pass
 
             # Prevent duplicate proposal submission
             is_dup, dup_id, dup_title = self._is_duplicate_proposal(proposed_diff)
@@ -1346,6 +1463,7 @@ class EvolutionService:
                 public_key=aip.public_key,
                 require_signature=False,
                 exclude_aip_id=aip.aip_id,
+                target_files=aip.target_files,
             )
             aip.quality_report = report.to_dict()
 
@@ -1516,6 +1634,7 @@ class EvolutionService:
                 public_key=aip.public_key,
                 require_signature=bool(aip.signature or aip.public_key),
                 exclude_aip_id=aip.aip_id,
+                target_files=aip.target_files,
             )
             aip.quality_report = report.to_dict()
             if not report.passed:
@@ -1605,13 +1724,14 @@ class EvolutionService:
             try:
                 prompt = (
                     f"You are the Lead Auditor of the Bit Politeia Technical Governance Committee.\n"
-                    f"Audit this Agent Architecture Improvement Proposal across 6 dimensions:\n"
+                    f"Audit this Agent Architecture Improvement Proposal across 7 dimensions:\n"
                     f"1. Description vs Code Consistency (does the diff fulfill the description?)\n"
-                    f"2. Code Quality & Thread Safety (bounds checking, locks, exception handling)\n"
+                    f"2. Code Quality & Thread Safety (bounds checking, locks, exception handling; reject stateless lock theatre)\n"
                     f"3. Research Authenticity (relevant citations)\n"
-                    f"4. Sandbox Executability\n"
-                    f"5. Scope Honesty\n"
-                    f"6. Anti-Over-Engineering & Ponytail Minimalism (reject unneeded abstractions, single-impl interfaces, class sprawl, and standard library reinvention)\n\n"
+                    f"4. Sandbox Executability & Invoked Test Suite (tests must actually be called and test meaningful invariants)\n"
+                    f"5. Scope Honesty & Repository Grounding (reject duplicate redefinitions of existing classes in target_files)\n"
+                    f"6. Anti-Over-Engineering & Ponytail Minimalism (reject unneeded abstractions, single-impl interfaces, class sprawl, and standard library reinvention)\n"
+                    f"7. Mathematical & Algorithmic Fidelity (verify formulas match cited mechanism design, e.g. CLR Quadratic Funding sums square roots across unique contributors before squaring, deterministic audit functions accept explicit reference_time, negative inputs raise ValueError instead of silent clamping)\n\n"
                     f"Title: {aip.title}\n"
                     f"Description: {aip.description}\n"
                     f"Target Files: {aip.target_files}\n"
@@ -1622,7 +1742,7 @@ class EvolutionService:
                 )
                 res_json = await _invoke_llm_json(llm_client, prompt)
                 approved = res_json.get("approved", True)
-                reason = res_json.get("reason", "Passed 6-dimension autonomous audit")
+                reason = res_json.get("reason", "Passed 7-dimension autonomous audit")
                 if not approved:
                     return Vote(voter_id="self", approval=False, reason=reason)
             except Exception as e:
@@ -1638,7 +1758,7 @@ class EvolutionService:
     async def verify_in_sandbox(self, aip_id: str) -> dict[str, Any]:
         """
         Executes and validates the AIP patch in a sandbox environment.
-        Runs syntax check, import simulation, and verification tests.
+        Runs syntax check, import simulation, forced test invocation, and AST micro-mutation testing.
         """
         aip = self.aips.get(aip_id)
         if not aip:
@@ -1676,14 +1796,41 @@ class EvolutionService:
 
             stdout, stderr, returncode = await sandbox.execute(verify_script)
 
+            # Layer 4: AST Micro-Mutation & Forced Test Oracle Verification
+            mutation_gate = None
+            mutation_passed = True
+            try:
+                from .aip_quality_gate import ASTMutationTester
+                mutation_gate = ASTMutationTester.run_in_process_verification(
+                    code_to_verify, min_kill_rate=0.50
+                )
+                mutation_passed = bool(mutation_gate.get("passed", False))
+                if not mutation_passed:
+                    mut_err = mutation_gate.get("error") or "Failed AST micro-mutation gate"
+                    stderr = (stderr + f"\n[Mutation Gate Failed] {mut_err}").strip()
+                else:
+                    stdout = (
+                        stdout
+                        + f"\n[Mutation Gate Passed] Executed {len(mutation_gate.get('tests_executed', []))} test(s), "
+                        f"killed {mutation_gate.get('mutants_killed', 0)}/{mutation_gate.get('mutants_total', 0)} AST mutants "
+                        f"(kill_rate={mutation_gate.get('mutation_kill_rate', 1.0):.0%})."
+                    ).strip()
+            except Exception as mut_ex:
+                logger.warning(f"[EvolutionService] AST mutation check warning: {mut_ex}")
+
+            overall_success = (returncode == 0) and mutation_passed
             sandbox_data = {
-                "success": returncode == 0,
+                "success": overall_success,
                 "stdout": stdout,
                 "stderr": stderr,
+                "mutation_gate": mutation_gate,
                 "timestamp": datetime.now(UTC).isoformat(),
             }
+            if not overall_success and mutation_gate and not mutation_passed:
+                sandbox_data["error"] = mutation_gate.get("error", "AST mutation test gate failed")
+
             aip.sandbox_results = sandbox_data
-            if returncode == 0:
+            if overall_success:
                 aip.status = "sandbox_passed"
             else:
                 aip.status = "failed"

@@ -338,6 +338,10 @@ class KnowledgeBase:
         self.topic_sync_state = {}
         self._load_sync_state()
 
+        # Hybrid Search Init
+        self.bm25 = None
+        self.bm25_corpus = []  # List of {text, metadata}
+
     def _load_sync_state(self):
         if os.path.exists(self.sync_state_path):
             try:
@@ -381,6 +385,8 @@ class KnowledgeBase:
             except Exception:
                 pass  # File corrupted, check online
 
+        device = os.getenv("EMBEDDING_DEVICE", "cpu")
+
         # 2. Try Load
         model = None
         original_offline = os.environ.get("HF_HUB_OFFLINE")  # Backup
@@ -391,9 +397,9 @@ class KnowledgeBase:
                 try:
                     # Force offline
                     os.environ["HF_HUB_OFFLINE"] = "1"
-                    logger.info(f"Loading {model_name} in Offline Mode...")
+                    logger.info(f"Loading {model_name} in Offline Mode on {device}...")
                     model = SentenceTransformer(
-                        model_name, cache_folder=cache_dir, local_files_only=True
+                        model_name, cache_folder=cache_dir, local_files_only=True, device=device
                     )
                 except Exception as offline_error:
                     logger.warning(
@@ -409,8 +415,8 @@ class KnowledgeBase:
                 if "HF_HUB_OFFLINE" in os.environ:
                     del os.environ["HF_HUB_OFFLINE"]
 
-                logger.info(f"Checking for updates for {model_name}...")
-                model = SentenceTransformer(model_name, cache_folder=cache_dir)
+                logger.info(f"Checking for updates for {model_name} on {device}...")
+                model = SentenceTransformer(model_name, cache_folder=cache_dir, device=device)
 
                 # Save timestamp on success
                 with open(check_file, "w") as f:
@@ -427,10 +433,6 @@ class KnowledgeBase:
                 del os.environ["HF_HUB_OFFLINE"]
 
         return model
-
-        # Hybrid Search Init
-        self.bm25 = None
-        self.bm25_corpus = []  # List of {text, metadata}
 
     def ingest_history(self, history: list[dict]):
         """Load resident chat history/memory into Vector Store."""
